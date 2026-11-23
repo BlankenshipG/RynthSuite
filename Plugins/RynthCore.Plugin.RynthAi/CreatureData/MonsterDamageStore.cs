@@ -32,19 +32,28 @@ namespace RynthCore.Plugin.RynthAi.CreatureData;
 ///   D|&lt;wcid&gt;|&lt;name&gt;|&lt;weaponId&gt;|&lt;element&gt;|&lt;tier&gt;|&lt;avgDamage&gt;|&lt;dmgSamples&gt;|&lt;avgCastsToKill&gt;|&lt;killSamples&gt;|&lt;critAvg&gt;|&lt;critSamples&gt;|&lt;nonCritAvg&gt;|&lt;nonCritSamples&gt;
 /// (The loader also accepts the older 9/10-field name-less / crit-less D rows so existing data carries over.)
 ///
-/// Aelrynth difficulty tiers (2026-10-03, <see cref="AwakenedTier"/>): Aelrynth's awakened worlds
-/// and scaled copies hold the same monsters (same wcids) with health, skills and damage scaled 5%
-/// a tier. What a tier changes is kept per (wcid, tier): the HP pool, casts-to-kill, hits and
+/// Difficulty tiers (2026-10-03, <see cref="DifficultyTier"/>: the active server plugin reports
+/// them): a server's scaled worlds and copies hold the same monsters (same wcids) with health,
+/// skills and damage scaled by the tier. What a tier changes is kept per (wcid, tier): the HP pool, casts-to-kill, hits and
 /// misses, seconds per kill (per weapon and per summon) and the damage the monster does to us.
 /// What it does not change stays shared: per-cast damage (resistances and armour don't scale)
-/// and every rule (weapon, offhand, pet, manual HP). Tier 0 - real Dereth, and every other
-/// server, where the tier is always 0 - is today's data in today's rows, untouched. Tiers above 0
+/// and every rule (weapon, offhand, pet, manual HP). Tier 0 - the unscaled world, and every
+/// server without tiers, where the tier is always 0 - is today's data in today's rows, untouched. Tiers above 0
 /// are extra rows an older loader skips:
 ///   AH|&lt;tier&gt;|&lt;wcid&gt;|&lt;name&gt;|&lt;hpToKill&gt;|&lt;samples&gt;
 ///   AD|&lt;tier&gt;|&lt;wcid&gt;|&lt;name&gt;|&lt;weaponId&gt;|&lt;element&gt;|&lt;spellTier&gt;|&lt;avgCastsToKill&gt;|&lt;killSamples&gt;
 ///   AU|&lt;tier&gt;|&lt;wcid&gt;|&lt;name&gt;|&lt;weaponId&gt;|&lt;hits&gt;|&lt;misses&gt;|&lt;secAvg&gt;|&lt;secSamples&gt;
 ///   APK|&lt;tier&gt;|&lt;wcid&gt;|&lt;name&gt;|&lt;element&gt;|&lt;kills&gt;|&lt;secAvg&gt;
 ///   AT|&lt;tier&gt;|&lt;wcid&gt;|&lt;name&gt;|&lt;element&gt;|&lt;hits&gt;|&lt;avg&gt;|&lt;max&gt;
+///   ATS|&lt;tier&gt;|&lt;wcid&gt;|&lt;name&gt;|&lt;shield&gt;|&lt;facing&gt;|&lt;hits&gt;|&lt;avg&gt;|&lt;max&gt;
+///
+/// Damage taken split by shield and facing (2026-11-08: does a shield cut a boss's hits?):
+///   TS|&lt;wcid&gt;|&lt;name&gt;|&lt;shield 0/1&gt;|&lt;facing front/behind/unknown&gt;|&lt;hits&gt;|&lt;avg&gt;|&lt;max&gt;
+/// shield 1 = a shield in the off hand in a combat stance (ACE ignores one in peace); facing = the
+/// attacker within 90 degrees of our facing (front: ACE counts the shield), outside it (behind), or
+/// not measurable (unknown, never guessed; <see cref="ShieldFacing"/>). Its avg is the mean of every
+/// hit (T's is a running average). An older loader skips TS rows (no branch matches "TS"); ATS goes
+/// through its tier-row switch and matches no case.
 /// Records go to <see cref="Difficulty"/> (the tier where the player stands, set each tick);
 /// readers without a tier argument read it too, and the Damage panel passes the tier it shows.
 /// </summary>
@@ -104,6 +113,7 @@ internal sealed class MonsterDamageStore
         public readonly Dictionary<uint, WeaponUse> Weapons = new();
         public readonly Dictionary<string, PetUse> Pets = new(StringComparer.OrdinalIgnoreCase);
         public readonly Dictionary<string, TakenStat> Taken = new(StringComparer.OrdinalIgnoreCase);
+        public readonly Dictionary<(bool Shield, HitFacing Facing), TakenStat> ShieldTaken = new();
     }
 
     private const int NoTier = int.MinValue; // sentinel: no cast observed for this wcid yet
@@ -115,7 +125,7 @@ internal sealed class MonsterDamageStore
         public int    KillSamples;
     }
 
-    /// <summary>What one Aelrynth difficulty tier above 0 changes about one monster (see the class comment).</summary>
+    /// <summary>What one difficulty tier above 0 changes about one monster (see the class comment).</summary>
     private sealed class TierProfile
     {
         public double HpPool;
@@ -125,6 +135,7 @@ internal sealed class MonsterDamageStore
         public readonly Dictionary<uint, WeaponUse> Weapons = new();
         public readonly Dictionary<string, PetUse> Pets = new(StringComparer.OrdinalIgnoreCase);
         public readonly Dictionary<string, TakenStat> Taken = new(StringComparer.OrdinalIgnoreCase);
+        public readonly Dictionary<(bool Shield, HitFacing Facing), TakenStat> ShieldTaken = new();
     }
 
     private readonly object _lock = new();
@@ -134,9 +145,9 @@ internal sealed class MonsterDamageStore
     private volatile int _difficulty;
 
     /// <summary>
-    /// The Aelrynth difficulty tier new observations are recorded under, and the one the
-    /// tier-less readers answer for: the tier where the player stands (AwakenedTier.Current,
-    /// set every tick). Always 0 off Aelrynth.
+    /// The difficulty tier new observations are recorded under, and the one the tier-less
+    /// readers answer for: the tier where the player stands (DifficultyTier.Current, set every
+    /// tick). Always 0 on a server without tiers.
     /// </summary>
     public int Difficulty
     {
@@ -158,6 +169,9 @@ internal sealed class MonsterDamageStore
         string.IsNullOrEmpty(name) ? "" : name.Replace('|', '/').Trim();
 
     private static string Num(double d) => d.ToString("0.##", CultureInfo.InvariantCulture);
+
+    /// <summary>Nothing is recorded under wcid 0 or a player character's weenie (<see cref="PlayerWeenies"/>).</summary>
+    private static bool NotMonster(uint wcid) => wcid == 0 || PlayerWeenies.IsPlayerWcid(wcid);
 
     /// <summary>Point the store at a character's folder and load its file. Safe to call again on character change.</summary>
     public void SetCharacter(string charFolder)
@@ -303,6 +317,18 @@ internal sealed class MonsterDamageStore
                             p.Taken[f[3]] = t;
                         }
                     }
+                    else if (f.Length >= 8 && f[0] == "TS")
+                    {
+                        // TS|wcid|name|shield|facing|hits|avg|max
+                        if (uint.TryParse(f[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out uint sw)
+                            && TryShieldKey(f[3], f[4], out var key)
+                            && TryTaken(f, 5, out var t))
+                        {
+                            var p = Get(sw);
+                            if (f[2].Length > 0) p.Name = f[2];
+                            p.ShieldTaken[key] = t;
+                        }
+                    }
                     else if (f.Length >= 9 && f[0] == "D")
                     {
                         // New: D|wcid|name|weaponId|element|tier|avg|dmgS|avgCasts|killS|critAvg|critS|nonCritAvg|nonCritS  (14 fields)
@@ -341,7 +367,23 @@ internal sealed class MonsterDamageStore
             {
                 // Corrupt file — start fresh; it rewrites on next save.
             }
+
+            // Rows a player character left behind (an appraised player or your own character
+            // listed as a monster) go, and the next save writes the file without them.
+            if (DropPlayerRowsLocked()) _dirty = true;
         }
+    }
+
+    /// <summary>Removes every row under a player weenie. True when any went. Caller holds _lock.</summary>
+    private bool DropPlayerRowsLocked()
+    {
+        var gone = new List<uint>();
+        foreach (uint w in _byWcid.Keys) if (PlayerWeenies.IsPlayerWcid(w)) gone.Add(w);
+        foreach (uint w in gone) _byWcid.Remove(w);
+        var tierGone = new List<(uint, int)>();
+        foreach (var k in _byTier.Keys) if (PlayerWeenies.IsPlayerWcid(k.Wcid)) tierGone.Add(k);
+        foreach (var k in tierGone) _byTier.Remove(k);
+        return gone.Count > 0 || tierGone.Count > 0;
     }
 
     /// <summary>One AH/AD/AU/APK/AT row (a difficulty tier above 0). Caller holds _lock.</summary>
@@ -399,19 +441,63 @@ internal sealed class MonsterDamageStore
                 tp.Taken[f[4]] = t;
                 break;
             }
+            case "ATS" when f.Length >= 9:
+                if (TryShieldKey(f[4], f[5], out var key) && TryTaken(f, 6, out var st))
+                    tp.ShieldTaken[key] = st;
+                break;
         }
     }
+
+    /// <summary>A TS/ATS row's "shield|facing" pair: shield 0 or 1, facing front/behind/unknown.</summary>
+    private static bool TryShieldKey(string shield, string facing, out (bool Shield, HitFacing Facing) key)
+    {
+        key = default;
+        bool s;
+        if (shield == "1") s = true;
+        else if (shield == "0") s = false;
+        else return false;
+        if (!ShieldFacing.TryParse(facing, out HitFacing f)) return false;
+        key = (s, f);
+        return true;
+    }
+
+    /// <summary>"hits|avg|max" from <paramref name="at"/>; a row with no hits is dropped.</summary>
+    private static bool TryTaken(string[] f, int at, out TakenStat t)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        t = new TakenStat();
+        if (f.Length < at + 3
+            || !int.TryParse(f[at], NumberStyles.Integer, inv, out t.Hits) || t.Hits <= 0
+            || !double.TryParse(f[at + 1], NumberStyles.Float, inv, out t.Avg)
+            || !double.TryParse(f[at + 2], NumberStyles.Float, inv, out t.Max))
+            return false;
+        return true;
+    }
+
+    private static string ShieldKeyText((bool Shield, HitFacing Facing) k) => (k.Shield ? "1|" : "0|") + ShieldFacing.Word(k.Facing);
+
+    /// <summary>The TS/ATS rows in a stable order: shield first, then front, behind, unknown.</summary>
+    private static List<KeyValuePair<(bool Shield, HitFacing Facing), TakenStat>> ShieldRowsInOrder(
+        Dictionary<(bool Shield, HitFacing Facing), TakenStat> d)
+    {
+        var list = new List<KeyValuePair<(bool Shield, HitFacing Facing), TakenStat>>(d);
+        list.Sort((a, b) => a.Key.Shield != b.Key.Shield ? (a.Key.Shield ? -1 : 1) : FacingOrder(a.Key.Facing).CompareTo(FacingOrder(b.Key.Facing)));
+        return list;
+    }
+
+    private static int FacingOrder(HitFacing f) => f switch { HitFacing.Front => 0, HitFacing.Behind => 1, _ => 2 };
 
     /// <summary>The tier rows of the file (empty when there are none). Caller holds _lock.</summary>
     private void AppendTierRows(StringBuilder sb)
     {
         if (_byTier.Count == 0) return;
-        sb.Append("# Aelrynth difficulty tiers above 0 (awakened worlds, scaled copies); tier 0 is the rows above:\n");
+        sb.Append("# Above tier 0: the server's difficulty tiers (scaled worlds, copies); tier 0 is the rows above:\n");
         sb.Append("# AH|tier|wcid|name|hpToKill|samples\n");
         sb.Append("# AD|tier|wcid|name|weaponId|element|spellTier|avgCastsToKill|killSamples\n");
         sb.Append("# AU|tier|wcid|name|weaponId|hits|misses|secToKillAvg|secSamples\n");
         sb.Append("# APK|tier|wcid|name|summonElement|kills|secToKillAvg\n");
         sb.Append("# AT|tier|wcid|name|element|hitsTaken|avgDamageTaken|maxDamageTaken\n");
+        sb.Append("# ATS|tier|wcid|name|shield|facing|hitsTaken|avgDamageTaken|maxDamageTaken   (as TS)\n");
         var keys = new List<(uint Wcid, int Difficulty)>(_byTier.Keys);
         keys.Sort((a, b) => a.Difficulty != b.Difficulty ? a.Difficulty.CompareTo(b.Difficulty) : a.Wcid.CompareTo(b.Wcid));
         foreach (var key in keys)
@@ -438,6 +524,9 @@ internal sealed class MonsterDamageStore
             foreach (var t in tp.Taken)
                 sb.Append("AT|").Append(head).Append('|').Append(t.Key).Append('|')
                   .Append(t.Value.Hits).Append('|').Append(Num(t.Value.Avg)).Append('|').Append(Num(t.Value.Max)).Append('\n');
+            foreach (var s in ShieldRowsInOrder(tp.ShieldTaken))
+                sb.Append("ATS|").Append(head).Append('|').Append(ShieldKeyText(s.Key)).Append('|')
+                  .Append(s.Value.Hits).Append('|').Append(Num(s.Value.Avg)).Append('|').Append(Num(s.Value.Max)).Append('\n');
         }
     }
 
@@ -464,6 +553,9 @@ internal sealed class MonsterDamageStore
                 sb.Append("# U|wcid|name|weaponId|hits|misses|secToKillAvg|secSamples   (accuracy and fight length per weapon)\n");
                 sb.Append("# PK|wcid|name|summonElement (none = no summon)|kills|secToKillAvg\n");
                 sb.Append("# T|wcid|name|element|hitsTaken|avgDamageTaken|maxDamageTaken\n");
+                sb.Append("# TS|wcid|name|shield|facing|hitsTaken|avgDamageTaken|maxDamageTaken   (damage taken by shield and facing:\n");
+                sb.Append("#   shield 1 = a shield in the off hand in a combat stance, 0 = none; facing front = the attacker within\n");
+                sb.Append("#   90 deg of your facing (ACE counts the shield), behind = outside it, unknown = not measurable; avg = mean)\n");
                 if (_defaultWeapon != 0)
                     sb.Append("DEF|").Append(_defaultWeapon).Append('\n');
                 foreach (var kv in _byWcid)
@@ -496,6 +588,9 @@ internal sealed class MonsterDamageStore
                     foreach (var t in p.Taken)
                         sb.Append("T|").Append(kv.Key).Append('|').Append(name).Append('|').Append(t.Key).Append('|')
                           .Append(t.Value.Hits).Append('|').Append(Num(t.Value.Avg)).Append('|').Append(Num(t.Value.Max)).Append('\n');
+                    foreach (var s in ShieldRowsInOrder(p.ShieldTaken))
+                        sb.Append("TS|").Append(kv.Key).Append('|').Append(name).Append('|').Append(ShieldKeyText(s.Key)).Append('|')
+                          .Append(s.Value.Hits).Append('|').Append(Num(s.Value.Avg)).Append('|').Append(Num(s.Value.Max)).Append('\n');
                     foreach (var c in p.Casts)
                     {
                         string[] kp = c.Key.Split('|'); // weaponId|element|tier
@@ -529,7 +624,7 @@ internal sealed class MonsterDamageStore
     /// </summary>
     public void RecordHit(uint weaponId, uint wcid, string name, string element, int tier, double damage, bool crit)
     {
-        if (wcid == 0 || damage <= 0) return;
+        if (NotMonster(wcid) || damage <= 0) return;
         int d = Difficulty;
         lock (_lock)
         {
@@ -561,7 +656,7 @@ internal sealed class MonsterDamageStore
     /// </summary>
     public void RecordKill(uint weaponId, uint wcid, string name, string element, int tier, int castCount, double totalDamage)
     {
-        if (wcid == 0) return;
+        if (NotMonster(wcid)) return;
         int d = Difficulty;
         lock (_lock)
         {
@@ -607,7 +702,7 @@ internal sealed class MonsterDamageStore
     /// <summary>An attack or cast that did nothing: evaded, or the spell was resisted.</summary>
     public void RecordMiss(uint weaponId, uint wcid, string name)
     {
-        if (wcid == 0 || weaponId == 0) return;
+        if (NotMonster(wcid) || weaponId == 0) return;
         int d = Difficulty;
         lock (_lock)
         {
@@ -623,7 +718,7 @@ internal sealed class MonsterDamageStore
     /// </summary>
     public void RecordFightTime(uint weaponId, uint wcid, string name, double seconds, string? summonElement)
     {
-        if (wcid == 0 || seconds <= 0 || seconds > 600) return;
+        if (NotMonster(wcid) || seconds <= 0 || seconds > 600) return;
         int d = Difficulty;
         lock (_lock)
         {
@@ -650,7 +745,7 @@ internal sealed class MonsterDamageStore
     /// <summary>The monster hit us for <paramref name="damage"/> of <paramref name="element"/>.</summary>
     public void RecordTaken(uint wcid, string name, string element, double damage)
     {
-        if (wcid == 0 || damage <= 0) return;
+        if (NotMonster(wcid) || damage <= 0) return;
         int d = Difficulty;
         lock (_lock)
         {
@@ -663,6 +758,46 @@ internal sealed class MonsterDamageStore
             if (damage > t.Max) t.Max = damage;
             _dirty = true;
         }
+    }
+
+    /// <summary>
+    /// The same hit as <see cref="RecordTaken"/>, split by whether a shield counted
+    /// (<paramref name="shield"/>: one in the off hand in a combat stance) and where the attacker
+    /// stood (<paramref name="facing"/>). The average is the mean of every hit, so the cells add up.
+    /// </summary>
+    public void RecordTakenSplit(uint wcid, string name, bool shield, HitFacing facing, double damage)
+    {
+        if (NotMonster(wcid) || damage <= 0 || !double.IsFinite(damage)) return;
+        int d = Difficulty;
+        lock (_lock)
+        {
+            SetNameLocked(wcid, name);
+            var split = d > 0 ? Tier(wcid, d).ShieldTaken : Get(wcid).ShieldTaken;   // monster damage scales
+            var key = (shield, facing);
+            if (!split.TryGetValue(key, out var t)) split[key] = t = new TakenStat();
+            t.Hits++;
+            t.Avg += (damage - t.Avg) / t.Hits;
+            if (damage > t.Max) t.Max = damage;
+            _dirty = true;
+        }
+    }
+
+    public readonly record struct ShieldTakenRow(bool Shield, HitFacing Facing, int Hits, double Avg, double Max);
+
+    /// <summary>Damage taken by shield and facing at one difficulty tier (0 = real Dereth); shield first, then front, behind, unknown.</summary>
+    public List<ShieldTakenRow> GetShieldTaken(uint wcid, int difficulty)
+    {
+        var list = new List<ShieldTakenRow>();
+        lock (_lock)
+        {
+            Dictionary<(bool Shield, HitFacing Facing), TakenStat>? d = null;
+            if (difficulty > 0) { if (_byTier.TryGetValue((wcid, difficulty), out var tp)) d = tp.ShieldTaken; }
+            else if (_byWcid.TryGetValue(wcid, out var p)) d = p.ShieldTaken;
+            if (d != null)
+                foreach (var kv in ShieldRowsInOrder(d))
+                    list.Add(new ShieldTakenRow(kv.Key.Shield, kv.Key.Facing, kv.Value.Hits, kv.Value.Avg, kv.Value.Max));
+        }
+        return list;
     }
 
     /// <summary>Seconds per kill over every timed fight with this monster (kills-weighted), and hit rate
@@ -745,7 +880,7 @@ internal sealed class MonsterDamageStore
         return tp;
     }
 
-    /// <summary>The difficulty tiers above 0 with anything learned, ascending (empty off Aelrynth).</summary>
+    /// <summary>The difficulty tiers above 0 with anything learned, ascending (empty on a server without tiers).</summary>
     public List<int> KnownDifficulties()
     {
         var set = new SortedSet<int>();
@@ -758,7 +893,7 @@ internal sealed class MonsterDamageStore
     /// collapsed row shows the LATEST tier used. In-memory only (not persisted) — resets per session.</summary>
     public void NoteCast(uint wcid, int tier, string? name = null)
     {
-        if (wcid == 0) return;
+        if (NotMonster(wcid)) return;
         lock (_lock)
         {
             var p = Get(wcid);
@@ -859,7 +994,7 @@ internal sealed class MonsterDamageStore
     /// <summary>Set (or clear, with hp &lt;= 0) the manual HP override for a wcid. Persists on next save.</summary>
     public void SetManualHp(uint wcid, double hp, string? name = null)
     {
-        if (wcid == 0) return;
+        if (NotMonster(wcid)) return;
         lock (_lock)
         {
             var p = Get(wcid);
@@ -880,7 +1015,7 @@ internal sealed class MonsterDamageStore
     /// <summary>Set (0 clears) the per-monster weapon override. Persists on next save.</summary>
     public void SetManualWeapon(uint wcid, uint weaponId, string? name = null)
     {
-        if (wcid == 0) return;
+        if (NotMonster(wcid)) return;
         lock (_lock)
         {
             var p = Get(wcid);
@@ -901,7 +1036,7 @@ internal sealed class MonsterDamageStore
     /// <summary>Set ("" = Auto) the per-monster pet choice. Persists on next save.</summary>
     public void SetManualPet(uint wcid, string choice, string? name = null)
     {
-        if (wcid == 0) return;
+        if (NotMonster(wcid)) return;
         lock (_lock)
         {
             var p = Get(wcid);
@@ -922,7 +1057,7 @@ internal sealed class MonsterDamageStore
     /// <summary>Set (0 clears) the per-monster offhand override. Persists on next save.</summary>
     public void SetManualOffhand(uint wcid, uint offhandId, string? name = null)
     {
-        if (wcid == 0) return;
+        if (NotMonster(wcid)) return;
         lock (_lock)
         {
             var p = Get(wcid);
@@ -1070,7 +1205,7 @@ internal sealed class MonsterDamageStore
             {
                 if (!anyTier && p.Casts.Count == 0 && p.HpSamples == 0 && p.HpManual <= 0 && p.HpPool <= 0
                     && p.WeaponManual == 0 && p.OffhandManual == 0 && p.PetManual.Length == 0
-                    && p.Weapons.Count == 0 && p.Pets.Count == 0 && p.Taken.Count == 0)
+                    && p.Weapons.Count == 0 && p.Pets.Count == 0 && p.Taken.Count == 0 && p.ShieldTaken.Count == 0)
                     _byWcid.Remove(wcid);
                 _dirty = true;
             }
@@ -1110,6 +1245,7 @@ internal sealed class MonsterDamageStore
                 p.Weapons.Clear();
                 p.Pets.Clear();
                 p.Taken.Clear();
+                p.ShieldTaken.Clear();
                 foreach (var c in p.Casts.Values)
                 {
                     c.Avg = 0; c.Samples = 0;

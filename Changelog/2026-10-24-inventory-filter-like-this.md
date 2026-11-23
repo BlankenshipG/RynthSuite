@@ -1,0 +1,65 @@
+# Filter like this (Inventory panel) and /ginv like (Global Inventory)
+
+Pairs with RynthCore's Inventory right-click "Filter inventory like this..." and "Find like this
+in Global Inventory...", which reuse the Add to loot profile checklist to build a filter.
+
+## LootSdk
+
+- `LootEditWire`: request `Find`, `Scope` (`LootFindScopes`), `Candidates`; draft `Find`;
+  state `ItemFind` (`LootEditItemFind`: matches, unknown, conditions, spec).
+- `Editing/LootFindSpec.cs` (new): the rule's conditions as one base64url word for `/ginv like`.
+- `Editing/LootFactsMatcher.cs` (new): judges conditions on saved `LootItemFacts` (class, name,
+  long/double keys incl. T11 virtual keys, rating total, spells), with Unknown for unidentified
+  items when a condition needs an identify.
+- `AcItemClassifier.cs` (new): RynthAi's ItemType classification (scroll and weapon-slot
+  corrections) for plugins without an object cache.
+
+## RynthAi
+
+- `LootEditorBridge`: item_preview with Find builds the checklist draft without a loot profile;
+  item_find judges the panel's items (scope inventory) or returns the spec (scope global);
+  find_refresh re-judges with the same rule and only bumps the state when the result changed;
+  find_close drops it.
+- `LootItemHooks.Judge` (RynthAiCommands): `VTankLootEvaluator.Match` per item; not-yet-identified
+  misses count as unknown.
+
+## RynthInventory 0.1.5
+
+- Items are saved with their class, the checklist's int/float properties and T11 virtual keys
+  (`class`, `ints`, `floats` in the file; older files still read).
+- `/ginv like <spec>` opens the search page filtered by the rule (bar with the conditions and
+  Clear filter; a count of items it can't judge). `/ginv like clear` removes it.
+- Items saved by 0.1.4 or older, or not identified when saved, can only be judged on public data
+  until their character is scanned again.
+
+## Tests
+
+- RynthInventory.Tests: "like filter: spec, facts, matcher, query".
+
+## Follow-up: checklist filters and spell lists
+
+- **The Inventory panel's filter button** (the list-check icon in the tools row) now opens the
+  same checklist popup with no item: every attribute a loot rule can test, unticked, with a
+  value to fill in (named values such as material, skill, slayer, class pick from a list).
+  Filter judges your items the same way as "Filter inventory like this". The old rule list
+  editor no longer hides items (its saved rules are left in the settings file).
+- **Global Inventory** gets the same checklist ("Attribute filter +" next to the search box):
+  one group open at a time, a ticked row shows its comparison and value; the search filters
+  every character's saved items as you tick.
+- **Spell lists** in every checklist (Add to loot profile, both filters, Global Inventory):
+  - Add spell: Creature, Life or Item, a family from the spell table (buffs only: no debuffs,
+    war or void), a level I to VIII; "or better" by default (exact / any tier in its row).
+    Levels VII and VIII have their own names ("Might of the Lugians", "Incantation of Strength
+    Self"), so the rule lists the family's spells by name; Self and Other both count.
+  - Add cantrip: Minor, Major, Epic, Legendary or Paragon and a cantrip name.
+  - Cantrip "or better" and the tier counts now include Paragon ("Paragon" or "Paragon's").
+- Named values on an item's rows (material, wield skill...) can be changed from a list.
+
+## Follow-up: full attributes in Global Inventory's details
+
+- Selecting an item in Global Inventory now also lists every attribute it was saved with,
+  grouped like the checklists: class; item (material, workmanship, value, burden, spellcraft,
+  mana, set, imbue, slayer...); weapon / armor (skills, damage, variance, modifiers, slots,
+  armor level); ratings (and their total); pet essence; T11 (tier, grades, damage %, every
+  modifier, Cast on Strike); requirements. The details pane is a little taller.
+- Items saved by RynthInventory 0.1.4 or older say so; their character's next scan saves them.

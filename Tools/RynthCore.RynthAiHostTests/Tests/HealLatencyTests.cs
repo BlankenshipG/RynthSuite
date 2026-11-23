@@ -184,6 +184,9 @@ internal static class HealLatencyTests
     {
         var r = new Rig(healthPct: 40, manaPct: 2);
         r.S.GetManaAt = 50; r.S.TopOffMana = 50;
+        // Mana Conversion untrained: the rests below. Trained, a recovery vital retries in 200 ms
+        // instead (RecoveryRetryTests).
+        FakeHost.Skills[(Player, 16)] = (10, 1);
         Check.True(r.B.CheckVitals(), "40% health: Heal Self is cast");
         Check.Eq(HealSelfCasts(), 1, "one Heal Self");
         r.B.OnChatWindowText("You don't have enough Mana to cast this spell.", 0);
@@ -194,7 +197,9 @@ internal static class HealLatencyTests
         Check.Eq(FakeHost.Casts.Count, 2, "...but Stamina to Mana, so the mana comes back");
         Check.Eq(r.B.BuffingLabel, "Restoring mana", "and the slot reads Restoring mana");
         r.B.OnChatWindowText("You don't have enough Mana to cast this spell.", 0);
-        Check.True(r.Logged("not enough mana; resting the family 15s"), "a non-heal still rests 15 s");
+        // Stamina to Mana is a vital too (the mana reserve, 2026-10-11): 2 s, not the 15 s a buff rests.
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("not enough mana; resting the family 2s", StringComparison.Ordinal)), 2,
+                 "Stamina to Mana rests 2 s as well, not 15 s");
         System.Threading.Thread.Sleep(2100);
         r.V.CurrentMana = 60;
         Check.True(r.B.CheckVitals(), "2 s later, mana back");

@@ -65,6 +65,28 @@ internal static class Entrance
     }
 
     /// <summary>
+    /// A portal on the map that leads into landblock <paramref name="lb"/> (a dungeon): the nearest open one,
+    /// one that needs no quest first when there is a choice; never a destroyed one. Null when none does.
+    /// </summary>
+    public static AtlasLocation? PortalInto(Atlas atlas, uint lb, bool hasPos, double ns, double ew)
+    {
+        AtlasLocation? best = null;
+        double bestD = double.MaxValue;
+        bool bestQuest = true;
+        foreach (AtlasLocation l in atlas.Locations)
+        {
+            if (!l.OnMap || l.Closed || !l.HasDest || l.DestOnMap) continue;
+            if (!l.Type.Equals("Portal", StringComparison.Ordinal) || IsDestroyed(l.Name)) continue;
+            if (!Atlas.TryCell(l.DestCell, out uint dc) || dc >> 16 != lb) continue;
+            double d = hasPos ? NavCoords.Distance(ns, ew, l.Ns, l.Ew) : 0;
+            bool better = best == null || (bestQuest && !l.Quest) || (bestQuest == l.Quest && d < bestD);
+            if (!better) continue;
+            best = l; bestD = d; bestQuest = l.Quest;
+        }
+        return best;
+    }
+
+    /// <summary>
     /// The route, ending with walking into the portal at (<paramref name="ns"/>, <paramref name="ew"/>):
     /// a plain walk becomes one portal step; a route (portals, recalls) whose last leg walks there
     /// gets that leg turned into a portal step.

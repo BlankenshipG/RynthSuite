@@ -3,6 +3,7 @@ using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi;
 
@@ -253,6 +254,13 @@ internal sealed class NavMarkerRenderer
         int n = route.Points.Count;
         bool circular = route.RouteType == NavRouteType.Circular;
 
+        // ── Waypoint labels and guide line (both off by default) ─────
+        // Worked out from the route here, on the plugin tick, into an immutable frame; the
+        // emit steps read only that frame. The guide goes in first so the route's lines can't
+        // crowd it out of the engine's line buffer; the labels go in last (pass 4).
+        NavOverlayFrame overlay = BuildOverlay(route, px, py, pz, playerNS, playerEW, heightOffset);
+        NavOverlay.EmitGuide(overlay, _sink ??= new HostNav3DSink(_host), lineThick);
+
         // ── Pass 1: Submit rings ─────────────────────────────────────
         // Arrays are indexed by window slot k (0..count), not absolute route
         // index — the absolute index can run far past count on a long route.
@@ -343,6 +351,68 @@ internal sealed class NavMarkerRenderer
             _host.Nav3DAddRing(pwx, pwy, pwz, ringRadius, ringThick * 1.4f, ColorPortal3D);
             _host.Nav3DAddLine(px, pwy, py, pwx, pwy, pwz, lineThick, ColorPortal3D);
         }
+
+        // ── Pass 4: waypoint labels (filled strokes, Nav3D triangles) ─
+        if (overlay.Labels.Count > 0 && _host.HasNav3DTriangle)
+            NavOverlay.EmitLabels(overlay, _sink);
+    }
+
+    // ── Labels and guide line ────────────────────────────────────────
+    private NavOverlay.RouteText? _labelText;
+    private INav3DSink? _sink;
+
+    /// <summary>
+    /// The tick's labels and guide line from the route and the two settings (Navigation ▸
+    /// Waypoint Labels / Guide Line). Plugin tick only; returns an immutable frame.
+    /// </summary>
+    internal NavOverlayFrame BuildOverlay(NavRouteParser route, float px, float py, float pz,
+        double playerNS, double playerEW, float heightOffset)
+    {
+        int mode = NavLabelModes.Clamp(_settings.NavLabelMode);
+        bool guideOn = _settings.NavGuideLine;
+        if (mode == NavLabelModes.Off && !guideOn)
+        {
+            _labelText = null;
+            return NavOverlayFrame.Empty;
+        }
+
+        var points = route.Points;
+        int n = points.Count;
+        NavOverlay.RouteText? text = null;
+        if (mode != NavLabelModes.Off)
+        {
+            // Rebuilt only when the route, its length or the mode change (an edit in place keeps
+            // the count: the Nav panel's edits replace the route or change its length).
+            text = _labelText;
+            if (text == null || !ReferenceEquals(text.Route, route) || text.Count != n || text.Mode != mode)
+                _labelText = text = NavOverlay.BuildText(route, points, mode, SpellDatabase.GetSpellNameOrId);
+        }
+        else _labelText = null;
+
+        int active = _settings.ActiveNavIndex;
+        bool guide = guideOn && active >= 0 && active < n && HasGroundCoords(points[active].Type);
+
+        (float X, float Y, float Z) WorldOf(int i)
+        {
+            var pt = points[i];
+            return (px + (float)((pt.EW - playerEW) * 240.0),
+                    ResolveMarkerWorldY(route, i, heightOffset),
+                    py + (float)((pt.NS - playerNS) * 240.0));
+        }
+
+        // D3D frame: X = EW, Y = height, Z = NS; the player's height is pose z.
+        return NavOverlay.BuildFrame(text, guide, active, WorldOf, px, pz, py, heightOffset);
+    }
+
+    /// <summary>The engine's Nav3D buffer.</summary>
+    private sealed class HostNav3DSink : INav3DSink
+    {
+        private readonly RynthCoreHost _host;
+        public HostNav3DSink(RynthCoreHost host) => _host = host;
+        public void Line(float x1, float y1, float z1, float x2, float y2, float z2, float thickness, uint colorArgb)
+            => _host.Nav3DAddLine(x1, y1, z1, x2, y2, z2, thickness, colorArgb);
+        public void Triangle(float x1, float y1, float z1, float x2, float y2, float z2, float x3, float y3, float z3, uint colorArgb)
+            => _host.Nav3DAddTriangle(x1, y1, z1, x2, y2, z2, x3, y3, z3, colorArgb);
     }
 
     private void PrepareFloorCache(NavRouteParser route)

@@ -49,6 +49,12 @@ public sealed class T11PlayerAugs
         }
     }
 
+    /// <summary>Forgets one counter (it reads as unknown again).</summary>
+    public void Forget(T11Counter counter)
+    {
+        lock (_gate) _counts.Remove(counter);
+    }
+
     /// <summary>Forgets the "/aug" counts (logout). The manual override is kept.</summary>
     public void Clear()
     {

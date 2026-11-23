@@ -39,10 +39,16 @@ internal static partial class Program
         Run(nameof(RecallListColdSpellbook), RecallListColdSpellbook);
         Run(nameof(RecallMemoryRoundTrip), RecallMemoryRoundTrip);
         Run(nameof(RecallMessages), RecallMessages);
+        Run(nameof(HandCastOnALifestone), HandCastOnALifestone);
+        Run(nameof(HandCastPortalTie), HandCastPortalTie);
+        Run(nameof(RecallNotLinked), RecallNotLinked);
+        Run(nameof(DungeonLandblocksFromTheAtlas), DungeonLandblocksFromTheAtlas);
         Run(nameof(AtlasSearchAndBestMatch), AtlasSearchAndBestMatch);
+        Run(nameof(AtlasRecallPlaces), AtlasRecallPlaces);
         Run(nameof(ArrowSingleTarget), ArrowSingleTarget);
         Run(nameof(ArrowAlongRoute), ArrowAlongRoute);
         Run(nameof(FavoritesAndRecent), FavoritesAndRecent);
+        Run(nameof(CommandReplies), CommandReplies);
         Run(nameof(CoordinateParsing), CoordinateParsing);
         Run(nameof(BearingAndDistance), BearingAndDistance);
         Run(nameof(RealData), RealData);
@@ -50,9 +56,16 @@ internal static partial class Program
         Run(nameof(DungeonEntrance), DungeonEntrance);
         Run(nameof(RouteEndsOnAPortalStep), RouteEndsOnAPortalStep);
         Run(nameof(RealDungeonEntrances), RealDungeonEntrances);
+        Run(nameof(PeopleInsideDungeons), PeopleInsideDungeons);
         RunTownNet();
         RunAvoid();
         RunTravelPlan();
+        RunCustomPortals();
+        RunTripExport();
+        RunAutoRunGate();
+        RunRouteMaker();
+        RunSteering();
+        RunWallStuck();
 
         Console.WriteLine();
         Console.WriteLine(_fails == 0 && _asserts > 0
@@ -248,9 +261,161 @@ internal static partial class Program
         Check(RecallMemory.Classify("", "Tom") == RecallEvent.None, "empty");
         Check(RecallMemory.SlotFor(RecallEvent.RecallingHome, out var slot) && slot == RecallSlot.House, "house slot");
         Check(!RecallMemory.SlotFor(RecallEvent.RecallingMarketplace, out _), "marketplace has no slot");
+        // Your spell words (Spellcasting, 17) start a hand cast; the same words typed in local chat don't.
+        Check(RecallMemory.Classify("You say, \"Zojak Ququ\"", "Tom", RecallMemory.ChatTypeSpellcasting) == RecallEvent.OwnSpellWords, "own spell words");
+        Check(RecallMemory.Classify("You say, \"Zojak Ququ\"", "Tom", 2) == RecallEvent.None, "typed in local chat");
+        Check(RecallMemory.Classify("You say, \"Zojak Ququ\"", "Tom") == RecallEvent.None, "chat type unknown");
+        Check(RecallMemory.Classify("Ann says, \"Zojak Ququ\"", "Tom", RecallMemory.ChatTypeSpellcasting) == RecallEvent.None, "someone else casting");
+    }
+
+    // ── A recall cast by hand: which one, from where it landed ───────────────
+
+    private const string Me = "Aelrynth|Tom";
+
+    private static RecallSpot At(double ns, double ew, string label = "") => new() { OnMap = true, Ns = ns, Ew = ew, Label = label };
+
+    private static void HandCastOnALifestone()
+    {
+        var mem = new RecallMemory();
+        var known = new HashSet<int> { RecallPlanner.LifestoneRecall, RecallPlanner.PrimaryPortalTieRecall };
+        var k = RecallPlanner.GuessHandCast(At(42.1, 33.6), atLifestone: true, known, mem, Me, 30, out var slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Lifestone, "on a lifestone: Lifestone Recall");
+
+        mem.Set(Me, RecallSlot.Lifestone, At(42.1, 33.6));
+        k = RecallPlanner.GuessHandCast(At(42.11, 33.6), true, known, mem, Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "the same lifestone again: nothing new");
+        k = RecallPlanner.GuessHandCast(At(-30.0, 70.0), true, known, mem, Me, 30, out slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Lifestone, "tied somewhere else since: learned again");
+
+        k = RecallPlanner.GuessHandCast(At(42.1, 33.6), true, new HashSet<int> { RecallPlanner.PrimaryPortalTieRecall }, new RecallMemory(), Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "no Lifestone Recall in the spellbook: not it");
+
+        // On the @lifestone lifestone with Recall the Sanctuary known: either spell, can't tell.
+        var mem2 = new RecallMemory();
+        mem2.Set(Me, RecallSlot.Sanctuary, At(42.1, 33.6));
+        var known2 = new HashSet<int> { RecallPlanner.LifestoneRecall, RecallPlanner.RecallTheSanctuary };
+        k = RecallPlanner.GuessHandCast(At(42.1, 33.6), true, known2, mem2, Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "Recall the Sanctuary could land there too");
+        k = RecallPlanner.GuessHandCast(At(10, 10), true, null, mem2, Me, 30, out _, out var why);
+        Check(k == RecallPlanner.HandCast.Nothing && why.Contains("spellbook"), "a cold spellbook teaches nothing");
+    }
+
+    private static void HandCastPortalTie()
+    {
+        var oneTie = new HashSet<int> { RecallPlanner.SecondaryPortalTieRecall };
+        var k = RecallPlanner.GuessHandCast(At(-33.5, 72.8), false, oneTie, new RecallMemory(), Me, 30, out var slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Tie2, "the only tie recall known");
+
+        var both = new HashSet<int> { RecallPlanner.PrimaryPortalTieRecall, RecallPlanner.SecondaryPortalTieRecall };
+        k = RecallPlanner.GuessHandCast(At(-33.5, 72.8), false, both, new RecallMemory(), Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.AskTie, "both tie recalls known: ask which");
+
+        var mem = new RecallMemory();
+        mem.Set(Me, RecallSlot.Tie1, At(-33.5, 72.8));
+        k = RecallPlanner.GuessHandCast(At(-33.51, 72.8), false, both, mem, Me, 30, out slot, out _);
+        Check(k == RecallPlanner.HandCast.Nothing && slot == RecallSlot.Tie1, "a known tie's landing: nothing new");
+
+        // Portal Recall: lands where the last portal went (known: nothing; unknown: ask).
+        var withPortalRecall = new HashSet<int> { RecallPlanner.PrimaryPortalTieRecall, RecallPlanner.PortalRecall };
+        var mem2 = new RecallMemory();
+        mem2.Set(Me, RecallSlot.LastPortal, At(12, 34));
+        k = RecallPlanner.GuessHandCast(At(12, 34), false, withPortalRecall, mem2, Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "the last portal's landing: Portal Recall");
+        k = RecallPlanner.GuessHandCast(At(-33.5, 72.8), false, withPortalRecall, mem2, Me, 30, out slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Tie1, "elsewhere, last portal known: the one tie");
+        k = RecallPlanner.GuessHandCast(At(-33.5, 72.8), false, withPortalRecall, new RecallMemory(), Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.AskTie, "last portal unknown: could be Portal Recall, ask");
+
+        k = RecallPlanner.GuessHandCast(At(1, 1), false, new HashSet<int> { RecallPlanner.LifestoneRecall }, new RecallMemory(), Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "off a lifestone with no tie recall: not one RynthNav knows");
+
+        // A dungeon landing (off the map) is learned too, and matched by its label.
+        var dungeon = new RecallSpot { OnMap = false, Label = "a dungeon (landblock 6145)" };
+        k = RecallPlanner.GuessHandCast(dungeon, false, oneTie, new RecallMemory(), Me, 30, out slot, out _);
+        Check(k == RecallPlanner.HandCast.Learn && slot == RecallSlot.Tie2, "a tie into a dungeon");
+        var mem3 = new RecallMemory();
+        mem3.Set(Me, RecallSlot.Tie2, new RecallSpot { OnMap = false, Label = "a dungeon (landblock 6145)" });
+        k = RecallPlanner.GuessHandCast(dungeon, false, oneTie, mem3, Me, 30, out _, out _);
+        Check(k == RecallPlanner.HandCast.Nothing, "the same dungeon again: nothing new");
+
+        // Once learned, the planner uses it.
+        var plannerMem = new RecallMemory();
+        plannerMem.Set(Me, RecallSlot.Tie2, At(-33.5, 72.8, "Shoushi"));
+        var list = RecallPlanner.Build(Atlas.Empty, oneTie, plannerMem, Me, new List<string>());
+        Check(list.Exists(o => o.SpellId == RecallPlanner.SecondaryPortalTieRecall && Math.Abs(o.Ns + 33.5) < 1e-9), "the learned tie is planned");
+    }
+
+    private static void DungeonLandblocksFromTheAtlas()
+    {
+        // A dungeon landblock's tile is its surface (dungeon cells aren't baked): the walk must
+        // know it's in one. Dungeon places and dungeon portal destinations count; a landblock
+        // with places on the map (a town, its cellars) never does.
+        Atlas atlas = Atlas.Parse(@"{""locations"":[
+            {""name"":""Surface"",""type"":""Portal"",""cell"":""000102C8"",""place"":""dungeon"",""dest"":{""cell"":""26E5001D"",""place"":""outdoor"",""ns"":81.68,""ew"":-71.16}},
+            {""name"":""Holtburg Dungeon Portal"",""type"":""Portal"",""cell"":""A9B40021"",""place"":""outdoor"",""ns"":42.0,""ew"":33.0,""dest"":{""cell"":""01F60230"",""place"":""dungeon""}},
+            {""name"":""Shoushi"",""type"":""Town"",""cell"":""DA55001D"",""place"":""outdoor"",""ns"":-33.5,""ew"":72.8},
+            {""name"":""Cellar Vendor"",""type"":""Vendor"",""cell"":""DA550105"",""place"":""dungeon""},
+            {""name"":""Odd"",""type"":""Landmark"",""cell"":""zz"",""place"":""dungeon""}
+        ]}");
+        HashSet<uint> d = atlas.DungeonLandblocks();
+        Check(d.Contains(0x0001), "a dungeon place's landblock");
+        Check(d.Contains(0x01F6), "a portal's dungeon destination");
+        Check(!d.Contains(0x26E5) && !d.Contains(0xA9B4), "outdoor landblocks aren't dungeons");
+        Check(!d.Contains(0xDA55), "a town landblock with a dungeon cell isn't one");
+        Check(d.Count == 2, "nothing else (a bad cell is skipped)");
+    }
+
+    private static void RecallNotLinked()
+    {
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkLifestone, 0) == RecallSlot.Lifestone, "no lifestone tie: Lifestone Recall");
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkPortal, RecallPlanner.PrimaryPortalTieRecall) == RecallSlot.Tie1, "no primary tie");
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkPortal, RecallPlanner.SecondaryPortalTieRecall) == RecallSlot.Tie2, "no secondary tie");
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkPortal, RecallPlanner.PortalRecall) == RecallSlot.LastPortal, "no last portal");
+        Check(RecallPlanner.SlotUnlinked(RecallPlanner.ErrorMustLinkPortal, 0) == null, "a portal recall cast by hand: can't tell which");
+        Check(RecallPlanner.SlotUnlinked(0x0402, RecallPlanner.LifestoneRecall) == null, "a fizzle isn't a missing tie");
+        Check(RecallPlanner.SpellFor(RecallSlot.Tie2) == RecallPlanner.SecondaryPortalTieRecall && RecallPlanner.SpellFor(RecallSlot.House) == 0, "slot spells");
+
+        var mem = new RecallMemory();
+        mem.Set(Me, RecallSlot.Lifestone, At(42.1, 33.6));
+        int v = mem.Version;
+        mem.Clear(Me, RecallSlot.Lifestone);
+        Check(mem.Get(Me, RecallSlot.Lifestone) == null && mem.Version > v, "forgotten (and saved)");
+        var notes = new List<string>();
+        RecallPlanner.Build(Atlas.Empty, new HashSet<int> { RecallPlanner.LifestoneRecall }, mem, Me, notes);
+        Check(notes.Exists(n => n.Contains("Lifestone Recall") && n.Contains("cast Lifestone Recall once")), "the note says how to teach it");
     }
 
     // ── Atlas ────────────────────────────────────────────────────────────────
+
+    // The recalls' landing spots are found by name (2026-10-22, Skippy: "neft" found nothing).
+    private static void AtlasRecallPlaces()
+    {
+        Atlas atlas = Atlas.Parse(@"{""locations"":[
+            {""id"":1,""name"":""Holtburg"",""type"":""Town"",""cell"":""A9B40019"",""place"":""outdoor"",""ns"":42.1,""ew"":33.6}],
+          ""recalls"":[
+            {""spell"":5541,""name"":""Lost City of Neftet Recall"",""cell"":""8763000E"",""place"":""outdoor"",""ns"":-22.21,""ew"":6.22},
+            {""spell"":1635,""name"":""Ulgrim's Recall"",""cell"":""01960118"",""place"":""dungeon""},
+            {""spell"":1636,""name"":""Ulgrim's Recall"",""cell"":""01960118"",""place"":""dungeon""},
+            {""spell"":2479,""name"":""Advance Camp Recall"",""cell"":""027B0200"",""place"":""dungeon"",""in"":""Vile-Smelling Refuse""},
+            {""spell"":0,""name"":""  "",""cell"":""00000000"",""place"":""dungeon""}]}");
+        Check(atlas.Locations.Count == 1, "the recalls stay out of Locations (the route planner's list)");
+        Check(atlas.Recalls.Count == 5, "the recalls themselves unchanged");
+        Check(atlas.RecallPlaces.Count == 3, "three recall places (Ulgrim's twice is one; no name, none)");
+        bool allRecall = true;
+        foreach (var p in atlas.RecallPlaces) allRecall &= p.Type == Atlas.RecallType && p.Id < 0;
+        Check(allRecall, "type Recall, negative ids");
+
+        var hits = atlas.Search("neft", null, 10);
+        Check(hits.Count == 1 && hits[0].Name == "Lost City of Neftet Recall", "\"neft\" finds Lost City of Neftet Recall");
+        Check(hits.Count == 1 && hits[0].OnMap && Math.Abs(hits[0].Ns + 22.21) < 1e-9 && Math.Abs(hits[0].Ew - 6.22) < 1e-9, "at 22.21S, 6.22E");
+        var best = atlas.FindBest("neftet", false, 0, 0);
+        Check(best != null && best.Type == Atlas.RecallType, "/rnav go neftet resolves to it");
+        Check(atlas.FindBest("ulgrim", false, 0, 0) == null, "a dungeon recall is no arrow target");
+        var camp = atlas.Search("advance camp", null, 10);
+        Check(camp.Count == 1 && camp[0].Desc == "in Vile-Smelling Refuse", "a dungeon recall says where it is");
+        Check(atlas.Search("", Atlas.RecallType, 50).Count == 3, "the Recall type filter");
+        Check(atlas.Search("holtburg", null, 10).Count == 1, "other searches unchanged");
+    }
 
     private static void AtlasSearchAndBestMatch()
     {
@@ -272,6 +437,15 @@ internal static partial class Program
         Check(hits.Count == 4 && hits[0].Type == "Town", "search: exact names first, town first");
         Check(atlas.Search("glimmering cave", null, 50).Count == 1, "case-insensitive");
         Check(atlas.Search("cave glimmering", null, 50).Count == 1, "every word, any order");
+
+        // "a || b || c" (Oracle's Dynamic Stamps): the first candidate on the map, whole words only.
+        Check(atlas.FirstOnMap("8.8S, 53.1E || Holtburg", false, 0, 0) == "8.8S, 53.1E", "coordinates first");
+        Check(atlas.FirstOnMap("Nowhere Keep || Holtburg || Glimmering Cave", false, 0, 0) == "Holtburg", "the first place on the map");
+        Check(atlas.FirstOnMap("Cave Hermit || Holtburg", false, 0, 0) == "Holtburg", "a place with no map position is skipped");
+        Check(atlas.FirstOnMap("olt || Holtburg", false, 0, 0) == "Holtburg", "inside a word ('olt' in Holtburg) doesn't count");
+        Check(atlas.FirstOnMap("zzz || qqq", false, 0, 0) == null, "none on the map");
+        Check(atlas.FirstOnMap("  nowhere keep ||  || HOLTBURG  ", false, 0, 0) == "HOLTBURG", "extra spaces, empty candidates and case are fine");
+        Check(atlas.FirstOnMap("", false, 0, 0) == null, "no candidates at all");
 
         var p2 = atlas.ById(2)!;
         Check(p2.HasDest && p2.DestOnMap, "portal destination");
@@ -342,6 +516,63 @@ internal static partial class Program
         Check(back.Recent.Count == AtlasStore.MaxRecent && back.Recent[0].Name == "P5", "recent survives in order");
         Near(back.Favorites[0].Ns, 42.08, 1e-9, "coordinates survive");
         Check(back.RemoveFavorite("HOLTBURG") && back.Favorites.Count == 0, "remove by name");
+
+        // Every client saves atlas.txt: a save applies this client's changes to the file on disk
+        // (MergeInto), so another client's favorite survives (2026-11-01).
+        var exp = new SavedPlace { Name = "Abandoned Experiment (Conquest)", Type = "Dungeon", Ns = 42.45, Ew = 56.05 };
+        var yaraq = new SavedPlace { Name = "Yaraq", Type = "Town", Ns = -21.5, Ew = -1.8 };
+        var a = new AtlasStore();          // the client that adds the dungeon
+        a.ToggleFavorite(exp);
+        var disk = AtlasStore.Parse(a.Serialize());
+        a.MergeInto(disk);
+        var b = AtlasStore.Parse(new AtlasStore().Serialize());   // another client, loaded before that save
+        b.Touch(yaraq);
+        b.MergeInto(AtlasStore.Parse(a.Serialize()));
+        Check(b.IsFavorite(exp), "another client's save keeps the favorite it never had");
+        Check(b.Recent.Count == 1 && b.Recent[0].Name == "Yaraq", "and puts its own trip in Recent");
+        var c = AtlasStore.Parse(b.Serialize());
+        c.RemoveFavorite("Abandoned Experiment (Conquest)");
+        c.MergeInto(AtlasStore.Parse(b.Serialize()));
+        Check(!c.IsFavorite(exp), "a removal on one client sticks (the disk copy still had it)");
+        var d = AtlasStore.Parse(b.Serialize());
+        d.ClearRecent();
+        d.MergeInto(AtlasStore.Parse(b.Serialize()));
+        Check(d.Recent.Count == 0 && d.IsFavorite(exp), "Clear recent sticks; favorites stay");
+        var e = new AtlasStore();
+        e.MergeInto(AtlasStore.Parse(b.Serialize()));
+        e.MergeInto(AtlasStore.Parse(e.Serialize()));
+        Check(e.Favorites.Count == 1 && e.Recent.Count == 1, "merging the same file twice adds nothing");
+
+        // Names find favorites, with or without a bracketed tag.
+        Check(b.FindFavorite("abandoned experiment")?.SameAs(exp) == true, "a favorite by its name without the tag");
+        Check(b.FindFavorite("Abandoned Experiment (Conquest)")?.SameAs(exp) == true, "and with it");
+        Check(b.FindFavorite("Abandoned") == null, "not by part of a word");
+        Check(b.FindFavorite("") == null, "nothing for nothing");
+    }
+
+    /// <summary>
+    /// The /rnav words that used to answer nothing (2026-10-28: every command answers): "recent" without
+    /// "clear", "arrive" alone or with a wrong number, an unknown word. The rest of /rnav already
+    /// answered; RunCommand itself needs the game, so its lines are checked here.
+    /// </summary>
+    private static void CommandReplies()
+    {
+        var s = new AtlasStore();
+        Check(NavReplies.Recent(s.Recent).StartsWith("no recent places", StringComparison.Ordinal), "recent: none yet");
+        s.Touch(new SavedPlace { Name = "Holtburg", Ns = 42.08, Ew = 33.6 });
+        s.Touch(new SavedPlace { Name = "Yaraq", Ns = -21.5, Ew = -1.8 });
+        string recent = NavReplies.Recent(s.Recent);
+        Check(recent.Contains("(2): Yaraq, Holtburg") && recent.Contains("/rnav recent clear"), "recent: newest first, and how to clear: " + recent);
+
+        foreach (var (typed, ok) in new[] { ("10", true), ("2", true), ("200", true), ("1", false), ("201", false), ("far", false), ("", false) })
+        {
+            Check(NavReplies.TryArrive(typed, out double yd) == ok, $"arrive '{typed}' {(ok ? "taken" : "refused")}");
+            if (ok) Check(NavReplies.Arrived(yd).Contains($"{yd:F0} yd"), $"arrive {typed}: the new distance");
+            else Check(NavReplies.ArriveUsage(typed, 10).Contains("/rnav arrive <yards 2-200>"), $"arrive '{typed}': the usage");
+        }
+        Check(NavReplies.ArriveUsage("far", 10).StartsWith("'far' isn't 2-200 yd.", StringComparison.Ordinal), "arrive far: says why");
+        Check(NavReplies.ArriveUsage("", 12).Contains("within 12 yd"), "arrive alone: the distance now");
+        Check(NavReplies.Unknown("gogo") == "unknown 'gogo' — /rnav help", "an unknown word");
     }
 
     // ── Coordinates ──────────────────────────────────────────────────────────
@@ -453,6 +684,29 @@ internal static partial class Program
     }
 
     // The real location database: dungeons sit at their entrance portal (outside), not inside.
+    /// <summary>2026-11-11: quest people inside dungeons and the Bur: found by name, with the portal or recall in.</summary>
+    private static void PeopleInsideDungeons()
+    {
+        string locs = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..",
+            "RynthCore", "tools", "navdata", "NavData", "locations.json"));
+        if (!File.Exists(locs)) { Console.WriteLine("     (no generated NavData beside this repo: skipped)"); return; }
+        Atlas atlas = Atlas.Load(locs);
+        AtlasLocation? drogur = atlas.FindInside("Drogur");
+        Check(drogur != null && drogur.Cell == "009C0270", $"Drogur is in the Bur ({drogur?.Cell})");
+        AtlasLocation? torg = atlas.FindInside("Torgluuk");
+        Check(torg != null && torg.Name.StartsWith("Torgluuk, High Shaman", StringComparison.Ordinal), $"a first name finds the whole one ({torg?.Name})");
+        Check(atlas.FindInside("Dro") == null || atlas.FindInside("Dro")!.Name.StartsWith("Dro ", StringComparison.OrdinalIgnoreCase), "part of a word is no match");
+        Check(atlas.FindInside("Kor-Gursha") == null, "a portal is never a place inside");
+        Check(atlas.FindInside("Garaena the Emissary") == null, "someone on the map isn't inside");
+        bool burRecall = false;
+        foreach (AtlasRecall r in atlas.Recalls) if (r.Name == "Bur Recall" && !r.OnMap && r.Cell >> 16 == 0x009C) burRecall = true;
+        Check(burRecall, "Bur Recall lands in the Bur's landblock");
+        Check(Entrance.PortalInto(atlas, 0x009C, false, 0, 0) == null, "no portal on the map goes into the Bur (the recall does)");
+        AtlasLocation? cath = Entrance.PortalInto(atlas, 0x02F8, false, 0, 0);
+        Check(cath != null && cath.OnMap && cath.Name == "Burun Cathedral", $"Burun Cathedral's portal leads into 02F8 ({cath?.Name})");
+        Check(Atlas.TryCell("009C0270", out uint c) && c == 0x009C0270u && !Atlas.TryCell("009C", out _), "cells parse");
+    }
+
     private static void RealDungeonEntrances()
     {
         string locs = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..",

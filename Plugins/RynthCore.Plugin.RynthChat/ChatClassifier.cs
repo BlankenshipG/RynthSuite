@@ -12,10 +12,11 @@ internal static class ChatClassifier
     internal const string System   = "System";
     internal const string Combat   = "Combat";
     internal const string Rynth    = "Rynth";     // Any RynthCore/RynthAi/RynthChat plugin output ("[Rynth…]")
+    internal const string Items    = "Items";     // RynthAi's item info ("[RynthAi Item] ", on select or /ra iteminfo)
     internal const string Other    = "Other";
 
     internal static readonly string[] AllChannels =
-        { Chat, Channels, System, Combat, Rynth, Other };
+        { Chat, Channels, System, Combat, Rynth, Items, Other };
 
     /// <summary>
     /// True for output emitted by the Rynth stack itself — every Rynth plugin tags
@@ -27,18 +28,156 @@ internal static class ChatClassifier
     internal static bool IsRynthOutput(string text) =>
         text.StartsWith("[Rynth", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>RynthAi's item info (RynthAiPlugin.ItemPrefix): its own Items tab (2026-10-09).</summary>
+    internal static bool IsItemInfo(string text) =>
+        text.StartsWith("[RynthAi Item] ", StringComparison.Ordinal);
+
+    // ── Automated system text (0.3.4) ──────────────────────────────────────
+    // Lines the engine shows in the System tab only, not under All: replies to the
+    // commands plugins send by themselves (/myquests, /qb list), the server's login
+    // burst, and anything a plugin ate (the engine reports those, RynthChatNoteEaten).
+
+    /// <summary>AdminTell: a person typed it, so it is never automated text.</summary>
+    internal const int AdminTellType = 0x1F;
+
+    // A /myquests flag line: "key - N solves (unixtime)"description" max repeat". Its own timeout:
+    // static fields initialise in file order, and the shared Timeout below isn't set yet here.
+    private static readonly Regex _questFlagRe = new(@"^\S+ - \d+ solves \(\d*\)",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(20));
+
+    /// <summary>
+    /// True for the fixed formats of automated replies, whoever sent the command:
+    /// /myquests flag lines and their end lines, the /qb list headers and end lines,
+    /// and ACE's login welcome. Only for system-type lines, so player speech that
+    /// quotes them is untouched.
+    /// </summary>
+    internal static bool IsAutomatedText(string text, int chatType)
+    {
+        if (string.IsNullOrEmpty(text) || ChannelForType(chatType) != System || chatType == AdminTellType) return false;
+        return IsQuestListText(text, chatType)
+            || text.StartsWith("Welcome to Asheron's Call", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The /myquests and /qb list replies' fixed lines (flag lines, headers, end lines), system
+    /// type only. Hidden unless the player asked for the list in chat (ChatBuffer, 2026-10-25).
+    /// </summary>
+    internal static bool IsQuestListText(string text, int chatType)
+    {
+        if (string.IsNullOrEmpty(text) || ChannelForType(chatType) != System || chatType == AdminTellType) return false;
+        if (text.IndexOf(" solves (", StringComparison.Ordinal) > 0)
+        {
+            try { if (_questFlagRe.IsMatch(text)) return true; }
+            catch (RegexMatchTimeoutException) { }
+        }
+        return text.StartsWith("Quest list is empty", StringComparison.Ordinal)
+            || text.StartsWith("[MyQuests] ", StringComparison.Ordinal)
+            || text.StartsWith("Your completed quest bonus list", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("Your incomplete quest bonus list", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("Your current quest bonus count", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("Quest bonus list is empty", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[QB] ", StringComparison.Ordinal)
+            || IsDeedsListText(text);
+    }
+
+    // ACECustom's /deeds list (2026-10-24): "Your QB: 12,345 - Deeds bonuses are ON, ..." then one message
+    // per tier, "1000 QB (unlocked)\n * reward ...". RynthILT reads it for its QB Deeds window.
+    private static readonly Regex _deedsTierRe = new(@"^\d+ QB( \(unlocked\))?(\n|$)",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(20));
+
+    private static bool IsDeedsListText(string text)
+    {
+        if (text.StartsWith("Your QB: ", StringComparison.Ordinal))
+            return text.Contains(" - Deeds bonuses are ", StringComparison.Ordinal);
+        if (text.Length == 0 || !char.IsDigit(text[0])) return false;
+        try { return _deedsTierRe.IsMatch(text); }
+        catch (RegexMatchTimeoutException) { return false; }
+    }
+
+    /// <summary>A plain balance read: /bank or /b (or the @ forms) with no verb.</summary>
+    internal static bool IsBankBalanceCommand(string? text)
+    {
+        string t = (text ?? string.Empty).Trim();
+        return t.Equals("/bank", StringComparison.OrdinalIgnoreCase) || t.Equals("/b", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("@bank", StringComparison.OrdinalIgnoreCase) || t.Equals("@b", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>A chat command that asks for a quest list: /myquests, /qb, /qb list (or the @ forms).</summary>
+    internal static bool IsQuestListCommand(string? text)
+    {
+        string t = (text ?? string.Empty).Trim();
+        if (t.Length < 3 || (t[0] != '/' && t[0] != '@')) return false;
+        t = t.Substring(1);
+        return t.Equals("myquests", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("deeds", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("deeds list", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("qb", StringComparison.OrdinalIgnoreCase)
+            || t.StartsWith("qb ", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // "[BANK] Your balances are:" then "[BANK] Pyreals: 67,908,687,115", ... "[BANK] Prestige Coins: 98 (bound ...)".
+    private static readonly Regex _bankBalanceRe = new(@"^\[BANK\] (Your balances are:|[A-Za-z ]+: [\d,]+)",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(20));
+
+    /// <summary>
+    /// The server's /bank balance dump (its header and "Label: N" lines), not the other [BANK]
+    /// lines (errors, transfers). Only hidden when a plugin ate it (ChatBuffer.NoteEaten).
+    /// </summary>
+    internal static bool IsBankBalanceDump(string? text)
+    {
+        if (string.IsNullOrEmpty(text) || !text.StartsWith("[BANK] ", StringComparison.Ordinal)) return false;
+        try { return _bankBalanceRe.IsMatch(text); }
+        catch (RegexMatchTimeoutException) { return false; }
+    }
+
+    /// <summary>
+    /// True when a line counts as the login burst: system text (not an admin's tell) that
+    /// arrives while the character is entering the world (<paramref name="loginBurst"/>).
+    /// </summary>
+    internal static bool IsLoginBurst(string channel, int chatType, bool loginBurst) =>
+        loginBurst && channel == System && chatType != AdminTellType;
+
     // ── Channel classification ─────────────────────────────────────────────
 
-    internal static string ChannelFor(int chatType) => (uint)chatType switch
+    /// <summary>
+    /// Channel tab for a line. Prefer the text's [General]/[Trade]/… tag when present —
+    /// ILT (and some ACE builds) deliver those as type 0x1C / 28 instead of 0x08/0x09, which
+    /// used to dump Trade/General into Other and leave the Channels tab empty.
+    /// </summary>
+    internal static string ChannelFor(string? text, int chatType)
+    {
+        if (IsChannelTagged(text)) return Channels;
+        return ChannelForType(chatType);
+    }
+
+    /// <summary>Legacy type-only map (tests / callers without the line text).</summary>
+    internal static string ChannelFor(int chatType) => ChannelForType(chatType);
+
+    internal static string ChannelForType(int chatType) => (uint)chatType switch
     {
         0x02 or 0x03 or 0x04 or 0x0A or 0x0B
             or 0x0C or 0x12 or 0x13                     => Chat,
-        0x08 or 0x09                                    => Channels,
+        0x08 or 0x09 or 0x1C                            => Channels,
         0x00 or 0x05 or 0x0D or 0x14 or 0x17 or 0x18
             or 0x19 or 0x1F                             => System,
         0x06 or 0x07 or 0x11 or 0x15 or 0x16           => Combat,
         _                                               => Other,
     };
+
+    /// <summary>True when the line opens with a retail/ILT channel tag ([Trade], [General], …).</summary>
+    internal static bool IsChannelTagged(string? text)
+    {
+        if (string.IsNullOrEmpty(text) || text[0] != '[') return false;
+        return text.StartsWith("[General]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Trade]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[LFG]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Roleplay]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Society]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Celestial Hand]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Eldrytch Web]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Radiant Blood]", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("[Admin]", StringComparison.OrdinalIgnoreCase);
+    }
 
     internal static uint ColorFor(string channel) => channel switch
     {

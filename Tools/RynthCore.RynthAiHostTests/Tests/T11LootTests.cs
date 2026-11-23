@@ -11,7 +11,8 @@ namespace RynthCore.RynthAiHostTests.Tests;
 
 // T11 (ACECustom tier 11+) items through the real evaluator: the virtual T11 keys answered by
 // WorldObject.Values, the wield requirement and ratings the server strips put back from the
-// item text, and "Can Wield" fed by the "/aug" reply.
+// item text, and "Can Wield" fed by the wield counters the server plugin reports (RynthILT reads the
+// "/aug" reply and applies its item-aug override since 2026-10-20; RynthAi.Hub SetPlayerCounter).
 internal static class T11LootTests
 {
     private const string WeaponLongDesc =
@@ -35,7 +36,7 @@ internal static class T11LootTests
         r.Add("loot t11: modifier ratings feed Gear* keys and TotalRatings", ModifierRatings);
         r.Add("loot t11: a live rating wins over the modifier text", LiveRatingWins);
         r.Add("loot t11: retail items are untouched", RetailUntouched);
-        r.Add("loot t11: Can Wield from the /aug reply and the override", CanWield);
+        r.Add("loot t11: Can Wield from the counters the server plugin reports (unknown without one)", CanWield);
         r.Add("loot t11: server tier and quality properties", ServerProps);
     }
 
@@ -112,15 +113,15 @@ internal static class T11LootTests
     {
         T11ItemSupport.Reset();
         WorldObject w = Weapon();
-        Check.Eq(w.Values(T11Keys.CanWield, -5), -1, "unknown before /aug");
-        T11ItemSupport.OnChat("Advanced Augmentation Levels:");
-        T11ItemSupport.OnChat("Item:2,400");
+        Check.Eq(w.Values(T11Keys.CanWield, -5), -1, "unknown until a server plugin reports the counters (retail: never)");
+        Check.True(T11ItemSupport.SetCounter((uint)T11Counter.ItemAugmentations, 2400), "RynthILT reports 2,400 item augs");
         Check.Eq(w.Values(T11Keys.CanWield, -5), 0, "2,400 < 2,500");
         Check.False(M(w, C(N.LongValKeyE, "1", K(T11Keys.CanWield))), "rule: wieldable fails");
-        T11ItemSupport.SyncOverride(2500);
-        Check.Eq(w.Values(T11Keys.CanWield, -5), 1, "override 2,500 meets the gate");
-        T11ItemSupport.SyncOverride(-1);
-        Check.Eq(w.Values(T11Keys.CanWield, -5), 0, "back to the /aug count");
+        T11ItemSupport.SetCounter((uint)T11Counter.ItemAugmentations, 2500);   // RynthILT's override, applied there
+        Check.Eq(w.Values(T11Keys.CanWield, -5), 1, "2,500 meets the gate");
+        T11ItemSupport.SetCounter((uint)T11Counter.ItemAugmentations, -1);
+        Check.Eq(w.Values(T11Keys.CanWield, -5), -1, "reported unknown again: unknown");
+        Check.False(T11ItemSupport.SetCounter(12345, 7), "an id that is no wield counter is refused");
         Check.Eq(new Item("T11 - Robe").Wo.Values(T11Keys.CanWield, -5), -1, "not appraised yet: unknown");
         Check.Eq(new Item("T11 - Robe").Str(16, "A robe.").Wo.Values(T11Keys.CanWield, -5), 1, "appraised, no gate: wieldable");
         T11ItemSupport.Reset();

@@ -1,0 +1,113 @@
+<div style="float:right;">__TOC__</div>
+This is a list of dynamic stamps you can get by handing a sheet of parchment to the associated NPC, or at random by giving a QB Stipend to [[QB Dynamo]] (you will receive {{stamped|QBDynamo}} the first time you hand in the stipend).<br/>
+The first time you hand a parchment to an NPC you will get {{stamped|dynamicQuestFlag}}.<br/>
+Note, '''many''' of the coordinates are unlisted, click through to the specific NPC for the correct coordinates.
+
+== '''Aluvian Town Network''' ==
+
+=== [[Arwic]] ===
+
+{| class="wikitable sortable mw-collapsible"
+! Name
+! Coordinates
+! Stamp
+! Item Reward
+! Notes
+|-
+| [[Hiyp the Toad]]
+| 33.6N, 56.8E
+|{{stamped|Dynamic_1_8M6jL^Bwr3S$p}}
+| Hearty Rabbit Noodle
+|
+|-
+| [[Anasha]]
+|  	33.3N, 56.5E
+|{{stamped|Dynamic_1_AeNJevtTyE}}
+| Composite Bow
+|
+|-
+| [[John]]
+| 33.6N, 56.7E
+| {{stamped| Dynamic_1_w}}
+| Blackfire Stinging Atlan Axe
+|
+|}
+
+=== [[Cragstone]] ===
+
+{| class="wikitable sortable mw-collapsible"
+|-
+! Name
+! Coordinates
+! Stamp
+! Item Reward
+! Notes
+|-
+| [[Robert Crow]]
+| 25.5N 48.4E
+| {{stamped|Dynamic_1_lm9d1e7kD}}
+| Phantom Atlatl
+|
+|-
+| [[Gustuv Lansdown]]
+| 24.9N, 48.5E
+| {{stamped|Dynamic_1_LUpRb54QAfQluP}}
+| Acid Spear
+| Mill with Aug NPCs
+|}
+
+== '''Gharu'ndim Town Network''' ==
+
+=== [[Samsur]] ===
+{| class="wikitable sortable mw-collapsible"
+|-
+! Name !! Coordinates !! Stamp !! Item Reward !! Notes
+|-
+| [[Aun Akuarea]] || 2.6S, 19.9E || {{stamped|Dynamic_1_Bm^vMSa}} || Large Black Fish ||
+|-
+| [[Saelar's Apprentice]] || 2.5S, 16.4E || {{stamped|Dynamic_1_exnj4uW}} || Renegade Ukira of the Mountains || Mnemosyne Collection Site
+|}
+
+== '''Unnetworked Locations''' ==
+
+=== [[Kor-Gursha]] / [[Bur]] ===
+{| class="wikitable sortable mw-collapsible"
+|-
+! Name !! Coordinates !! Stamp !! Item Reward !! Notes
+|-
+| [[Drogur]] || || {{stamped|Dynamic_1_KS8e32dtk7t}} || Frost Yari ||
+|-
+| [[Rheegur]] || || NO STAMP || Perfect Coruscating Atlan Sword ||
+|}
+
+=='''Hunting Camps'''==
+
+=== [[Inner Sea Gear Knight Resistance Camp|Gear Knight Camp, Inner Sea]] ===
+{| class="wikitable sortable mw-collapsible"
+|-
+! Name !! Coordinates !! Stamp !! Item Reward !! Notes
+|-
+| [[Gear Knight Recruiter]] || 12.0N 45.0W || {{stamped|Dynamic_1_GkCampA}} || Gear Crossbow ||
+|-
+| [[Second Robert]] || || {{stamped|Dynamic_1_lm9d1e7kD}} || Duplicate || listed twice on the page
+|}
+
+==Miscellaneous stamps==
+{| class="wikitable sortable"
+|-
+! Name !! Coordinates !! Stamp !! Item Reward !! Notes
+|-
+| [[Abbess Zik'Lir]] || 83.4S 97.2E || {{stamped|Dynamic_1_jmCfm1p5a}} || [[Hearty Fish Noodle]] || Ithaenc
+|-
+| [[Arikas, Warden of Knorr]] || || {{stamped|Dynamic_1_aWOWTc30f4}} || [[Hearty Healing Rabbit Noodle]] || [[Seat of Knorr]]
+|-
+| [[Golem Constructor]] || || NO STAMP || [[Chicken Sandwich]] || Tufa Hall of Metos
+|-
+| [[Liam of Gelid]] || || ? || [[?]] ||
+|}
+
+==Original Unsorted List==
+
+*{{stamped|Dynamic_1_0eHSd9aS}}
+*{{stamped|Dynamic_1_0eHSd9aS_d}}
+*{{stamped|Dynamic_1_0jBwR}}

@@ -42,11 +42,88 @@ internal sealed unsafe class RynthAiBridge
         }
     }
 
-    /// <summary>Forget the table (logout, RynthAi reload); the next call looks it up again.</summary>
+    /// <summary>Forget the tables (logout, RynthAi reload); the next call looks them up again.</summary>
     public void Reset()
     {
         _t = null;
         _checked = false;
+        _c = null;
+        _cChecked = false;
+    }
+
+    // -- RynthAi.Combat (Shared/RynthAiCombatApi.cs): the script-provided combat hook --
+
+    private RynthAiCombatApiV1* _c;
+    private bool _cChecked;
+    private long _cCheckedAt;
+
+    private RynthAiCombatApiV1* Combat
+    {
+        get
+        {
+            long now = Environment.TickCount64;
+            if (_cChecked && now - _cCheckedAt < RecheckMs) return _c;
+            _cChecked = true;
+            _cCheckedAt = now;
+            IntPtr p = _host.GetPluginInterface("RynthAi", RynthAiCombatApiV1.InterfaceName, RynthAiCombatApiV1.InterfaceVersion);
+            var t = (RynthAiCombatApiV1*)p;
+            _c = t != null && t->Version >= 1 && t->StructSize >= (uint)sizeof(RynthAiCombatApiV1) ? t : null;
+            return _c;
+        }
+    }
+
+    /// <summary>True when RynthAi serves the combat hook right now.</summary>
+    public bool CombatAvailable => Combat != null;
+
+    /// <summary>Takes or renews the hook; the kinds granted (0 = refused or no RynthAi).</summary>
+    public uint CombatClaim(uint kinds, uint leaseMs, uint attackTimeoutMs, uint healTimeoutMs, string owner)
+    {
+        var t = Combat;
+        if (t == null) return 0;
+        using var o = new Utf8(owner);
+        return unchecked((uint)t->Claim(kinds, leaseMs, attackTimeoutMs, healTimeoutMs, o.P));
+    }
+
+    public void CombatRelease(uint kinds)
+    {
+        var t = Combat;
+        if (t != null) t->Release(kinds);
+    }
+
+    /// <summary>True when a request of <paramref name="kind"/> is open and unanswered.</summary>
+    public bool CombatPoll(uint kind, out CombatRequestV1 request)
+    {
+        request = default;
+        var t = Combat;
+        if (t == null) return false;
+        CombatRequestV1 r = default;
+        r.StructSize = (uint)sizeof(CombatRequestV1);
+        if (t->Poll(kind, &r) == 0) return false;
+        request = r;
+        return true;
+    }
+
+    /// <summary>The answer to request <paramref name="seq"/>; false = stale (or no RynthAi).</summary>
+    public bool CombatDecide(uint seq, uint kind, uint spellId, uint targetId, uint flags)
+    {
+        var t = Combat;
+        return t != null && t->Decide(seq, kind, spellId, targetId, flags) != 0;
+    }
+
+    /// <summary>RynthAi's scanned targets (id, metres), nearest first.</summary>
+    public (uint Id, float Distance)[] CombatScanned()
+    {
+        var t = Combat;
+        if (t == null) return Array.Empty<(uint, float)>();
+        const int Cap = 64;
+        uint* ids = stackalloc uint[Cap];
+        float* dist = stackalloc float[Cap];
+        int n = t->GetScanned(ids, dist, Cap);
+        if (n <= 0) return Array.Empty<(uint, float)>();
+        n = Math.Min(n, Cap);
+        var list = new (uint, float)[n];
+        for (int i = 0; i < n; i++) list[i] = (ids[i], dist[i]);
+        return list;
     }
 
     private static string Copy(byte* s) => s == null ? string.Empty : Marshal.PtrToStringUTF8((IntPtr)s) ?? string.Empty;

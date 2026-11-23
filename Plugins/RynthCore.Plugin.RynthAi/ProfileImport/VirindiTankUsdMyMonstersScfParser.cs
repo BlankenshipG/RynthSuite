@@ -268,6 +268,12 @@ internal static class VirindiTankUsdMyMonstersScfParser
             Broadside = broad,
             Fester = fest,
             UseStreak = strk,
+            // b[8..12]: VT's Void columns WC, FC, Cp, DC, Cs.
+            WeakeningCurse = b[8],
+            FesteringCurse = b[9],
+            Corruption = b[10],
+            DestructiveCurse = b[11],
+            Corrosion = b[12],
             ExVuln = "None",
             OffhandId = WepId(ofh),
             PetDamage = MapPet(pet, sev),

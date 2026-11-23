@@ -27,13 +27,18 @@ internal sealed class WalkPlanner
     /// checked exactly, so this slack only matters at drops with no wall.</summary>
     public const float EdgeSlack = NavGrid.Cell;
 
-    public WalkPlanner(Indoor w, NavGrid g)
+    /// <summary>The margin the search keeps beyond the walker's body (m). A walk that is only the body's width from a
+    /// wall or object gets the character stuck on it (steering is not exact): the patrol keeps about 1 m, so
+    /// this is 0.5 and the search falls back to the old 0.25 for a walk with no room at 0.5 (see PlanFrom).</summary>
+    public const float DefaultExtra = 0.5f;
+
+    public WalkPlanner(Indoor w, NavGrid g, float extra = DefaultExtra)
     {
         _w = w; _g = g;
         float r = w.AgentRadius;
-        PassClear = r + 0.25f;        // grid search: keep this far from walls and objects
-        PassPortal = r + 0.5f;        // ... and from other portals (touching one uses it)
-        SmoothClear = r + 0.15f;      // straightened segments
+        PassClear = r + extra;        // grid search: keep this far from walls and objects
+        PassPortal = r + extra + 0.25f;   // ... and from other portals (touching one uses it)
+        SmoothClear = r + extra - 0.10f;  // straightened segments
         MustClear = r;                // the check: the walker's body never touches a wall or object
         MustPortal = r + 0.25f;       // ... and stays a step away from every other portal
     }

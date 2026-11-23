@@ -29,6 +29,7 @@ internal static class AfFileWriter
         IReadOnlyDictionary<string, List<string>> embeddedNavs)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? ".");
+        RynthCore.Plugin.Shared.DataWriteGuard.PrepareOverwrite(filePath);   // a read-only .af can't be overwritten
         using var writer = new StreamWriter(filePath, false);
         WriteContent(writer, rules, embeddedNavs);
     }
@@ -45,6 +46,14 @@ internal static class AfFileWriter
         // Collect embedded nav routes referenced by rules
         var navNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         CollectNavNames(rules, navNames);
+
+        // No rules: an empty "Default" state, so the file is still a meta that loads (a blank
+        // meta that had its last rule deleted). An empty file is refused as "no rules" (2026-10-13).
+        if (grouped.Count == 0)
+        {
+            WriteBlankState(writer);
+            return;
+        }
 
         // Write states
         foreach (var group in grouped)
@@ -63,12 +72,42 @@ internal static class AfFileWriter
         }
     }
 
+    /// <summary>The state a blank meta has.</summary>
+    public const string BlankState = "Default";
+
+    /// <summary>
+    /// A blank meta: one state, <see cref="BlankState"/>, with no rules. What /ra meta load and
+    /// /vt meta load create for a name that doesn't exist (VTank's "load makes a new one").
+    /// </summary>
+    public static string BlankMetaText()
+    {
+        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        WriteBlankState(writer);
+        return writer.ToString();
+    }
+
+    private static void WriteBlankState(TextWriter writer)
+    {
+        writer.WriteLine($"STATE: {{{BlankState}}} ~~ {{");
+        writer.WriteLine("~~ }");
+    }
+
     // ── Rule writing ────────────────────────────────────────────────────────
+
+    /// <summary>A rule name on one line (it is written as a "~~ @name" comment line).</summary>
+    internal static string OneLine(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        return text.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
+    }
 
     private static void WriteRule(TextWriter writer, MetaRule rule)
     {
-        // Disabled marker (backward-compatible: a plain ~~ comment to old
-        // parsers, recognised by AfFileParser to set Enabled=false).
+        // Name and disabled markers (backward-compatible: plain ~~ comments to old
+        // parsers and other tools; AfFileParser reads them back).
+        string name = OneLine(rule.Name);
+        if (name.Length > 0)
+            writer.WriteLine("\t~~ @name " + name);
         if (!rule.Enabled)
             writer.WriteLine("\t~~ @disabled");
 
@@ -139,6 +178,9 @@ internal static class AfFileWriter
             case MetaConditionType.MainManaPHE:
             case MetaConditionType.MainStamLE:
             case MetaConditionType.VitaePHE:
+            // RynthAi only (NoKillsInMins 5): metaf can't compile it to a .met, and an older
+            // RynthAi loads it as Never with an "unknown condition keyword" warning.
+            case MetaConditionType.NoKillsWithinMinutes:
                 // Bare values (no braces): MainSlotsLE 4, MainHealthLE 50
                 writer.Write($"{keyword} {data}");
                 break;
@@ -341,7 +383,7 @@ internal static class AfFileWriter
             5543 => "Neftet Recall",
             6321 => "Rynthid Recall",
             6322 => "Viridian Rise Recall",
-            _    => $"Spell {spellId}"
+            _    => NavPoint.RecallName(spellId)
         };
     }
 }

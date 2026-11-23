@@ -40,8 +40,20 @@
     <Compile Include="..\..\Tools\RynthNav.PortalGraph\PortalRoute.cs" Link="PortalRoute.cs" />
     <!-- Interfaces shared with other RynthSuite plugins (RynthAi uses RynthNav.Path). -->
     <Compile Include="..\Shared\RynthNavPathApi.cs" Link="Shared\RynthNavPathApi.cs" />
+    <Compile Include="..\Shared\RynthAiDungeonPathApi.cs" Link="Shared\RynthAiDungeonPathApi.cs" />
+    <!-- The route maker for other plugins (2026-10-30): JSON jobs to make nav routes, plan, walk. -->
+    <Compile Include="..\Shared\RynthNavRoutesApi.cs" Link="Shared\RynthNavRoutesApi.cs" />
     <!-- One logged, guarded way to use an object (who used what, and why). -->
     <Compile Include="..\Shared\UseAudit.cs" Link="Shared\UseAudit.cs" />
+    <!-- Text in the world on the Nav3D buffer (the path markers' labels; RynthAi's waypoint labels use it too). -->
+    <Compile Include="..\Shared\Nav3DText.cs" Link="Shared\Nav3DText.cs" />
+    <!-- Install folders (RynthAi's NavProfiles, where "save as nav route" writes). Read only. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- How a chat command answers (2026-10-28): the shared reply queue and colours. -->
+    <Compile Include="..\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
+    <!-- RynthAi's own nav file reader/writer (uTank2 NAV 1.2), so a saved route is written exactly
+         the way RynthAi writes its own. Self-contained (System.IO only). -->
+    <Compile Include="..\RynthCore.Plugin.RynthAi\LegacyUi\NavRouteParser.cs" Link="Shared\NavRouteParser.cs" />
   </ItemGroup>
 
   <ItemGroup>

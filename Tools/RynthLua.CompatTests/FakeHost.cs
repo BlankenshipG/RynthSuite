@@ -27,7 +27,7 @@ internal static unsafe class FakeHost
 
     public static RynthCoreApiNative Build()
     {
-        var a = new RynthCoreApiNative { Version = 73 };
+        var a = new RynthCoreApiNative { Version = 85 };   // 85: the server prompt answers (AnswerNextPrompt)
         a.LogFn = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, void>)&LogImpl;
         a.WriteToChatFn = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int, int>)&WriteToChat;
         a.InvokeChatParserFn = (IntPtr)(delegate* unmanaged[Cdecl]<IntPtr, int>)&InvokeChatParser;
@@ -109,6 +109,8 @@ internal static unsafe class FakeHost
         a.TradeDeclineFn = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&TradeDecline;
         a.TradeResetFn = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&TradeReset;
         a.TradeCloseFn = (IntPtr)(delegate* unmanaged[Cdecl]<int>)&TradeClose;
+        a.ArmConfirmationFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint, int, int, int>)&ArmConfirmation;
+        a.GetLastConfirmationFn = (IntPtr)(delegate* unmanaged[Cdecl]<uint*, uint*, int*, int*, int*, int>)&GetLastConfirmation;
         return a;
     }
 
@@ -127,6 +129,27 @@ internal static unsafe class FakeHost
 
     // ── Identity ────────────────────────────────────────────────────────────
 
+    // ── The server's yes/no prompts (API v85) ──
+    // The last arm a script made, and the last prompt the "server" sent (the harness sets it).
+    public static uint ArmType;
+    public static int ArmMinPercent, ArmTimeoutMs, ArmCalls;
+    public static int PromptSeq, PromptPercent = -1, PromptOutcome, PromptAgeMs;
+    public static uint PromptType, PromptContext;
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int ArmConfirmation(uint type, int minPercent, int timeoutMs)
+    {
+        ArmType = type; ArmMinPercent = minPercent; ArmTimeoutMs = timeoutMs; ArmCalls++;
+        return 1;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+    private static int GetLastConfirmation(uint* type, uint* context, int* percent, int* outcome, int* ageMs)
+    {
+        *type = PromptType; *context = PromptContext; *percent = PromptPercent; *outcome = PromptOutcome; *ageMs = PromptAgeMs;
+        return PromptSeq;
+    }
+
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
     private static uint GetPlayerId() => FakeWorld.Player;
 
@@ -137,7 +160,12 @@ internal static unsafe class FakeHost
     private static IntPtr GetAccountName() => Ansi("testaccount");
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    private static IntPtr GetPluginInterface(IntPtr plugin, IntPtr iface, uint version) => IntPtr.Zero;
+    private static IntPtr GetPluginInterface(IntPtr plugin, IntPtr iface, uint version)
+    {
+        // RynthAi's combat hook when a test turned it on (FakeCombat); nothing else is served.
+        string p = Marshal.PtrToStringAnsi(plugin) ?? string.Empty, i = Marshal.PtrToStringAnsi(iface) ?? string.Empty;
+        return p == "RynthAi" && i == RynthCore.Plugin.Shared.RynthAiCombatApiV1.InterfaceName && version == 1 ? FakeCombat.Table() : IntPtr.Zero;
+    }
 
     // ── Objects ─────────────────────────────────────────────────────────────
 

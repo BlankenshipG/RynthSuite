@@ -13,6 +13,8 @@ public sealed class LootEditState
 {
     /// <summary>Changes whenever anything below changes.</summary>
     public long Revision { get; set; }
+    /// <summary>On Infinite Leaftide (added 2026-11-07): the vocabulary to ask for (LootEditVocab.Ilt).</summary>
+    public bool Ilt { get; set; } = true;
 
     /// <summary>Full path of the open profile; empty when none is open.</summary>
     public string Path { get; set; } = string.Empty;
@@ -47,6 +49,12 @@ public sealed class LootEditState
     /// Added 2026-10; an older engine ignores it.
     /// </summary>
     public LootEditItemDraft? ItemDraft { get; set; }
+
+    /// <summary>
+    /// The Inventory panel's "Filter like this" result (item_find / find_refresh), or null.
+    /// Added 2026-10-24; an older engine ignores it.
+    /// </summary>
+    public LootEditItemFind? ItemFind { get; set; }
 }
 
 public sealed class LootEditFile
@@ -97,7 +105,11 @@ public sealed class LootEditCondition
 /// <summary>An edit from the face. Commands that target a rule carry the name the face saw (Expect).</summary>
 public sealed class LootEditCommand
 {
-    /// <summary>open, reload, save, set_enabled, move, add, duplicate, delete, rename, update_rule.</summary>
+    /// <summary>
+    /// open, reload, save, set_enabled, move, add, duplicate, delete, rename, update_rule;
+    /// item_preview, item_add, item_close (Add to loot profile); item_find, find_refresh,
+    /// find_close (Filter like this, 2026-10-24).
+    /// </summary>
     public string Op { get; set; } = string.Empty;
     public int Index { get; set; } = -1;
     /// <summary>move: the index the rule ends up at.</summary>
@@ -138,8 +150,107 @@ public sealed class LootEditItemRequest
     /// 2026-10-07; an older engine never sends it, so it reads false.
     /// </summary>
     public bool IncludeT11 { get; set; }
+    /// <summary>
+    /// The attribute checklist's choices (added 2026-10-18), one per row the player changed; rows
+    /// without a choice keep their default (ticked for "items like this", T11 rows with
+    /// IncludeT11). Null from an older engine: every row at its default, as before.
+    /// </summary>
+    public List<LootEditItemChoice>? Choices { get; set; }
     /// <summary>Echoed in the draft so the popup knows the answer is to its latest ask.</summary>
     public int Seq { get; set; }
+    /// <summary>
+    /// A filter, not a rule to add (added 2026-10-24): item_preview builds the draft without a
+    /// loot profile (no action, name or place in a list); item_find filters with it.
+    /// </summary>
+    public bool Find { get; set; }
+    /// <summary>item_find: <see cref="LootFindScopes"/> (the items in <see cref="Candidates"/>, or Global Inventory).</summary>
+    public string Scope { get; set; } = string.Empty;
+    /// <summary>item_find / find_refresh, scope inventory: the items to judge (what the panel lists).</summary>
+    public List<uint>? Candidates { get; set; }
+    /// <summary>
+    /// No item (added 2026-10-24): the checklist lists every attribute (LootItemAttributes.ForBlank),
+    /// for the Inventory panel's own filter. ItemId is ignored.
+    /// </summary>
+    public bool Blank { get; set; }
+    /// <summary>Spells and cantrips the player added from the standard lists (added 2026-10-24).</summary>
+    public List<LootEditItemExtra>? Extras { get; set; }
+    /// <summary>
+    /// Blank: edit this rule of the open profile (its index) instead of adding one (added 2026-11-07); -1 adds.
+    /// Without Choices the checklist starts from the rule's conditions.
+    /// </summary>
+    public int EditIndex { get; set; } = -1;
+    /// <summary>EditIndex's rule name as the editor showed it (refused when the rule there changed).</summary>
+    public string EditName { get; set; } = string.Empty;
+}
+
+/// <summary>A spell picked from the standard lists (LootSpellCatalog), required by the rule.</summary>
+public sealed class LootEditItemExtra
+{
+    public const string Spell = "spell", Cantrip = "cantrip";
+    /// <summary><see cref="Spell"/> (a leveled family) or <see cref="Cantrip"/>.</summary>
+    public string Kind { get; set; } = Spell;
+    /// <summary>The family ("Strength", "Aura of Defender") or the cantrip without its tier ("Coordination").</summary>
+    public string Name { get; set; } = string.Empty;
+    /// <summary>Spell: the level, 1-8. Cantrip: the tier, 0 Minor ... 4 Paragon.</summary>
+    public int Level { get; set; }
+    /// <summary>A LootItemAttributeOp (or better, exact, any tier); -1 = or better.</summary>
+    public int Op { get; set; } = -1;
+}
+
+/// <summary>Where "Filter like this" looks (LootEditItemRequest.Scope).</summary>
+public static class LootFindScopes
+{
+    /// <summary>The items the request lists (the Inventory panel's).</summary>
+    public const string Inventory = "inventory";
+    /// <summary>RynthInventory's Global Inventory: the result carries the spec for "/ginv like".</summary>
+    public const string Global = "global";
+}
+
+/// <summary>One checklist row as the player set it (LootEditItemAttribute.Id).</summary>
+public sealed class LootEditItemChoice
+{
+    public string Id { get; set; } = string.Empty;
+    public bool On { get; set; }
+    /// <summary>A LootItemAttributeOp code; -1 = the row's default.</summary>
+    public int Op { get; set; } = -1;
+    /// <summary>The edited value; empty = the item's own.</summary>
+    public string Value { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// One row of the popup's attribute checklist (added 2026-10-18): something the item has that a
+/// rule can require, its value, and how it is required now.
+/// </summary>
+public sealed class LootEditItemAttribute
+{
+    /// <summary>Stable within the item ("L:131", "D:152", "spell:Major Strength", "t11:tier").</summary>
+    public string Id { get; set; } = string.Empty;
+    /// <summary>Item, Weapon / Armor, Ratings, Spells, Pet essence, T11, Requirements.</summary>
+    public string Group { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    /// <summary>The item's own value, for display ("Gold", "7", "1.12", "Major").</summary>
+    public string ItemValue { get; set; } = string.Empty;
+    /// <summary>The value the rule uses now (the item's, or the player's edit).</summary>
+    public string Value { get; set; } = string.Empty;
+    /// <summary>The row's comparison now (LootItemAttributeOp).</summary>
+    public int Op { get; set; }
+    /// <summary>The comparisons the row offers, the default first.</summary>
+    public List<int> Ops { get; set; } = new();
+    /// <summary>The value can be typed (a number); named values and spells can't.</summary>
+    public bool Editable { get; set; }
+    /// <summary>
+    /// The values a named row can take (added 2026-10-24): the popup offers them in a list and
+    /// sends the picked Id as the choice's Value. Null for typed and fixed rows.
+    /// </summary>
+    public List<LootEditName>? Choices { get; set; }
+    /// <summary>
+    /// The Choices are flags (imbues, damage types; added 2026-11-07): with "has any" / "has all"
+    /// several can be picked, the Value is their sum.
+    /// </summary>
+    public bool Flags { get; set; }
+    /// <summary>The rule requires this row now.</summary>
+    public bool On { get; set; }
+    public string Tip { get; set; } = string.Empty;
 }
 
 /// <summary>The rule an item makes, as the popup shows it, and what happened when it was added.</summary>
@@ -182,9 +293,59 @@ public sealed class LootEditItemDraft
     /// </summary>
     public string BuiltInReason { get; set; } = string.Empty;
     public List<string> Notes { get; set; } = new();
+    /// <summary>
+    /// True from a RynthAi with the attribute checklist (added 2026-10-18): the popup shows
+    /// <see cref="Attributes"/> instead of its single "Include T11 attributes" box.
+    /// </summary>
+    public bool AttributesSupported { get; set; }
+    /// <summary>The item's checklist rows, grouped in display order (added 2026-10-18).</summary>
+    public List<LootEditItemAttribute> Attributes { get; set; } = new();
     /// <summary>item_add went through; Message says what was added where.</summary>
     public bool Added { get; set; }
     public string Message { get; set; } = string.Empty;
+    /// <summary>A filter's draft (the request's Find; added 2026-10-24): no profile, action or place.</summary>
+    public bool Find { get; set; }
+    /// <summary>
+    /// A rule from the blank checklist (the request's Blank without Find; added 2026-11-07, the Loot
+    /// Editor's Add rule): no item; it goes in at the end. False from an older RynthAi.
+    /// </summary>
+    public bool Blank { get; set; }
+    /// <summary>The rule this draft edits (the request's EditIndex), -1 when it adds one (added 2026-11-07).</summary>
+    public int EditIndex { get; set; } = -1;
+}
+
+/// <summary>
+/// "Filter like this" (added 2026-10-24): the rule the checklist made and, for the panel's
+/// items, which match. item_find builds it from the item; find_refresh judges the panel's
+/// items again with the same rule (new loot, identifies that came in); find_close drops it.
+/// </summary>
+public sealed class LootEditItemFind
+{
+    /// <summary>The request's Seq (item_find or find_refresh).</summary>
+    public int Seq { get; set; }
+    public bool Ok { get; set; }
+    public string Error { get; set; } = string.Empty;
+    /// <summary><see cref="LootFindScopes"/>.</summary>
+    public string Scope { get; set; } = string.Empty;
+    public uint ItemId { get; set; }
+    public string ItemName { get; set; } = string.Empty;
+    /// <summary>What the filter is called ("like Gold Ring").</summary>
+    public string Label { get; set; } = string.Empty;
+    /// <summary>The rule's conditions in words, one per line (ASCII).</summary>
+    public List<string> Lines { get; set; } = new();
+    /// <summary>Scope inventory: the candidates the rule takes.</summary>
+    public List<uint> Ids { get; set; } = new();
+    /// <summary>
+    /// Scope inventory: candidates that failed only on something an identify would tell
+    /// (not identified yet), or that RynthAi doesn't know yet.
+    /// </summary>
+    public List<uint> Unknown { get; set; } = new();
+    /// <summary>How many candidates were judged.</summary>
+    public int Checked { get; set; }
+    /// <summary>Scope global: the "/ginv like" argument (LootFindSpec).</summary>
+    public string Spec { get; set; } = string.Empty;
+    /// <summary>Some condition needs an identify to judge (so unidentified items can be Unknown).</summary>
+    public bool NeedsIdentify { get; set; }
 }
 
 /// <summary>Names for the face's pickers. Sent once per plugin load.</summary>
@@ -193,6 +354,8 @@ public sealed class LootEditVocab
     public List<LootEditName> Actions { get; set; } = new();
     public List<LootEditNodeType> NodeTypes { get; set; } = new();
     public List<LootEditName> ObjectClasses { get; set; } = new();
+    /// <summary>Built for Infinite Leaftide (ACECustom keys offered; added 2026-11-07).</summary>
+    public bool Ilt { get; set; } = true;
     public List<LootEditName> LongKeys { get; set; } = new();
     public List<LootEditName> DoubleKeys { get; set; } = new();
     public List<LootEditName> StringKeys { get; set; } = new();
@@ -203,6 +366,21 @@ public sealed class LootEditVocab
     /// with an older RynthAi gets it empty and keeps the value a text box.
     /// </summary>
     public List<LootEditValueTable> LongValueTables { get; set; } = new();
+    /// <summary>The standard spell lists (LootSpellCatalog, added 2026-10-24): leveled families by school.</summary>
+    public List<LootEditSpellFamily> SpellFamilies { get; set; } = new();
+    /// <summary>Cantrip names without their tier ("Coordination").</summary>
+    public List<string> Cantrips { get; set; } = new();
+    /// <summary>The cantrip tiers, lowest first (Minor ... Paragon).</summary>
+    public List<string> CantripTiers { get; set; } = new();
+}
+
+/// <summary>One leveled spell family the popup offers (LootSpellFamily).</summary>
+public sealed class LootEditSpellFamily
+{
+    public string Name { get; set; } = string.Empty;
+    public string School { get; set; } = string.Empty;
+    public int MinLevel { get; set; } = 1;
+    public int MaxLevel { get; set; } = 8;
 }
 
 public sealed class LootEditName

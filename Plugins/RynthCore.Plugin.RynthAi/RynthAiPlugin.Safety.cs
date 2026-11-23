@@ -31,6 +31,7 @@ public sealed partial class RynthAiPlugin
             Log("[RynthAi] Death detected (health 0).");
             try { RecordDeathSpot(); }   // where the corpse will be (RynthAiPlugin.OwnCorpse.cs)
             catch (Exception ex) { Log($"[RynthAi] Death spot not recorded: {ex.Message}"); }
+            ArmDeathRecall(s);           // before Stop Macro On Death: it reads whether the macro ran
             if (s.StopMacroOnDeath && s.IsMacroRunning)
             {
                 HandleMacroRunCommand("stop", Array.Empty<string>());
@@ -45,6 +46,9 @@ public sealed partial class RynthAiPlugin
 
     private long _deathHoldUntil;
     private bool _deathHolding;
+    // When the character was last seen dead (TickCount64; 0 = not this session). The Dungeon Patrol
+    // doesn't follow the character into a dungeon it was sent to by a death (TickDunPatrolHazardReroute).
+    private long _lastDeathAt;
     private const long DeathSettleMs = 5_000;
 
     /// <summary>
@@ -55,6 +59,35 @@ public sealed partial class RynthAiPlugin
     /// reloaded the world) came with the bot still casting and dequipping through
     /// the death. Reads the vitals every tick (the regular poll is every 30).
     /// </summary>
+    private bool _wasPortalingForPacer;
+
+    private bool _wasMacroForPacer;
+
+    /// <summary>
+    /// The macro is switched on (off to on, whoever did it): a UseDone that arrived while it was off, a
+    /// player's own refused action, is not news. Without this the pacer's observer took it for a fresh
+    /// 'too busy' answer at the first check and held every start for the probe wait (~1.5 s).
+    /// </summary>
+    private void NoteMacroForPacer(bool running)
+    {
+        if (running && !_wasMacroForPacer) RynthCore.Plugin.Shared.ActionPacer.NoteMacroStart();
+        _wasMacroForPacer = running;
+    }
+
+    /// <summary>Portal space starts: the server dropped what was open (no breaker on a teleport's gap).</summary>
+    private void NotePortalForPacer()
+    {
+        bool portaling = Host.HasIsPortaling && Host.IsPortaling();
+        if (portaling && !_wasPortalingForPacer)
+        {
+            RynthCore.Plugin.Shared.ActionPacer.Forget("portal space");
+            RynthCore.Plugin.Shared.ActionPacer.ForgetLootJump();   // out of the air: the teleport moved the character
+            _buffManager?.ForgetPendingWield("portal space");
+            _petManager?.OnPortal();   // a pet never follows through a portal
+        }
+        _wasPortalingForPacer = portaling;
+    }
+
     private bool HoldForDeath()
     {
         long now = Environment.TickCount64;
@@ -64,6 +97,7 @@ public sealed partial class RynthAiPlugin
         if (dead)
         {
             _deathHoldUntil = long.MaxValue;
+            _lastDeathAt = now;
             _metaManager?.OnPlayerDeath();   // the meta's Death condition sees it after the hold
         }
         else if (_deathHoldUntil == long.MaxValue)
@@ -81,13 +115,27 @@ public sealed partial class RynthAiPlugin
             {
                 Log("[RynthAi] Died — holding all actions until respawned and out of portal space.");
                 _combatManager?.ReleaseHeldTurn();
+                // A Handler-ring run-away holds autorun: never carry it through the death portal.
+                _combatManager?.StopRingEscape("died");
                 _navigationEngine?.Stop();
+                RynthCore.Plugin.Shared.ActionPacer.Forget("death");   // the server dropped whatever was open
+                RynthCore.Plugin.Shared.ActionPacer.ForgetLootJump();     // no landing to wait for after a death
+                _buffManager?.CancelPendingRecall("death");                // no /lifestone or macro restart after the respawn
+                _buffManager?.ForgetPendingWield("death");                 // a swap the death cut short is not a failed swap
+                _petManager?.OnPlayerDeath();                              // the pet out is left behind with the corpse
+                // From the lifestone it would walk all the way back to where it started: off, or with Keep
+                // Hunting After Death paused until the character is back up (RynthAiPlugin.AfterDeath.cs).
+                PauseHuntForDeath();
             }
             else
             {
                 Log("[RynthAi] Respawned — resuming.");
-                try { OnRespawnedForOwnCorpse(); }   // Travel Back To My Corpse
-                catch (Exception ex) { Log($"[RynthAi] Own corpse travel not started: {ex.Message}"); }
+                try
+                {
+                    // Recall On Death first; the corpse trip then starts from where it lands (EndDeathRecall).
+                    if (!StartDeathRecall()) OnRespawnedForOwnCorpse();   // Travel Back To My Corpse
+                }
+                catch (Exception ex) { Log($"[RynthAi] Death recall / own corpse travel not started: {ex.Message}"); }
             }
         }
         return hold;

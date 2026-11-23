@@ -49,7 +49,9 @@ public enum StringValueKey
 
 /// <summary>
 /// STypeFloat keys used with TryGetObjectDoubleProperty / WorldObjectCache.GetDoubleProperty.
-/// Values match Chorizite's STypeFloat sequential enum.
+/// Values match ACE's PropertyFloat and Chorizite's STypeFloat (UNDEF = 0). WeaponOffense and
+/// DamageMod were 61/62 until 2026-10-05 (61 is EconRecoveryInterval), so a native "damage
+/// percent" loot rule read the weapon's attack mod; PowerLevel/AccuracyLevel were 86/87.
 /// </summary>
 public enum DoubleValueKey
 {
@@ -59,10 +61,10 @@ public enum DoubleValueKey
     MaximumVelocity = 26,   // missile launcher launch speed (m/s); known once appraised
     WeaponDefense = 29,
     UseRadius = 54,
-    WeaponOffense = 61,
-    DamageMod = 62,
-    PowerLevel = 86,
-    AccuracyLevel = 87,
+    WeaponOffense = 62,
+    DamageMod = 63,
+    PowerLevel = 92,
+    AccuracyLevel = 93,
 }
 
 // ── Combat mode int constants (matches acclient.exe CM_Combat enum) ────────
@@ -123,6 +125,13 @@ public class WorldObject
         if (RynthCore.Loot.T11.T11Keys.IsVirtual(key))
             return Loot.T11ItemSupport.VirtualValue(this, key, defaultValue);
 
+        // Decal's synthetic keys that are a plain int property (MaxDamage = Damage 44, Coverage =
+        // ClothingPriority 4, ...) read as that property, from the overlay or live. The icon and
+        // spell ones are data ids: WorldObjectCache.GetIntProperty answers them.
+        uint decalStype = WorldObjectCache.DecalIntStype(unchecked((uint)key));
+        if (decalStype != 0)
+            return Values(unchecked((int)decalStype), defaultValue);
+
         var o = Overlay;
         if (o != null)
         {
@@ -166,9 +175,25 @@ public class WorldObject
         if (o != null)
         {
             if (o.Doubles.TryGetValue((uint)key, out double v)) return v;
-            if (!o.LiveFallback) return defaultValue;
+            if (!o.LiveFallback) return SlayerBonusOr(key, defaultValue);
         }
-        return Cache?.GetDoubleProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+        double live = Cache?.GetDoubleProperty(Id, (uint)key, defaultValue) ?? defaultValue;
+        return live == 0 || live == defaultValue ? SlayerBonusOr(key, live) : live;
+    }
+
+    /// <summary>
+    /// SlayerDamageBonus (float 138) from the weapon's text when the appraisal has none: ACECustom never sends it, only
+    /// "- Shadow Slayer: 1.5x Damage" (2026-11-15; RynthCore.Loot.SlayerText). Any other key: <paramref name="fallback"/>.
+    /// </summary>
+    private double SlayerBonusOr(DoubleValueKey key, double fallback)
+    {
+        if ((int)key != RynthCore.Loot.SlayerText.SlayerDamageBonusKey) return fallback;
+        try
+        {
+            double x = RynthCore.Loot.SlayerText.BonusOf(Values(StringValueKey.LongDesc, string.Empty), Values(StringValueKey.Use, string.Empty));
+            return x > 0 ? x : fallback;
+        }
+        catch { return fallback; }
     }
 }
 

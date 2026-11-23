@@ -31,6 +31,23 @@ A combat and navigation assistant for Asheron's Call, ported from the legacy Nex
 | `/na raycast` | Show raycast system status |
 | `/na lostest` | Run line-of-sight test against current target |
 
+### RynthNav
+
+Walks the character on a navmesh of the landscape, plans trips with portals and recalls, keeps an Atlas of
+places, and makes RynthAi nav routes on real walkable paths (`/rnav makeroute`, `makeloop`, `makepath`,
+`routeinfo`, and the "RynthNav.Routes" interface for other plugins). See [Docs/RYNTHNAV.md](Docs/RYNTHNAV.md).
+
+---
+
+## Monster rules
+
+Each row of the monster profile (edited in `Tools/RynthCore.MonsterEditor`) applies to the monsters whose name contains the row's Name (and whose Match expression is true, when one is set); the `Default` row applies to the rest. The **P** column is the row's Priority:
+
+- **Higher Priority is fought first.** When a monster of a higher Priority is in range, lower-priority monsters wait.
+- **Priority 0 (or less) means IGNORE.** RynthAi never picks the monster as a target and does not count it as "a monster nearby": it does not hold up navigation, looting, buffing, resting, or the idle peace-mode switch. Use it for monsters that are not worth the time (for example an `Olthoi Grub` row at Priority 0). A `Default` row at 0 ignores every monster no other row names.
+- **Priority 0 means never attacked, even if it attacks you.** There is no automatic exception: an ignored monster that hits you is still never targeted. The HP failsafe (Emergency Heal At) still protects you, and you can raise the row's Priority if a monster needs fighting.
+- Meta conditions that count monsters by name or distance (`NoMonstersWithinDistance`, `MobsInDist_Priority`, name-count) are explicit conditions you wrote and still see ignored monsters.
+
 ---
 
 ## Tools

@@ -15,7 +15,9 @@ namespace RynthCore.Plugin.RynthAi;
 /// ported from UtilityBelt ub-IT / Mag-Tools ItemInfo. Partial class of RynthAiPlugin.
 ///
 ///   /ra iteminfo                      describe the selected item (IDs it first when needed)
-///   /ra iteminfo on|off               describe every item you select
+///   /ra iteminfo &lt;item name&gt;          describe an inventory item by name (exact, else partial)
+///   /ra iteminfo me                   your own ratings (also on selecting / clicking yourself)
+///   /ra iteminfo on|off               describe every item you select (yourself: your ratings)
 ///   /ra iteminfo settings             open/close the Item Info settings window
 ///   /ra iteminfo fields               list fields and ratings with their on/off state
 ///   /ra iteminfo field &lt;name&gt; on|off  show/hide one field (ratings, slayer, spells, …)
@@ -24,7 +26,11 @@ namespace RynthCore.Plugin.RynthAi;
 ///   /ra iteminfo verbose on|off       list every spell instead of Mag's filter
 ///   /ra iteminfo click left|right|off print the selected item after a mouse click
 ///   /ra iteminfo layout pet|line      pet-roster style lines or the Mag one-liner
-///   /ra iteminfo reset                restore defaults
+///   /ra iteminfo loot on|off          describe what the looter takes in its "Looted" line
+///   /ra iteminfo loot salvage on|off  salvage too (material and workmanship only)
+///   /ra iteminfo color &lt;name&gt;|#RRGGBB the lines' colour in RynthCore's chat, whatever their chat type ("default": the type's)
+///   /ra iteminfo parts on|off         one-line layout: each part (name, set, spells, ...) in its own colour
+///   /ra iteminfo reset               restore defaults
 /// Every option is also editable in the "RynthAi Item Info" window (LegacyItemInfoUi).
 /// </summary>
 public sealed partial class RynthAiPlugin
@@ -67,48 +73,54 @@ public sealed partial class RynthAiPlugin
             PrintSelectedItemInfo();
             return;
         }
-        if (s == null) { ChatLine("[RynthAi] Settings not ready (log in first)."); return; }
+        if (s == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
 
         switch (sub)
         {
+            case "me":
+            case "self":
+            case "ratings":
+                QueueSelfRatings(auto: false);
+                return;
+
             case "settings":
             case "gui":
             case "window":
                 s.ShowWindow = !s.ShowWindow;
-                ChatLine($"[RynthAi] Item info window {(s.ShowWindow ? "opened" : "closed")}.");
+                ReplyOk($"[RynthAi] Item info window {(s.ShowWindow ? "opened" : "closed")}.");
                 return;
 
             case "value":
                 if (ParseOnOff(arg3) is bool v) s.ShowValueAndBurden = v;
-                ChatLine($"[RynthAi] Item info value/burden: {OnOff(s.ShowValueAndBurden)}");
+                ReplyOk($"[RynthAi] Item info value/burden: {OnOff(s.ShowValueAndBurden)}");
                 return;
 
             case "verbose":
                 if (ParseOnOff(arg3) is bool all)
                     s.SpellMode = all ? MagItemInfoSettings.SpellModeAll : MagItemInfoSettings.SpellModeMag;
-                ChatLine($"[RynthAi] Item info all spells: {OnOff(s.SpellMode == MagItemInfoSettings.SpellModeAll)}");
+                ReplyOk($"[RynthAi] Item info all spells: {OnOff(s.SpellMode == MagItemInfoSettings.SpellModeAll)}");
                 return;
 
             case "field":
                 if (!MagItemInfoCatalog.TryFindField(arg3, out MagItemInfoField field))
                 {
-                    ChatLine($"[RynthAi] Unknown field '{arg3}'. /ra iteminfo fields lists them.");
+                    ReplyFail($"[RynthAi] Unknown field '{arg3}'. /ra iteminfo fields lists them.");
                     return;
                 }
                 if (ParseOnOff(arg4) is bool fieldOn) s.SetHidden(field, !fieldOn);
-                ChatLine($"[RynthAi] Item info field {field}: {OnOff(!s.IsHidden(field))}");
+                ReplyOk($"[RynthAi] Item info field {field}: {OnOff(!s.IsHidden(field))}");
                 return;
 
             case "rating":
                 int r = MagItemInfoCatalog.FindRating(arg3);
                 if (r < 0)
                 {
-                    ChatLine($"[RynthAi] Unknown rating '{arg3}'. /ra iteminfo fields lists them.");
+                    ReplyFail($"[RynthAi] Unknown rating '{arg3}'. /ra iteminfo fields lists them.");
                     return;
                 }
                 if (ParseOnOff(arg4) is bool ratingOn) s.SetRatingHidden(r, !ratingOn);
                 var rating = MagItemInfoCatalog.Ratings[r];
-                ChatLine($"[RynthAi] Item info rating {rating.Tag} ({rating.Name}): {OnOff(!s.IsRatingHidden(r))}");
+                ReplyOk($"[RynthAi] Item info rating {rating.Tag} ({rating.Name}): {OnOff(!s.IsRatingHidden(r))}");
                 return;
 
             case "fields":
@@ -123,10 +135,10 @@ public sealed partial class RynthAiPlugin
                     case "off":   case "none": s.ClickTrigger = MagItemInfoSettings.ClickOff;  break;
                     case "": break;
                     default:
-                        ChatLine("[RynthAi] Usage: /ra iteminfo click left|right|off");
+                        ReplyFail("[RynthAi] Usage: /ra iteminfo click left|right|off");
                         return;
                 }
-                ChatLine($"[RynthAi] Item info on click: {MagItemInfoCatalog.ClickTriggers[s.ClickTrigger]}");
+                ReplyOk($"[RynthAi] Item info on click: {MagItemInfoCatalog.ClickTriggers[s.ClickTrigger]}");
                 return;
 
             case "layout":
@@ -136,25 +148,126 @@ public sealed partial class RynthAiPlugin
                     case "line": case "mag": case "one":   s.Layout = MagItemInfoSettings.LayoutOneLine;  break;
                     case "": break;
                     default:
-                        ChatLine("[RynthAi] Usage: /ra iteminfo layout pet|line");
+                        ReplyFail("[RynthAi] Usage: /ra iteminfo layout pet|line");
                         return;
                 }
-                ChatLine($"[RynthAi] Item info layout: {MagItemInfoCatalog.Layouts[s.Layout]}");
+                ReplyOk($"[RynthAi] Item info layout: {MagItemInfoCatalog.Layouts[s.Layout]}");
+                return;
+
+            case "loot":
+                if (arg3.Equals("salvage", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (ParseOnOff(arg4) is bool salvageOn) s.LootChatSalvage = salvageOn;
+                    else if (arg4.Length > 0) { ReplyFail("[RynthAi] Usage: /ra iteminfo loot salvage on|off"); return; }
+                    ReplyOk($"[RynthAi] Item info on loot, salvage: {OnOff(s.LootChatSalvage)}");
+                    return;
+                }
+                if (ParseOnOff(arg3) is bool lootOn) s.LootChat = lootOn;
+                else if (arg3.Length > 0) { ReplyFail("[RynthAi] Usage: /ra iteminfo loot on|off, or /ra iteminfo loot salvage on|off"); return; }
+                ReplyOk($"[RynthAi] Item info on loot: {OnOff(s.LootChat)} (salvage {OnOff(s.LootChatSalvage)})");
+                return;
+
+            case "color":
+            case "colour":
+                if (arg3.Length > 0)
+                {
+                    string? color = MagItemInfoCatalog.ParseTextColor(arg3);
+                    if (color == null)
+                    {
+                        ReplyFail("[RynthAi] Usage: /ra iteminfo color " + TextColorWords());
+                        return;
+                    }
+                    s.TextColor = color;
+                }
+                ReplyOk(s.TextColor.Length == 0
+                    ? "[RynthAi] Item info text colour: the chat type's own colour. Others: /ra iteminfo color " + TextColorWords()
+                    : $"[RynthAi] Item info text colour: {MagItemInfoCatalog.TextColorLabel(s.TextColor)} in RynthCore's chat (same tab; AC's chat window shows the chat type's colour)");
+                return;
+
+            case "parts":
+            case "partcolors":
+            case "partcolours":
+                if (ParseOnOff(arg3) is bool partsOn) s.PartColors = partsOn;
+                else if (arg3.Length > 0) { ReplyFail("[RynthAi] Usage: /ra iteminfo parts on|off"); return; }
+                ReplyOk($"[RynthAi] Item info colour per part: {OnOff(s.PartColors)}"
+                    + (s.PartColors && s.Layout != MagItemInfoSettings.LayoutOneLine ? " (the one-line layout only: /ra iteminfo layout line)" : ""));
                 return;
 
             case "reset":
                 s.ResetToDefaults();
-                ChatLine("[RynthAi] Item info settings reset to defaults.");
+                ReplyOk("[RynthAi] Item info settings reset to defaults.");
                 return;
         }
 
         if (ParseOnOff(sub) is bool onSelect)
         {
             s.OnSelect = onSelect;
-            ChatLine($"[RynthAi] Item info on select: {OnOff(onSelect)}");
+            ReplyOk($"[RynthAi] Item info on select: {OnOff(onSelect)}");
             return;
         }
-        ChatLine("[RynthAi] Usage: /ra iteminfo [on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|reset]");
+        if (sub is not ("help" or "?"))
+        {
+            // Anything else is an item name: the inventory item called that, else one containing it.
+            string name = string.Join(" ", parts, 2, parts.Length - 2).Trim();
+            uint found = FindInventoryItemByName(name);
+            if (found != 0) { QueueItemInfo(unchecked((int)found), requestId: true); return; }
+            ReplyFail($"[RynthAi] Item info: no \"{name}\" in your inventory.");
+        }
+        ReplyFail("[RynthAi] Usage: /ra iteminfo [<item name>|me|on|off|settings|fields|field <name> on|off|rating <tag> on|off|value on|off|verbose on|off|click left|right|off|layout pet|line|loot on|off|color <name>|#RRGGBB|parts on|off|reset]");
+    }
+
+    /// <summary>"default|allegiance|...|#RRGGBB": what /ra iteminfo color takes.</summary>
+    private static string TextColorWords()
+    {
+        var sb = new StringBuilder();
+        foreach (var c in MagItemInfoCatalog.TextColors) sb.Append(c.Word).Append('|');
+        return sb.Append("#RRGGBB").ToString();
+    }
+
+    /// <summary>
+    /// An inventory item (carried or worn) whose name is <paramref name="name"/>, ignoring case;
+    /// else the first whose name contains it. 0 when none.
+    /// </summary>
+    private uint FindInventoryItemByName(string name)
+    {
+        if (_objectCache == null || name.Length == 0) return 0;
+        uint partial = 0;
+        foreach (WorldObject wo in _objectCache.GetInventory())
+        {
+            if (wo.Name.Length == 0) continue;
+            if (wo.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return unchecked((uint)wo.Id);
+            if (partial == 0 && wo.Name.Contains(name, StringComparison.OrdinalIgnoreCase)) partial = unchecked((uint)wo.Id);
+        }
+        return partial;
+    }
+
+    /// <summary>
+    /// " | Loot: [Keep] (A) MajorSkill Set": the looter's own verdict on the item, as a preview
+    /// (nothing recorded), so it says exactly what [LootEval] would. Item info replaces the
+    /// separate verdict line, so this is the only place it shows. "" when there's no loot
+    /// profile, or /ra lootcheck off.
+    /// </summary>
+    private string LootVerdictSuffix(int itemId)
+    {
+        try
+        {
+            LegacyUi.LegacyUiSettings? settings = _dashboard?.Settings;
+            WorldObject? wo = _objectCache?[itemId];
+            bool rares = settings != null && Loot.LootModes.IsRares(settings.LootMode);
+            if (!_lootInspectMode || settings == null || wo == null || (!rares && string.IsNullOrEmpty(settings.CurrentLootPath))) return "";
+            bool taken = ClassifyLootItem(wo, settings, preview: true, out string action, out _, out string rule, out string builtIn);
+            if (!taken && rares) return " | Loot: leave" + (builtIn.Length > 0 ? " - " + builtIn : "");
+            if (!taken)
+                // A rule can match and still not take it (its Keep # reached, a Read rule on a non-scroll).
+                return rule.Length > 0 ? $" | Loot: leave ({rule} matched, not taken)" : " | Loot: no rule matched";
+            if (builtIn.Length > 0) return $" | Loot: [{action}] built-in - {builtIn}";
+            return $" | Loot: [{action}] {(rule.Length > 0 ? rule : "(unnamed rule)")}";
+        }
+        catch (Exception ex)
+        {
+            ItemInfoLog($"0x{(uint)itemId:X8}: loot verdict failed: {ex.GetType().Name}: {ex.Message}");
+            return "";
+        }
     }
 
     private static string OnOff(bool on) => on ? "ON" : "OFF";
@@ -185,9 +298,10 @@ public sealed partial class RynthAiPlugin
     /// <summary>/ra iteminfo and the window's "Print to chat" button.</summary>
     private void PrintSelectedItemInfo()
     {
-        if (!Host.HasGetSelectedItemId) { ChatLine("[RynthAi] Host does not expose the selected item."); return; }
+        if (!Host.HasGetSelectedItemId) { ReplyFail("[RynthAi] Host does not expose the selected item."); return; }
         uint selected = Host.GetSelectedItemId();
-        if (selected == 0) { ChatLine("[RynthAi] No item selected. Click an item first."); return; }
+        if (selected == 0) { ReplyFail("[RynthAi] No item selected. Click an item first."); return; }
+        if (IsSelf(selected)) { QueueSelfRatings(auto: false); return; }
         QueueItemInfo(unchecked((int)selected), requestId: true);
     }
 
@@ -216,6 +330,7 @@ public sealed partial class RynthAiPlugin
         }
         if (requestId && Host.HasRequestId) Host.RequestId(uid);
         ItemInfoLog($"0x{uid:X8}: waiting for ID data (requested={requestId && Host.HasRequestId})");
+        Reply.Answered();   // a command's item info follows when the ID data arrives
         _itemInfoPendingId = itemId;
         _itemInfoPendingSince = Environment.TickCount64;
     }
@@ -299,6 +414,12 @@ public sealed partial class RynthAiPlugin
         string button = MagItemInfoCatalog.ClickTriggers[s.ClickTrigger];
         uint selected = Host.GetSelectedItemId();
         if (selected == 0) { ItemInfoLog($"{button}: nothing selected"); return; }
+        if (IsSelf(selected))
+        {
+            ItemInfoLog($"{button}: 0x{selected:X8} (yourself): ratings queue");
+            QueueSelfRatings(auto: true);
+            return;
+        }
 
         int id = unchecked((int)selected);
         WorldObject? obj = _objectCache?[id];
@@ -316,6 +437,7 @@ public sealed partial class RynthAiPlugin
     private void TickItemInfo()
     {
         ResolveItemInfoClick();
+        TickSelfRatings();
 
         int id = _itemInfoPendingId;
         if (id == 0) return;
@@ -331,18 +453,26 @@ public sealed partial class RynthAiPlugin
     /// Builds the output lines (no prefix / indent) in the configured layout, or returns null
     /// with <paramref name="error"/> set. The one-line layout returns a single line.
     /// </summary>
-    private List<string>? BuildItemInfoLines(int itemId, out string? error)
+    private List<string>? BuildItemInfoLines(int itemId, out string? error) => BuildItemInfoLines(itemId, out error, out _);
+
+    /// <summary>
+    /// As above; for the one-line layout <paramref name="oneLineParts"/> is that line as (part, text)
+    /// pieces (joined, exactly the line) for the per-part colours; null for the pet-style layout.
+    /// </summary>
+    private List<string>? BuildItemInfoLines(int itemId, out string? error, out List<(ItemInfoPart Part, string Text)>? oneLineParts)
     {
         error = null;
+        oneLineParts = null;
         WorldObject? wo = _objectCache?[itemId];
         if (wo == null) { error = $"Item 0x{(uint)itemId:X8} is not in the object cache."; return null; }
         try
         {
             var s = ItemInfoSettings;
             MagItemDescription d = MagItemDescriber.Build(new CacheItemPropertySource(Host, wo), MagItemInfoOptions.From(s));
-            return (s?.Layout ?? MagItemInfoSettings.LayoutPetLines) == MagItemInfoSettings.LayoutOneLine
-                ? new List<string> { d.ToOneLine() }
-                : d.ToPetLines();
+            if ((s?.Layout ?? MagItemInfoSettings.LayoutPetLines) != MagItemInfoSettings.LayoutOneLine)
+                return d.ToPetLines();
+            oneLineParts = d.ToOneLineParts();
+            return new List<string> { d.ToOneLine() };
         }
         catch (Exception ex)
         {
@@ -358,7 +488,7 @@ public sealed partial class RynthAiPlugin
     /// </summary>
     private void PrintItemInfo(int itemId, bool identified)
     {
-        List<string>? lines = BuildItemInfoLines(itemId, out string? error);
+        List<string>? lines = BuildItemInfoLines(itemId, out string? error, out var oneLineParts);
         if (lines == null || lines.Count == 0)
         {
             ItemInfoLog($"0x{(uint)itemId:X8}: not printed: {error}");
@@ -366,16 +496,72 @@ public sealed partial class RynthAiPlugin
             return;
         }
         if (!identified) lines[0] += " (not identified — stats may be incomplete)";
+        lines[0] += LootVerdictSuffix(itemId);
         ItemInfoLog($"0x{(uint)itemId:X8}: printed {lines.Count} line(s), identified={identified}: {lines[0]}");
 
         var s = ItemInfoSettings;
-        string prefix = s?.Prefix ?? "[RynthAi] ";
+        string prefix = s?.Prefix ?? "[RynthAi Item] ";
         int headerType = s?.ChatType ?? 1;
         int detailType = s == null || s.DetailChatType == MagItemInfoSettings.SameAsHeader ? headerType : s.DetailChatType;
 
-        Host.WriteToChat(prefix + lines[0], headerType);
+        // One-line layout, colour per part: the parts' ranges, after the prefix (the tails added
+        // above come after every part and keep the line's colour).
+        string first = prefix + lines[0];
+        string? spans = s is { PartColors: true } && oneLineParts != null
+            ? ItemInfoPartColors.Payload(ItemInfoPartColors.Ranges(oneLineParts, prefix.Length), first.Length)
+            : null;
+        WriteItemInfoLine(first, headerType, spans);
         for (int i = 1; i < lines.Count; i++)
-            Host.WriteToChat(prefix + "  " + lines[i], detailType);
+            WriteItemInfoLine(prefix + "  " + lines[i], detailType);
+    }
+
+    /// <summary>The engine's name for a line's own colour in RynthCore's chat (engine UI/Data/ChatOwnColors.cs).</summary>
+    internal const string ChatColorTarget = "RynthCore.Chat";
+
+    // An engine from before 2026-11-05 answered "no such plugin" once: item info lines then go
+    // out exactly as before, without asking again.
+    private bool _infoColorUnsupported;
+
+    /// <summary>
+    /// One item info line, in <paramref name="chatType"/> (which picks its chat tab and AC's chat
+    /// window). With Info text colour set (<see cref="MagItemInfoSettings.TextColor"/>) the engine
+    /// is asked to draw the next line in that colour just before it is written: RynthCore's chat
+    /// shows it so, in the same tab. Unset, or an older engine: the plain WriteToChat, as before.
+    /// </summary>
+    internal void WriteItemInfoLine(string text, int chatType) => WriteItemInfoLine(text, chatType, null);
+
+    // An engine from before 2026-11-11 has line colours but no colour runs: it refuses "nextspans"
+    // and its "none" alike. The lines then keep one colour, without asking again.
+    private bool _partColorsUnsupported;
+
+    /// <summary>
+    /// As above; <paramref name="spans"/> (ItemInfoPartColors.Payload, "start:length:RRGGBB;...")
+    /// asks for those characters in their own colours too (engine ChatOwnColors "nextspans"). The
+    /// whole-line colour goes first, so an engine without colour runs still draws the line in it.
+    /// </summary>
+    internal void WriteItemInfoLine(string text, int chatType, string? spans)
+    {
+        string color = ItemInfoSettings?.TextColor ?? string.Empty;
+        if (color.Length > 0 && text.Length > 0 && !_infoColorUnsupported && Host.HasWriteToChat && Host.HasSendPluginCommand
+            && !Host.SendPluginCommand(ChatColorTarget, "nextcolor", color))
+        {
+            _infoColorUnsupported = true;
+            ItemInfoLog("the engine has no line colours (before 2026-11-05): item info keeps its chat type's colour");
+        }
+        if (!string.IsNullOrEmpty(spans) && text.Length > 0 && !_partColorsUnsupported && !_infoColorUnsupported
+            && Host.HasWriteToChat && Host.HasSendPluginCommand
+            && !Host.SendPluginCommand(ChatColorTarget, ItemInfoPartColors.NextSpansAction, spans))
+        {
+            // "none" tells a refused payload (logged, kept on) from an engine without runs.
+            if (Host.SendPluginCommand(ChatColorTarget, ItemInfoPartColors.NextSpansAction, "none"))
+                ItemInfoLog($"the engine refused the part colours '{spans}' for '{text}': this line keeps one colour");
+            else
+            {
+                _partColorsUnsupported = true;
+                ItemInfoLog("the engine has no part colours (before 2026-11-11): item info lines keep one colour");
+            }
+        }
+        Host.WriteToChat(text, chatType);
     }
 
     /// <summary>Item Info window preview: the selected item's lines, or null when nothing is selected.</summary>
@@ -385,6 +571,14 @@ public sealed partial class RynthAiPlugin
         uint selected = Host.GetSelectedItemId();
         if (selected == 0) return null;
         int id = unchecked((int)selected);
+        if (IsSelf(selected))
+        {
+            // Cache only: the window redraws every frame, so it never asks for an identify.
+            bool known = !Host.HasHasAppraisalData || Host.HasAppraisalData(selected);
+            List<string> self = ItemInfo.SelfRatings.Build(_objectCache?[id]?.Name ?? string.Empty,
+                                                          stype => ReadSelfInt(id, stype), known, oneLine: false);
+            return string.Join("\n  ", self);
+        }
         List<string>? lines = BuildItemInfoLines(id, out string? error);
         if (lines == null || lines.Count == 0) return error;
         if (Host.HasHasAppraisalData && !Host.HasAppraisalData(selected))
@@ -393,10 +587,50 @@ public sealed partial class RynthAiPlugin
         return string.Join("\n  ", lines);
     }
 
-    /// <summary>Item Info window "Test" button: sample line in the chosen chat type.</summary>
+    /// <summary>
+    /// The "Looted" line for a pickup, described when the Item Info loot setting wants it
+    /// (<see cref="LootChatLine"/>), with its chat type; null for the plain line. Corpse loot builds it
+    /// when the pickup goes out (the item and its ID are surely there then), ground loot on arrival.
+    /// </summary>
+    private (string Line, int ChatType)? DescribeLootPickup(int itemId, string action, string name, string rule,
+        bool isSalvage, bool stackable, string where = "")
+    {
+        MagItemInfoSettings? s = ItemInfoSettings;
+        WorldObject? wo = _objectCache?[itemId];
+        if (s == null || wo == null) return null;
+        LootChatLine.Detail detail = LootChatLine.DetailFor(s, action, isSalvage, stackable, wo.ObjectClass);
+        if (detail == LootChatLine.Detail.None) return null;
+        try
+        {
+            bool identified = !Host.HasHasAppraisalData || Host.HasAppraisalData(unchecked((uint)itemId));
+            string line = LootChatLine.Format(detail, s, new CacheItemPropertySource(Host, wo), action, name, rule, where, identified);
+            return (line, LootChatLine.ChatTypeOf(s));
+        }
+        catch (Exception ex)
+        {
+            RynthLog.Exception(LogCat.General, ex, $"loot line 0x{(uint)itemId:X8}");
+            return null;
+        }
+    }
+
+    /// <summary>Item Info window "Test" button: sample line in the chosen chat type (and the Info text colour).</summary>
     private void TestItemInfoChatType(int chatType)
     {
-        string prefix = ItemInfoSettings?.Prefix ?? "[RynthAi] ";
-        Host.WriteToChat($"{prefix}Item info chat test (type {chatType})", chatType);
+        string prefix = ItemInfoSettings?.Prefix ?? "[RynthAi Item] ";
+        string color = ItemInfoSettings?.TextColor ?? string.Empty;
+        WriteItemInfoLine($"{prefix}Item info chat test (type {chatType}{(color.Length > 0 ? ", colour " + color : "")})", chatType);
+    }
+
+    /// <summary>
+    /// Item Info window "Colour each part" Test: a one-line sample naming every part, each in its
+    /// colour, in the Item Info chat type (as a real one-line item info line is written).
+    /// </summary>
+    private void TestItemInfoPartColors()
+    {
+        string prefix = ItemInfoSettings?.Prefix ?? "[RynthAi Item] ";
+        var pieces = ItemInfoPartColors.SamplePieces();
+        string text = prefix + ItemInfoPartColors.Join(pieces);
+        WriteItemInfoLine(text, ItemInfoSettings?.ChatType ?? 1,
+            ItemInfoPartColors.Payload(ItemInfoPartColors.Ranges(pieces, prefix.Length), text.Length));
     }
 }

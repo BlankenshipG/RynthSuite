@@ -14,14 +14,17 @@ public static unsafe class PluginExports
 {
     internal static readonly RynthPluginRuntime<RynthNavPlugin> Runtime = new();
 
-    // Typed interfaces for other plugins (host GetPluginInterface, API v68): "RynthNav.Path" v1
-    // (RynthAi plans stuck-recovery detours with it). Fixed signature: void* (const char* iface, uint version).
+    // Typed interfaces for other plugins (host GetPluginInterface, API v68): "RynthNav.Path" v2, also
+    // handed to v1 callers (RynthAi plans stuck-recovery detours with FindPath, and its outdoor hunting
+    // walks with FindPathEx and Raycast). Fixed signature: void* (const char* iface, uint version).
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginQueryInterface", CallConvs = new[] { typeof(CallConvCdecl) })]
     private static IntPtr QueryInterface(IntPtr ifaceAnsi, uint version)
     {
         try
         {
             string iface = ifaceAnsi == IntPtr.Zero ? "" : Marshal.PtrToStringAnsi(ifaceAnsi) ?? "";
+            // "RynthNav.Routes" v1 (2026-10-30): the route maker's JSON jobs (RoutesInterface.cs).
+            if (iface == RynthCore.Plugin.Shared.RynthNavRoutesApiV1.InterfaceName) return RoutesInterface.Query(iface, version);
             return PathInterface.Query(iface, version);
         }
         catch
@@ -36,15 +39,36 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginShutdown", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Shutdown()
     {
-        Runtime.Shutdown();
-        PathInterface.Release();
+        // An exception escaping an UnmanagedCallersOnly export fail-fasts the client under NativeAOT.
+        // Guard each step so one failure cannot skip the other.
+        RynthNavPlugin? plugin = Runtime.Plugin;   // Runtime.Shutdown drops it; the log needs its host
+        try { Runtime.Shutdown(); }
+        catch (Exception ex) { LogShutdownError(plugin, "Runtime.Shutdown", ex); }
+        try { PathInterface.Release(); }
+        catch (Exception ex) { LogShutdownError(plugin, "PathInterface.Release", ex); }
+        try { RoutesInterface.Release(); }
+        catch (Exception ex) { LogShutdownError(plugin, "RoutesInterface.Release", ex); }
+    }
+
+    private static void LogShutdownError(RynthNavPlugin? plugin, string step, Exception ex)
+    {
+        try { plugin?.LogFromExport($"[RynthNav] Shutdown: {step} failed: {ex.GetType().Name}: {ex.Message}"); }
+        catch { /* never throw out of a native export */ }
     }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginName", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static IntPtr GetName() => RynthNavPlugin.NamePointer;
+    public static IntPtr GetName()
+    {
+        try { return RynthNavPlugin.NamePointer; }   // a static initializer that throws surfaces here (TypeInitializationException)
+        catch { return IntPtr.Zero; }
+    }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginVersion", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static IntPtr GetVersion() => RynthNavPlugin.VersionPointer;
+    public static IntPtr GetVersion()
+    {
+        try { return RynthNavPlugin.VersionPointer; }
+        catch { return IntPtr.Zero; }
+    }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnLoginComplete", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void OnLoginComplete() => Runtime.OnLoginComplete();

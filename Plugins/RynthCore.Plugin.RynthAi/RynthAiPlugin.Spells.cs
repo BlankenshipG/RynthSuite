@@ -27,6 +27,8 @@ public sealed partial class RynthAiPlugin
         _spellsUi.SetHooks(
             path => Interlocked.Exchange(ref _pendingBuffProfilePath, path ?? string.Empty),
             () => _dashboard?.RefreshBuffProfileFiles());
+        // The Buff Items tab's Add buttons: /ra buffitems add|addselected on the plugin tick.
+        _spellsUi.SetBuffItemsCommand(args => EnqueueRemoteCommand("buffitems", args));
     }
 
     /// <summary>Pump thread: applies the window's profile choice and feeds the open window.</summary>
@@ -50,13 +52,14 @@ public sealed partial class RynthAiPlugin
             _spellsKnownPushedAt = now;
             ui.SetKnownSpells(_spellManager.CopyKnownSpellIds());
         }
+        PushBuffItemRows();
     }
 
     /// <summary>/ra spells [show|hide|toggle] (also the dashboard's "spells" remote command).</summary>
     private void HandleSpellsCommand(string mode)
     {
         var settings = _dashboard?.Settings;
-        if (settings == null) { ChatLine("[RynthAi] Settings not ready (log in first)."); return; }
+        if (settings == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
         EnsureSpellsUi();
 
         settings.ShowSpellsWindow = mode.ToLowerInvariant() switch
@@ -65,7 +68,7 @@ public sealed partial class RynthAiPlugin
             "hide" or "close" or "off" => false,
             _ => !settings.ShowSpellsWindow,
         };
-        ChatLine($"[RynthAi] Spells window {(settings.ShowSpellsWindow ? "opened" : "closed")}.");
+        ReplyOk($"[RynthAi] Spells window {(settings.ShowSpellsWindow ? "opened" : "closed")}.");
     }
 
     /// <summary>
@@ -75,7 +78,7 @@ public sealed partial class RynthAiPlugin
     private void HandleBuffProfileCommand(string[] parts)
     {
         var dash = _dashboard;
-        if (dash == null) { ChatLine("[RynthAi] Settings not ready (log in first)."); return; }
+        if (dash == null) { ReplyFail("[RynthAi] Settings not ready (log in first)."); return; }
 
         string arg = parts.Length >= 3 ? string.Join(" ", parts, 2, parts.Length - 2).Trim() : string.Empty;
         if (arg.Length == 0 || arg.Equals("list", StringComparison.OrdinalIgnoreCase))
@@ -96,6 +99,7 @@ public sealed partial class RynthAiPlugin
             || arg.Equals(LegacyDashboardRenderer.BuiltInBuffProfileLabel, StringComparison.OrdinalIgnoreCase))
         {
             dash.SetActiveBuffProfile(string.Empty);
+            Reply.Answered();
             return; // BuffManager posts the "built-in list" chat line
         }
 
@@ -103,8 +107,9 @@ public sealed partial class RynthAiPlugin
         {
             if (!Path.GetFileNameWithoutExtension(file).Equals(arg, StringComparison.OrdinalIgnoreCase)) continue;
             dash.SetActiveBuffProfile(Path.Combine(BuffProfileStore.Folder, file));
+            Reply.Answered();
             return; // BuffManager posts the "profile 'X'" chat line once it loads
         }
-        ChatLine($"[RynthAi] No buff profile named '{arg}'. /ra buffprofile list shows them.");
+        ReplyFail($"[RynthAi] No buff profile named '{arg}'. /ra buffprofile list shows them.");
     }
 }

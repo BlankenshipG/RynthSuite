@@ -36,6 +36,10 @@ internal static class WeaponTests
         r.Add("element choice: a matching rending wins for its element", ChoiceRending);
         r.Add("element choice: a wand always casts its own element (rule, Damage tab, no match)", ChoiceWandCastsOwn);
         r.Add("element choice: elements the character can't cast are skipped", ChoiceCastable);
+        r.Add("preferred damage: Melee/Missile/War/Void picks the pool; Auto keeps the first listed kind", PreferredPicksPool);
+        r.Add("preferred damage: War never casts Nether, Void nothing else; an unusable preference falls back to Auto", PreferredSchools);
+        r.Add("preferred damage: other-kind slayers, the Default row's weapon and the rule's element obey it; the monster's own pick doesn't", PreferredVsOtherSteps);
+        r.Add("preferred damage: names parse tolerantly; a new rule is Auto", PreferredParse);
         r.Add("slayer: beats the weakness and the Monsters rule's damage type", SlayerBeatsWeaknessAndRule);
         r.Add("slayer: only this monster's own Damage tab weapon beats it, not the DEFAULT row's", SlayerVsDamageTab);
         r.Add("slayer (owner's rule 2026-10-05): a Slash slayer beats a Pierce weapon the monster is weaker to", SlayerBeatsLowerResist);
@@ -48,10 +52,21 @@ internal static class WeaponTests
         r.Add("slayer: creature type unknown, the old choice", SlayerUnknownType);
         r.Add("slayer: the element follows the chosen weapon", SlayerElement);
         r.Add("slayer: read through the host (int 166, float 138, monster int 2), cached by wcid", SlayerFromHost);
+        r.Add("refusal: a refused stance change in combat's equip pass sets no backoff and starts no stuck clock", StanceRefusedKeepsBackoff);
         r.Add("weapon choice: an unlisted wand is never picked (Damage tab, learned, pack, name)", UnlistedNeverPicked);
+        r.Add("cast element: with the plan's wand not in hand (a held swap), the wand in hand casts its own element (R-20261029-125901-e22d)", HeldWandCastsItsElement);
+        r.Add("weapon choice: the Monsters rule's weapon is used (R-20261022-193411-fb72), below this monster's Damage tab pick; the Default row's like the Damage tab default", MonsterRuleWeapon);
+        r.Add("Items list: a listed item no longer carried is reported missing (pack, hand, unknown)", MissingFromPack);
+        r.Add("weapon choice: a listed weapon someone else now has (sold) is skipped, even as this monster's Damage tab pick", SoldWeaponSkipped);
         r.Add("weapon swap: one in flight, confirmed, retry cap, then what's in hand", SwapOneInFlight);
         r.Add("weapon swap: no flip-flop between two weapons", SwapNoFlipFlop);
+        r.Add("weapon swap: a new target that wants the weapon just swapped away from gets it at once (Drakkon 2026-10-12)", SwapBackForNewTarget);
+        r.Add("weapon swap: the weapon set for a monster goes in past the 4-swaps-a-minute cap for a new target (R-20261107-141028-b33e)", PerMobWandPastWindowCap);
         r.Add("weapon swap: a server refusal counts as a failed try", SwapRefused);
+        r.Add("weapon swap: 'too busy' is no try, and a portal or recall ends the rest (Kelpie 2026-10-15)", SwapBusyNotCounted);
+        r.Add("weapon swap: combat reads ACE's busy answer (0x1D then SaveFailed 0) as busy, a real refusal as a try", CombatReadsBusyWield);
+        r.Add("weapon swap: a wield that lands after the choice moved still counts (no swap straight back)", SwapLandsWhenChoiceMoved);
+        r.Add("element choice: a weakness swap must beat the weapon in hand by the min gain", ChoiceMinSwapGain);
         r.Add("tester's case: Dragon's Isle, an unlisted fire wand and Blades", TesterDragonsIsle);
     }
 
@@ -222,6 +237,116 @@ internal static class WeaponTests
         => new() { Source = "test", Order = order.OrderByDescending(o => o.M).ToList() };
 
     private static bool All(string e) => true;
+
+    private static WeaponCandidate Weapon(int id, int kind, string elem = "", bool inHand = false)
+        => new(id, "Weapon " + id, kind, elem, "", inHand);
+
+    private static void PreferredPicksPool()
+    {
+        // A sword listed first, a bow, a fire wand and a nether wand: Auto fights with the first kind (melee).
+        var list = new List<WeaponCandidate>
+        {
+            Weapon(1, CombatMode.Melee, "Slash"), Weapon(2, CombatMode.Missile, "Pierce"),
+            Weapon(3, CombatMode.Magic, "Fire"), Weapon(4, CombatMode.Magic, "Nether"),
+        };
+        var weak = Rank(("Fire", 1.5), ("Nether", 1.4), ("Slash", 1.0), ("Pierce", 1.0));
+        Check.Eq(WeaponPlanner.Choose(list, "", weak, All).WeaponId, 1, "Auto: the first listed kind (melee), the Slash sword");
+        Check.Eq(WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "Auto").WeaponId, 1, "Auto spelled out");
+
+        var melee = WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "Melee");
+        Check.Eq(melee.WeaponId, 1, "Melee: the sword");
+        Check.True(melee.Source.EndsWith("prefers Melee"), "Melee: the source says why (" + melee.Source + ")");
+        var missile = WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "Missile");
+        Check.Eq(missile.WeaponId, 2, "Missile: the bow, though the monster is weaker to Fire and Nether");
+        var war = WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "War Magic");
+        Check.Eq(war.WeaponId, 3, "War Magic: the fire wand");
+        Check.Eq(war.Element, "Fire", "casting Fire");
+        var voidP = WeaponPlanner.Choose(list, "", weak, All, preferredDamage: "Void Magic");
+        Check.Eq(voidP.WeaponId, 4, "Void Magic: the nether wand");
+        Check.Eq(voidP.Element, "Nether", "casting Nether");
+
+        // Weakness unknown: the weapon in hand within the pool, else the first of the pool.
+        var hand = new List<WeaponCandidate>
+        {
+            Weapon(1, CombatMode.Melee, "Slash", inHand: true), Weapon(2, CombatMode.Magic, "Fire"), Weapon(3, CombatMode.Magic, "Cold"),
+        };
+        Check.Eq(WeaponPlanner.Choose(hand, "", null, All, preferredDamage: "War Magic").WeaponId, 2, "unknown weakness: the first War wand, not the sword in hand");
+    }
+
+    private static void PreferredSchools()
+    {
+        // A wand with no element: War casts the weakest non-Nether element, Void casts Nether.
+        var plain = new List<WeaponCandidate> { Weapon(1, CombatMode.Magic, "", inHand: true) };
+        var weak = Rank(("Nether", 1.6), ("Fire", 1.4), ("Cold", 1.0));
+        Check.Eq(WeaponPlanner.Choose(plain, "", weak, All).Element, "Nether", "Auto: the weakest castable, Nether");
+        Check.Eq(WeaponPlanner.Choose(plain, "", weak, All, preferredDamage: "War Magic").Element, "Fire", "War Magic: Nether is out, Fire");
+        var voidPlain = WeaponPlanner.Choose(plain, "", weak, All, preferredDamage: "Void Magic");
+        Check.Eq(voidPlain.WeaponId, 1, "an element-less wand is a War wand: no Void pool, so Auto keeps the same wand");
+        Check.False(voidPlain.Source.Contains("prefers"), "and the source doesn't claim the preference");
+
+        // An unusable preference falls back to Auto and doesn't claim the preference.
+        var mixed = new List<WeaponCandidate> { Weapon(1, CombatMode.Melee, "Slash"), Weapon(2, CombatMode.Magic, "Fire") };
+        var noVoid = WeaponPlanner.Choose(mixed, "", null, All, preferredDamage: "Void Magic");
+        Check.Eq(noVoid.WeaponId, 1, "no nether wand listed: Auto, the first kind");
+        Check.False(noVoid.Source.Contains("prefers"), "and the source doesn't claim the preference");
+        var noVoidSkill = WeaponPlanner.Choose(
+            new List<WeaponCandidate> { Weapon(1, CombatMode.Melee, "Slash"), Weapon(2, CombatMode.Magic, "Nether") }, "", null,
+            e => e != "Nether", preferredDamage: "Void Magic");
+        Check.Eq(noVoidSkill.WeaponId, 1, "a nether wand but no Void Magic: Auto");
+        var noWarSkill = WeaponPlanner.Choose(mixed, "", null, e => false, preferredDamage: "War Magic");
+        Check.Eq(noWarSkill.WeaponId, 1, "a fire wand but nothing castable: Auto");
+        var noMissile = WeaponPlanner.Choose(mixed, "", null, All, preferredDamage: "Missile");
+        Check.Eq(noMissile.WeaponId, 1, "no launcher listed: Auto");
+        Check.Eq(WeaponPlanner.Choose(new List<WeaponCandidate>(), "", null, All, preferredDamage: "Melee").WeaponId, 0, "nothing listed: nothing");
+    }
+
+    private static void PreferredVsOtherSteps()
+    {
+        var list = new List<WeaponCandidate>
+        {
+            Weapon(1, CombatMode.Melee, "Slash"), Weapon(2, CombatMode.Magic, "Fire"), Weapon(3, CombatMode.Magic, "Nether"),
+        };
+
+        // A slayer of another kind is not a candidate (like a melee slayer for a mage).
+        var slayer = new List<WeaponCandidate>
+        {
+            new(1, "Sword", CombatMode.Melee, "Slash", "", false, SlayerType: 5, SlayerBonus: 2),
+            Weapon(2, CombatMode.Magic, "Fire"),
+        };
+        Check.Eq(WeaponPlanner.Choose(slayer, "", null, All, creatureType: 5).WeaponId, 1, "Auto: the melee slayer");
+        Check.Eq(WeaponPlanner.Choose(slayer, "", null, All, creatureType: 5, preferredDamage: "War Magic").WeaponId, 2, "War Magic: the slayer isn't used");
+
+        // The Default row's weapon (fixedIsDefault) only when it is of the preferred kind.
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, fixedWeaponId: 1, fixedIsDefault: true, preferredDamage: "War Magic").WeaponId, 2,
+            "Default row's sword, War Magic preferred: a wand");
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, fixedWeaponId: 2, fixedIsDefault: true, preferredDamage: "War Magic").WeaponId, 2,
+            "Default row's fire wand, War Magic preferred: kept");
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, fixedWeaponId: 1, fixedIsDefault: true).WeaponId, 1, "Auto: the Default row's sword");
+
+        // The monster's own Damage tab weapon is the player's explicit pick: it wins.
+        Check.Eq(WeaponPlanner.Choose(list, "", null, All, fixedWeaponId: 1, fixedIsDefault: false, preferredDamage: "War Magic").WeaponId, 1,
+            "this monster's own sword pick, War Magic preferred: the sword");
+
+        // The rule's element picks within the preferred kind; none of it there: stay in the kind.
+        var cast = WeaponPlanner.Choose(list, "Nether", null, All, preferredDamage: "Void Magic");
+        Check.Eq(cast.WeaponId, 3, "rule Nether + Void Magic: the nether wand");
+        var other = WeaponPlanner.Choose(list, "Slash", null, All, preferredDamage: "War Magic");
+        Check.Eq(other.WeaponId, 2, "rule Slash + War Magic: no Slash wand, so the war wand, not the sword");
+    }
+
+    private static void PreferredParse()
+    {
+        Check.Eq(DamageStyles.Parse("war magic"), DamageStyle.War, "lower case with a space");
+        Check.Eq(DamageStyles.Parse("WarMagic"), DamageStyle.War, "joined");
+        Check.Eq(DamageStyles.Parse("Void"), DamageStyle.Void, "short form");
+        Check.Eq(DamageStyles.Parse("Void Magic"), DamageStyle.Void, "panel name");
+        Check.Eq(DamageStyles.Parse("Melee"), DamageStyle.Melee, "melee");
+        Check.Eq(DamageStyles.Parse("Missile"), DamageStyle.Missile, "missile");
+        Check.Eq(DamageStyles.Parse(null), DamageStyle.Auto, "null");
+        Check.Eq(DamageStyles.Parse("Fire"), DamageStyle.Auto, "unknown");
+        foreach (string n in DamageStyles.Names) Check.Eq(DamageStyles.Name(DamageStyles.Parse(n)), n, "round trip " + n);
+        Check.Eq(new MonsterRule().PreferredDamage, "Auto", "a new rule is Auto");
+    }
 
     private static void ChoiceRule()
     {
@@ -644,10 +769,11 @@ internal static class WeaponTests
         public readonly MonsterDamageStore Store = new();
         public WorldObject Target;
 
-        public Rig(uint wcid, string monsterName)
+        public Rig(uint wcid, string monsterName, bool modeCalls = false)
         {
             FakeHost.Reset();
             FakeHost.WeaponCalls = true;
+            FakeHost.CombatModeCalls = modeCalls;
             FakeHost.CombatModeValue = CombatMode.Magic;
             FakeHost.Names[ListedWand] = "Wand"; FakeHost.ItemTypes[ListedWand] = 0x8000;
             FakeHost.Ints[(ListedWand, 45)] = 0x40;            // identified: Lightning
@@ -664,6 +790,231 @@ internal static class WeaponTests
             Target = new WorldObject(unchecked((int)Monster), monsterName, AcObjectClass.Monster);
             S.ItemRules = new List<ItemRule> { new() { Id = unchecked((int)ListedWand), Name = "Wand", Element = "Lightning", ElementSource = "properties" } };
         }
+    }
+
+    // 2026-10-14: a sold Flaming Greataxe, still listed and still known to the client, was the weapon
+    // chosen for the monster; three wield tries over 13 s with the character standing in the fight.
+    private static void SoldWeaponSkipped()
+    {
+        const uint Vendor = 0x80099999;
+        FakeHost.Reset();
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        FakeHost.Names[ListedWand] = "Wand"; FakeHost.ItemTypes[ListedWand] = 0x8000;
+        FakeHost.Ints[(ListedWand, 45)] = 0x40;            // Lightning
+        FakeHost.Names[FireWand] = "Fire Wand"; FakeHost.ItemTypes[FireWand] = 0x8000;
+        FakeHost.Ints[(FireWand, 18)] = 0x20;              // Fire
+        FakeHost.Wcids[Monster] = 1535;
+        FakeHost.Containers[ListedWand] = Player;          // ours
+        FakeHost.Containers[FireWand] = Vendor;            // sold: the vendor has it now
+        var host = FakeHost.Create();
+        var cache = FakeHost.MakeCache(host, Player, new[] { ListedWand, FireWand });
+        var s = new LegacyUiSettings();
+        var store = new MonsterDamageStore();
+        var c = new CombatManager(host, s, cache);
+        c.SetPlayerId(Player);
+        c.SetDamageStores(null, store);
+        c.CanCastOverride = e => e != "Nether";
+        s.ItemRules = new List<ItemRule>
+        {
+            new() { Id = unchecked((int)ListedWand), Name = "Wand", Element = "Lightning", ElementSource = "properties" },
+            new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "properties" },
+        };
+        store.SetManualWeapon(1535, FireWand);             // the Damage tab's pick for this monster
+        var target = new WorldObject(unchecked((int)Monster), "Ethereal Wisp", AcObjectClass.Monster);
+
+        var plan = c.PlanFor(target, null);
+        Check.Eq(unchecked((uint)plan.WeaponId), ListedWand, "the carried wand, not the sold Damage tab pick");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("isn't in your pack")), "the skip is logged: " + string.Join(" | ", FakeHost.Logs.Take(10)));
+        Check.Eq(c.ListedCandidates().Count, 1, "the sold weapon isn't a candidate at all");
+
+        FakeHost.Containers[FireWand] = Player;            // bought back
+        Check.Eq(c.ListedCandidates().Count, 2, "back in the pack: a candidate again");
+    }
+
+    private static void MissingFromPack()
+    {
+        // 2026-10-11: Drakkon's buff wand left his pack and the Items slot still just said "Wand".
+        const int InPack = 0x7000A001, InHand = 0x7000A002, Gone = 0x7000A003, Unknown = 0x7000A004;
+        var known = new Dictionary<int, WorldObject>
+        {
+            [InPack] = new WorldObject(InPack, "Silver Wand", AcObjectClass.WandStaffOrb),
+            [InHand] = new WorldObject(InHand, "Ken", AcObjectClass.MeleeWeapon),
+            [Gone] = new WorldObject(Gone, "Wand", AcObjectClass.WandStaffOrb),   // the client still knows it
+        };
+        WorldObject? Look(int id) => known.TryGetValue(id, out var wo) ? wo : null;
+        var rules = new List<ItemRule>
+        {
+            new() { Id = InPack, Name = "Silver Wand" },
+            new() { Id = InHand, Name = "Ken" },
+            new() { Id = Gone, Name = "Wand" },
+            new() { Id = Unknown, Name = "Old Bow" },
+            new() { Id = 0, Name = "never resolved" },
+        };
+        var pack = new[] { known[InPack], new WorldObject(0x7000A0FF, "Pyreal", AcObjectClass.Money) };
+        var missing = WeaponList.MissingIds(rules, pack, Look, wo => wo.Id == InHand);
+        Check.True(!missing.Contains(InPack), "in the pack: carried");
+        Check.True(!missing.Contains(InHand), "wielded (not in the pack list): carried");
+        Check.True(missing.Contains(Gone), "left the pack, the client still knows it: missing");
+        Check.True(missing.Contains(Unknown), "the client doesn't know it at all: missing");
+        Check.Eq(missing.Count, 2, "only those two (id 0 is never reported)");
+
+        missing = WeaponList.MissingIds(rules, Array.Empty<WorldObject>(), Look, _ => false);
+        Check.Eq(missing.Count, 0, "inventory not known yet (empty, logging in): nothing reported missing");
+    }
+
+    private static void StanceRefusedKeepsBackoff()
+    {
+        var rig = new Rig(1535, "Ethereal Wisp", modeCalls: true);
+        rig.C.InHandOverride = () => unchecked((int)ListedWand);   // the wand is in hand
+        FakeHost.CombatModeValue = CombatMode.NonCombat;           // but the stance is not Magic yet
+        FakeHost.Ints[(ListedWand, 10)] = 0x01000000;               // CurrentWieldedLocation: reads wielded (the stuck-clock branch)
+        var equip = typeof(CombatManager).GetMethod("EquipWeaponAndSetStance", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var last = typeof(CombatManager).GetField("lastStanceAttempt", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var stuck = typeof(CombatManager).GetField("_stanceStuckSince", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        FakeHost.CombatModeRefuse = true;
+        for (int i = 0; i < 5; i++) equip.Invoke(rig.C, new object[] { rig.Target, "Auto" });
+        Check.Eq(FakeHost.CombatModeRefusals, 5, "every pass asks again: a refusal sets no backoff");
+        Check.True((DateTime)last.GetValue(rig.C)! == DateTime.MinValue, "lastStanceAttempt stays put");
+        Check.True((DateTime)stuck.GetValue(rig.C)! == DateTime.MinValue, "the stuck clock has not started");
+        Check.Eq(FakeHost.Uses.Count, 0, "no re-equip UseObject");
+        FakeHost.CombatModeRefuse = false;
+        equip.Invoke(rig.C, new object[] { rig.Target, "Auto" });
+        Check.Eq(string.Join(",", FakeHost.CombatModeRequests), CombatMode.Magic.ToString(), "accepted: the request goes out");
+        Check.True((DateTime)last.GetValue(rig.C)! != DateTime.MinValue, "and only now lastStanceAttempt is stamped");
+    }
+    /// <summary>
+    /// Problem report R-20261022-193411-fb72 (2026-10-22): "ignoring monster rules, specifically
+    /// which weapon is set for the mob type". The rule's WeaponId was imported and shown but never
+    /// read; the weakness picked the weapon ("src=weak to Cold"). Ethereal Wisp's weakness picks the
+    /// Lightning wand; the rule says the fire wand. Each step uses a new rule object, so PlanFor's
+    /// cache (keyed on the rule by reference) doesn't hand back the previous answer.
+    /// </summary>
+    // Conquest, 2026-10-29: "not swapping 0x80181B46 'Frost Sceptre' for 0x8024231C 'Acid Staff' yet
+    // (target at 23% health)", then Incantation of Acid Blast cast through the Frost Sceptre.
+    private static void HeldWandCastsItsElement()
+    {
+        var rig = new Rig(1535, "Ethereal Wisp");
+        rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+        var rule = new MonsterRule { Name = "Ethereal" };   // damage type Auto
+        var pref = typeof(CombatManager).GetMethod("GetPreferredElement", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        string Elem() => (string)pref.Invoke(rig.C, new object?[] { rig.Target, rule })!;
+
+        var plan = rig.C.PlanFor(rig.Target, rule);
+        Check.Eq(unchecked((uint)plan.WeaponId), ListedWand, "the plan: the Lightning wand (the weakness)");
+
+        rig.C.InHandOverride = () => unchecked((int)ListedWand);
+        Check.Eq(Elem(), "Lightning", "the plan's wand in hand: its element");
+
+        rig.C.InHandOverride = () => unchecked((int)FireWand);   // the swap was held: the fire wand stays
+        Check.Eq(Elem(), "Fire", "the fire wand in hand casts Fire, not the plan's Lightning");
+        Check.True(FakeHost.Logs.Count(l => l.Contains("isn't in hand: casting Fire")) == 1, "logged once");
+        Elem();
+        Check.True(FakeHost.Logs.Count(l => l.Contains("isn't in hand: casting Fire")) == 1, "still once");
+
+        rig.C.CanCastOverride = e => e != "Nether" && e != "Fire";   // a wand whose element can't be cast
+        Check.Eq(Elem(), "Lightning", "an element the character can't cast: the plan's element");
+
+        rig.C.InHandOverride = () => 0;                               // nothing readable in hand
+        rig.C.CanCastOverride = e => e != "Nether";
+        Check.Eq(Elem(), "Lightning", "nothing in hand: the plan's element");
+    }
+
+    private static void MonsterRuleWeapon()
+    {
+        var rig = new Rig(1535, "Ethereal Wisp");
+        rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+        rig.S.EnsureDefaultRule();
+        var defRow = rig.S.MonsterRules[0];
+        MonsterRule Own(uint weapon) => new() { Name = "Ethereal", WeaponId = unchecked((int)weapon) };
+
+        var auto = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(unchecked((uint)auto.WeaponId), ListedWand, "no weapon on the rule: the weakness picks the Lightning wand");
+
+        var p = rig.C.PlanFor(rig.Target, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "the rule's weapon, not the weakness pick");
+        Check.Eq(p.Source, "Monsters rule weapon", "source");
+        Check.Eq(p.Element, "Fire", "it casts its own element");
+
+        // This monster's own Damage tab pick beats the rule's weapon.
+        rig.Store.SetManualWeapon(1535, ListedWand);
+        p = rig.C.PlanFor(rig.Target, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "the Damage tab pick for this monster wins over the rule's");
+        Check.Eq(p.Source, "Damage tab", "source");
+        rig.Store.SetManualWeapon(1535, 0);
+
+        // The rule's weapon beats the Damage tab DEFAULT row's.
+        rig.Store.SetDefaultWeapon(ListedWand);
+        p = rig.C.PlanFor(rig.Target, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "the rule's weapon wins over the Damage tab default");
+        p = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(p.Source, "Damage tab default", "no weapon on the rule: the Damage tab default");
+
+        // The Monsters Default row's weapon comes after the Damage tab default.
+        defRow.WeaponId = unchecked((int)FireWand);
+        p = rig.C.PlanFor(rig.Target, defRow);
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "Default row matched: the Damage tab default beats its weapon");
+        Check.Eq(p.Source, "Damage tab default", "source");
+        rig.Store.SetDefaultWeapon(0);
+        p = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "no Damage tab weapons: the Monsters Default row's weapon");
+        Check.Eq(p.Source, "Monsters Default weapon", "source");
+
+        // A slayer beats the Default row's weapon (a DEFAULT pick, step 3), not the rule's own (step 1).
+        FakeHost.Ints[(ListedWand, 166)] = Olthoi;
+        var olthoi = new WorldObject(unchecked((int)Monster) + 7, "Ethereal Wisp", AcObjectClass.Monster);
+        FakeHost.Wcids[Monster + 7] = 990007;
+        FakeHost.Ints[(Monster + 7, 2)] = Olthoi;
+        p = rig.C.PlanFor(olthoi, defRow);
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "the Default row's fire wand loses to an Olthoi slayer");
+        Check.True(p.Source.StartsWith("slayer"), "source: " + p.Source);
+        p = rig.C.PlanFor(olthoi, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "the rule's own fire wand beats the slayer, like a Damage tab pick");
+        FakeHost.Ints.Remove((ListedWand, 166));
+        defRow.WeaponId = 0;
+
+        // The monster's wcid isn't known: the rule's weapon still applies.
+        var noWcid = new WorldObject(unchecked((int)Monster) + 9, "Ethereal Wisp", AcObjectClass.Monster);
+        p = rig.C.PlanFor(noWcid, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "wcid unknown: the rule's weapon");
+
+        // Not in the Items list: still used, the Monsters tab pick is the player's (owner, 2026-10-22).
+        rig.S.ItemRules.RemoveAll(r => r.Id == unchecked((int)FireWand));
+        p = rig.C.PlanFor(rig.Target, Own(FireWand));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "an unlisted rule weapon is still used");
+        Check.Eq(p.Source, "Monsters rule weapon", "source");
+        Check.Eq(p.Element, "Fire", "it casts its own element (read from the weapon, not the list)");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Monsters rule 'Ethereal' weapon") && l.Contains("isn't in the Items list") && l.Contains("using it")),
+            "logged once: " + string.Join(" | ", FakeHost.Logs.Where(l => l.Contains("EquipDiag")).Take(6)));
+        defRow.WeaponId = unchecked((int)FireWand);
+        p = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(unchecked((uint)p.WeaponId), FireWand, "the Default row's unlisted weapon too");
+        defRow.WeaponId = 0;
+        // ...but a Damage tab pick still must be listed.
+        rig.Store.SetManualWeapon(1535, FireWand);
+        p = rig.C.PlanFor(rig.Target, Own(0));
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "an unlisted Damage tab pick is still skipped");
+        rig.Store.SetManualWeapon(1535, 0);
+        // A rule weapon the client doesn't know (not carried, never seen): skipped, the weakness pick.
+        const uint Unknown = 0x6000006F;
+        p = rig.C.PlanFor(rig.Target, Own(Unknown));
+        Check.Eq(unchecked((uint)p.WeaponId), ListedWand, "an unknown rule weapon is skipped: the weakness pick");
+        rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+
+        // Through combat's equip pass: the rule matched by name drives the wield.
+        rig.S.MonsterRules.Add(Own(FireWand));
+        rig.C.InHandOverride = () => unchecked((int)ListedWand);   // the weakness pick is in hand
+        var equip = typeof(CombatManager).GetMethod("EquipWeaponAndSetStance", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        equip.Invoke(rig.C, new object[] { rig.Target, "Auto" });
+        Check.Eq(FakeHost.Uses.FirstOrDefault(), FireWand, "combat wields the rule's fire wand");
+
+        // The same with the fire wand not in the Items list (a fresh rig: the first wield is in flight).
+        var bare = new Rig(1535, "Ethereal Wisp");
+        bare.S.EnsureDefaultRule();
+        bare.S.MonsterRules.Add(Own(FireWand));
+        bare.C.InHandOverride = () => unchecked((int)ListedWand);
+        equip.Invoke(bare.C, new object[] { bare.Target, "Auto" });
+        Check.Eq(FakeHost.Uses.FirstOrDefault(), FireWand, "combat wields the rule's unlisted fire wand");
     }
 
     private static void UnlistedNeverPicked()
@@ -683,9 +1034,28 @@ internal static class WeaponTests
         var cache = FakeHost.MakeCache(FakeHost.Create(), Player, new[] { ListedWand, FireWand, NamedJunk });
         WorldObject? Look(int id) => cache[id];
         var inv = new[] { cache[unchecked((int)FireWand)]!, cache[unchecked((int)NamedJunk)]! };
-        int got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, inv, allowUnlisted: true, out bool unlisted);
-        Check.Eq(unchecked((uint)got), ListedWand, "a wand is listed: that one, never the pack's");
+        var invWithListed = new[] { cache[unchecked((int)ListedWand)]!, cache[unchecked((int)FireWand)]!, cache[unchecked((int)NamedJunk)]! };
+        int got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, invWithListed, allowUnlisted: true, out bool unlisted);
+        Check.Eq(unchecked((uint)got), ListedWand, "a wand is listed and carried: that one, never another from the pack");
         Check.False(unlisted, "not from the pack");
+
+        // 2026-10-11: the listed wand left the pack (the client still knows the object). It is
+        // not returned - the server ignores a wield of it and every buff was parked.
+        got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, inv, allowUnlisted: false, out _);
+        Check.Eq(got, 0, "listed wand not carried, setting off: no wand (buffs go bare-handed), not the gone one");
+        got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, inv, allowUnlisted: true, out unlisted);
+        Check.Eq(unchecked((uint)got), FireWand, "listed wand not carried, setting on: a caster from the pack");
+        got = WeaponList.FindWand(rig.S.ItemRules, Look, wo => wo.Id == unchecked((int)ListedWand), inv, allowUnlisted: false, out _);
+        Check.Eq(unchecked((uint)got), ListedWand, "a listed wand in hand counts as carried");
+        var sameName = new WorldObject(0x7000ABCD, cache[unchecked((int)ListedWand)]!.Name, AcObjectClass.WandStaffOrb);
+        got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, new[] { sameName }, allowUnlisted: false, out _);
+        Check.Eq(got, 0, "listed wand gone, setting off: no same-name stand-in (it took unlisted 'Wand's, 2026-10-18)");
+        got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, new[] { sameName }, allowUnlisted: true, out unlisted);
+        Check.Eq(got, 0x7000ABCD, "listed wand gone, setting on: any caster in the pack");
+        Check.True(unlisted, "from the pack");
+        got = WeaponList.FindWand(rig.S.ItemRules, Look, _ => false, invWithListed, allowUnlisted: true, out unlisted,
+            skip: wo => wo.Id == unchecked((int)ListedWand));
+        Check.Eq(got, 0, "the listed wand is carried but can't be wielded: no caster from the pack (owner, 2026-10-18)");
 
         var none = new List<ItemRule>();
         got = WeaponList.FindWand(none, Look, _ => false, new[] { cache[unchecked((int)NamedJunk)]! }, allowUnlisted: true, out _);
@@ -754,6 +1124,196 @@ internal static class WeaponTests
         Check.Eq(tr2.Next(99, hand, t.AddSeconds(5)), WeaponSwapTracker.Step.Hold, "a fifth swap inside a minute: held");
     }
 
+    // Drakkon 2026-10-12 (0x01C5): Tetsubo -> Lightning Quadrelle for a Giant Maggot; 16 s later
+    // the next target, a Noble Grub weak to Bludgeon, was fought with the Quadrelle ("keeping ...
+    // just swapped away from it") until the 20 s dwell ran out, 5.3 s after the lock.
+    private static void SwapBackForNewTarget()
+    {
+        const int Tetsubo = 1, Quadrelle = 2, Maggot = 0x7001, Grub = 0x7002;
+        var tr = new WeaponSwapTracker();
+        DateTime t = new(2026, 10, 12, 20, 35, 8);
+        Check.Eq(tr.Next(Quadrelle, Tetsubo, t, forKey: Maggot), WeaponSwapTracker.Step.Swap, "maggot: Tetsubo -> Quadrelle");
+        tr.Sent(Quadrelle, Tetsubo, t);
+        tr.Next(Quadrelle, Quadrelle, t.AddSeconds(1), forKey: Maggot);              // landed
+        Check.Eq(tr.Next(Tetsubo, Quadrelle, t.AddSeconds(16), forKey: Grub), WeaponSwapTracker.Step.Swap,
+            "the grub (a new target) gets the Tetsubo back at once");
+        tr.Sent(Tetsubo, Quadrelle, t.AddSeconds(16));
+        tr.Next(Tetsubo, Tetsubo, t.AddSeconds(17), forKey: Grub);                  // landed
+
+        // The same target asking to flip back is still held (weakness data flickering mid-fight).
+        Check.Eq(tr.Next(Quadrelle, Tetsubo, t.AddSeconds(19), forKey: Grub), WeaponSwapTracker.Step.Hold,
+            "same target flipping straight back: held");
+        Check.Eq(tr.HoldReason, "just swapped away from it", "the reason");
+        // No target given (old callers): the old rule.
+        Check.Eq(tr.Next(Quadrelle, Tetsubo, t.AddSeconds(20)), WeaponSwapTracker.Step.Hold, "no key: held as before");
+        // A third target: free to swap.
+        Check.Eq(tr.Next(Quadrelle, Tetsubo, t.AddSeconds(20), forKey: 0x7003), WeaponSwapTracker.Step.Swap, "another new target: swap");
+
+        // The window cap still holds a fight that alternates between two kinds of monster.
+        var tr2 = new WeaponSwapTracker();
+        DateTime u = new(2026, 10, 12, 21, 0, 0);
+        int hand = Tetsubo;
+        for (int i = 0; i < 4; i++)
+        {
+            int want = hand == Tetsubo ? Quadrelle : Tetsubo;
+            u = u.AddSeconds(5);
+            Check.Eq(tr2.Next(want, hand, u, forKey: 0x8000 + i), WeaponSwapTracker.Step.Swap, $"alternating target {i}: swap");
+            tr2.Sent(want, hand, u);
+            tr2.Next(want, want, u.AddSeconds(1), forKey: 0x8000 + i);
+            hand = want;
+        }
+        int next = hand == Tetsubo ? Quadrelle : Tetsubo;
+        Check.Eq(tr2.Next(next, hand, u.AddSeconds(5), forKey: 0x8010), WeaponSwapTracker.Step.Hold, "a fifth swap inside a minute: held");
+    }
+
+    /// <summary>
+    /// R-20261107-141028-b33e (Conquest, 2026-11-07): a mage fought wasps, wisps and gromnies with
+    /// four wands; four swaps landed inside a minute, then the player selected an Oaken Guardian and
+    /// its Fire Staff was kept out ("keeping Frost Sceptre instead of Fire Staff (4 swaps in 60s)").
+    /// The Guardian died to Cold. A weapon the player set for the monster (here its Monsters rule's
+    /// weapon) now goes in for a new target past the window cap; a weakness pick, and the same target,
+    /// are still capped.
+    /// </summary>
+    private static void PerMobWandPastWindowCap()
+    {
+        const int OtherA = 0x7101, OtherB = 0x7102, OtherC = 0x7103, OtherD = 0x7104;
+        DateTime now = new(2026, 11, 7, 15, 9, 31);
+        try
+        {
+            RynthClock.TestNow = () => now;
+
+            // Four swaps for other targets in the last minute, ending with `second` in hand.
+            void FillWindow(WeaponSwapTracker tr, int first, int second, int lastKey)
+            {
+                int hand = second;
+                int[] keys = { OtherA, OtherB, OtherC, lastKey };
+                for (int i = 0; i < 4; i++)
+                {
+                    DateTime at = now.AddSeconds(-40 + i * 10);
+                    int want = hand == first ? second : first;
+                    tr.Next(want, hand, at, forKey: keys[i]);
+                    tr.Sent(want, hand, at);
+                    tr.Next(want, want, at.AddSeconds(1), forKey: keys[i]);   // landed
+                    hand = want;
+                }
+            }
+            var equip = typeof(CombatManager).GetMethod("EquipWeaponAndSetStance", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+            // The Monsters rule's weapon for this monster, a new target: wielded at once.
+            var rig = new Rig(1535, "Ethereal Wisp");
+            rig.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+            rig.S.EnsureDefaultRule();
+            var own = new MonsterRule { Name = "Ethereal", WeaponId = unchecked((int)FireWand) };
+            rig.S.MonsterRules.Add(own);
+            rig.C.InHandOverride = () => unchecked((int)ListedWand);
+            rig.C.activeTargetId = rig.Target.Id;
+            FillWindow(rig.C.SwapTracker, unchecked((int)FireWand), unchecked((int)ListedWand), OtherD);
+            Check.True(rig.C.PlanFor(rig.Target, own).ForThisMonster, "the rule's weapon is the monster's own pick");
+            equip.Invoke(rig.C, new object[] { rig.Target, "Auto" });
+            Check.Eq(FakeHost.Uses.FirstOrDefault(), FireWand,
+                "four swaps in the minute, a new target: its rule's fire wand is wielded, not held: "
+                + string.Join(" | ", FakeHost.Logs.Where(l => l.Contains("EquipDiag")).Take(4)));
+
+            // The weakness's pick for a new target: still capped, and the hold says what wanted it.
+            var weak = new Rig(1535, "Ethereal Wisp");
+            weak.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+            weak.S.EnsureDefaultRule();
+            weak.C.InHandOverride = () => unchecked((int)FireWand);
+            weak.C.activeTargetId = weak.Target.Id;
+            FillWindow(weak.C.SwapTracker, unchecked((int)ListedWand), unchecked((int)FireWand), OtherD);
+            var wp = weak.C.PlanFor(weak.Target, null);
+            Check.Eq(unchecked((uint)wp.WeaponId), ListedWand, "the weakness picks the Lightning wand");
+            Check.False(wp.ForThisMonster, "a weakness pick isn't the monster's own");
+            equip.Invoke(weak.C, new object[] { weak.Target, "Auto" });
+            Check.Eq(FakeHost.Uses.Count, 0, "a weakness swap past four in a minute: held");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("(4 swaps in 60s; wanted for: weak to Lightning")),
+                "the hold names what wanted the swap: " + string.Join(" | ", FakeHost.Logs.Where(l => l.Contains("keeping")).Take(3)));
+
+            // The same target as the last swap: the cap still holds the monster's own pick.
+            var tr = new WeaponSwapTracker();
+            const int Hand = 1, Own = 2, Third = 3, Guardian = 0x7200;
+            FillWindow(tr, Third, Hand, Guardian);
+            Check.Eq(tr.Next(Own, Hand, now, forKey: Guardian, forThisMonster: true), WeaponSwapTracker.Step.Hold,
+                "the target the last swap was for: capped");
+            Check.Eq(tr.Next(Own, Hand, now, forKey: 0, forThisMonster: true), WeaponSwapTracker.Step.Hold, "no target known: capped");
+            Check.Eq(tr.Next(Own, Hand, now, forKey: 0x7201, forThisMonster: true), WeaponSwapTracker.Step.Swap, "a new target: its own pick goes");
+            Check.Eq(tr.Next(Own, Hand, now, forKey: 0x7201), WeaponSwapTracker.Step.Hold, "the same swap not set for it: capped");
+
+            // Which plans are the monster's own: its Damage tab pick, its rule's weapon or damage
+            // type; not the Default row's damage type or weapon, nor the weakness.
+            var p = new Rig(1535, "Ethereal Wisp");
+            p.S.ItemRules.Add(new() { Id = unchecked((int)FireWand), Name = "Fire Wand", Element = "Fire", ElementSource = "icon" });
+            p.S.EnsureDefaultRule();
+            var defRow = p.S.MonsterRules[0];
+            Check.True(p.C.PlanFor(p.Target, new MonsterRule { Name = "Ethereal", DamageType = "Fire" }).ForThisMonster, "the rule's damage type");
+            defRow.DamageType = "Fire";
+            var dp = p.C.PlanFor(p.Target, defRow);
+            Check.Eq(unchecked((uint)dp.WeaponId), FireWand, "the Default row's damage type picks the fire wand");
+            Check.False(dp.ForThisMonster, "but that is every monster's, not this one's");
+            defRow.DamageType = "Auto";
+            p.Store.SetManualWeapon(1535, FireWand);
+            Check.True(p.C.PlanFor(p.Target, new MonsterRule { Name = "Ethereal" }).ForThisMonster, "this monster's Damage tab pick");
+            p.Store.SetManualWeapon(1535, 0);
+            p.Store.SetDefaultWeapon(FireWand);
+            Check.False(p.C.PlanFor(p.Target, new MonsterRule { Name = "Ethereal" }).ForThisMonster, "the Damage tab DEFAULT row's weapon");
+        }
+        finally
+        {
+            RynthClock.TestNow = null;
+        }
+    }
+
+    /// <summary>
+    /// Kelpie 2026-10-14 11:41:06-08: Fire -> Piercing sent, the target changed and the plan
+    /// wanted Fire again while Piercing reached the hand. The landing must count, so the swap
+    /// straight back is held (before: "not seen in hand", no landing, swapped back 2.5 s later).
+    /// </summary>
+    private static void SwapLandsWhenChoiceMoved()
+    {
+        var tr = new WeaponSwapTracker();
+        DateTime t = new(2026, 10, 14, 11, 41, 6);
+        const int fire = 1, piercing = 2;
+        Check.Eq(tr.Next(piercing, fire, t), WeaponSwapTracker.Step.Swap, "Piercing chosen: swap");
+        tr.Sent(piercing, fire, t);
+        Check.Eq(tr.Next(fire, piercing, t.AddMilliseconds(2500)), WeaponSwapTracker.Step.Hold,
+            "Piercing landed while Fire is wanted again: the swap back is held");
+        Check.Eq(tr.PendingId, 0, "nothing in flight once it landed");
+        Check.Eq(tr.TriesFor(piercing), 0, "the landed weapon's tries are cleared");
+        Check.Eq(tr.Notice, null, "no give-up notice: it didn't fail");
+
+        // A third weapon is not the one just swapped away from: allowed.
+        Check.Eq(tr.Next(3, piercing, t.AddMilliseconds(3000)), WeaponSwapTracker.Step.Swap, "another weapon may still swap");
+    }
+
+    /// <summary>WeaponPlanner.KeepInHand: a weakness swap must beat the hand by the min gain.</summary>
+    private static void ChoiceMinSwapGain()
+    {
+        var bows = new List<WeaponCandidate>
+        {
+            new(1, "Fire Bow", CombatMode.Missile, "Fire", "", InHand: true),
+            new(2, "Cold Bow", CombatMode.Missile, "Cold", "", InHand: false),
+        };
+        var close = Rank(("Cold", 1.1), ("Fire", 1.0));
+        var off = WeaponPlanner.Choose(bows, "", close, All);
+        Check.Eq(off.WeaponId, 2, "threshold off: the weakest element wins as before");
+        var keep = WeaponPlanner.Choose(bows, "", close, All, minSwapGain: 0.2);
+        Check.Eq(keep.WeaponId, 1, "Cold only 10% better than Fire in hand: keep the Fire bow");
+        Check.Eq(keep.Element, "Fire", "and its element");
+        Check.True(keep.Source.Contains("within 20%"), "source says why: " + keep.Source);
+
+        var far = Rank(("Cold", 1.5), ("Fire", 1.0));
+        Check.Eq(WeaponPlanner.Choose(bows, "", far, All, minSwapGain: 0.2).WeaponId, 2, "Cold 50% better: swap");
+
+        var learned = new CreatureWeakness.Ranking { Source = "learned", Order = { ("Cold", double.NaN), ("Fire", double.NaN) } };
+        Check.Eq(WeaponPlanner.Choose(bows, "", learned, All, minSwapGain: 0.2).WeaponId, 2, "order only (learned): no threshold, swap");
+
+        var immune = Rank(("Cold", 1.0), ("Fire", 0.0));
+        Check.Eq(WeaponPlanner.Choose(bows, "", immune, All, minSwapGain: 0.5).WeaponId, 2, "the hand does nothing to it: swap");
+
+        // An explicit Monsters rule element is never held back.
+        Check.Eq(WeaponPlanner.Choose(bows, "Cold", close, All, minSwapGain: 0.5).WeaponId, 2, "the rule's Cold: swap");
+    }
+
     private static void SwapRefused()
     {
         var tr = new WeaponSwapTracker { MaxTries = 2 };
@@ -765,6 +1325,92 @@ internal static class WeaponTests
         tr.Sent(2, 1, t.AddMilliseconds(300));
         tr.Refused(t.AddMilliseconds(400));
         Check.Eq(tr.Next(2, 1, t.AddMilliseconds(500)), WeaponSwapTracker.Step.Hold, "second refusal with MaxTries 2: rest");
+    }
+
+    /// <summary>
+    /// Kelpie 2026-10-15 00:44:22-32: a house recall right after the wield; the server answered
+    /// all 3 tries 'too busy' and the Frost crossbow was benched for 2 min. A busy answer is no
+    /// try (bounded by MaxBusyRefunds), and a portal or recall ends every rest.
+    /// </summary>
+    private static void SwapBusyNotCounted()
+    {
+        var tr = new WeaponSwapTracker();
+        DateTime t = new(2026, 10, 15, 0, 44, 22);
+        for (int i = 0; i < 5; i++)
+        {
+            Check.Eq(tr.Next(2, 1, t), WeaponSwapTracker.Step.Swap, $"busy round {i}: swap");
+            tr.Sent(2, 1, t);
+            tr.Busy(t.AddMilliseconds(100));
+            Check.Eq(tr.PendingId, 0, "a busy answer ends the swap in flight");
+            Check.Eq(tr.TriesFor(2), 0, "and gives the try back");
+            Check.Eq(tr.Next(2, 1, t.AddMilliseconds(500)), WeaponSwapTracker.Step.Wait, "the wield waits out the busy pause");
+            t = t.AddMilliseconds(100 + tr.BusyRetryMs);
+        }
+        Check.Eq(tr.Notice, null, "no give-up while the server is only busy");
+        Check.Eq(tr.Next(2, 2, t), WeaponSwapTracker.Step.InHand, "once the server is free the weapon lands");
+
+        // A weapon the server always calls busy still gets rested, after MaxBusyRefunds.
+        var tr2 = new WeaponSwapTracker { MaxTries = 1, MaxBusyRefunds = 2 };
+        DateTime u = t;
+        for (int i = 0; i < 2; i++)
+        {
+            tr2.Next(3, 1, u); tr2.Sent(3, 1, u);
+            tr2.Busy(u);
+            u = u.AddMilliseconds(tr2.BusyRetryMs);
+        }
+        tr2.Next(3, 1, u); tr2.Sent(3, 1, u);
+        tr2.Busy(u);
+        Check.True(tr2.Notice != null && tr2.Notice.Contains("server too busy"), "past the refunds it counts: rested");
+        Check.Eq(tr2.Next(3, 1, u.AddSeconds(5)), WeaponSwapTracker.Step.Hold, "resting");
+
+        // A portal or recall ends the rest.
+        tr2.NewPlace();
+        Check.Eq(tr2.Next(3, 1, u.AddSeconds(10)), WeaponSwapTracker.Step.Swap, "after a portal: try again at once");
+        Check.Eq(tr2.TriesFor(3), 0, "with a fresh count");
+    }
+
+    /// <summary>
+    /// Combat reads ACE's busy answer to a wield: WeenieError 0x1D, then InventoryServerSaveFailed
+    /// with no error. The engine keeps only the last record, so the SaveFailed alone must read as
+    /// busy (before: "error 0", no answer, the try ran into the timeout and counted).
+    /// </summary>
+    private static void CombatReadsBusyWield()
+    {
+        const uint Old = 0x7000B001, New = 0x7000B002;
+        FakeHost.Reset();
+        FakeHost.WeenieErrorCalls = true;
+        FakeHost.Names[Old] = "Fire Crossbow"; FakeHost.Names[New] = "Frost Compound Crossbow";
+        var host = FakeHost.Create();
+        var cache = FakeHost.MakeCache(host, Player, new[] { Old, New });
+        var c = new CombatManager(host, new LegacyUiSettings(), cache);
+        c.SetPlayerId(Player);
+        const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic;
+        var send = typeof(CombatManager).GetMethod("MarkWieldSent", F)!;
+        var step = typeof(CombatManager).GetMethod("SwapStep", F)!;
+        int oldId = unchecked((int)Old), newId = unchecked((int)New);
+
+        send.Invoke(c, new object[] { newId, oldId });
+        FakeHost.WeenieError(0x1D);
+        FakeHost.WeenieError(0, 0x00A0, Old);
+        var s = (WeaponSwapTracker.Step)step.Invoke(c, new object[] { newId, oldId })!;
+        Check.Eq(s, WeaponSwapTracker.Step.Wait, "busy: wait out the pause, then wield again");
+        Check.Eq(c.SwapTracker.PendingId, 0, "the wield in flight is over");
+        Check.Eq(c.SwapTracker.TriesFor(newId), 0, "and not counted");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("answered 'too busy': not counted")), "logged");
+
+        // A real refusal (a specific error) still counts.
+        c.SwapTracker.NewPlace();
+        send.Invoke(c, new object[] { newId, oldId });
+        FakeHost.WeenieError(0x0036);
+        step.Invoke(c, new object[] { newId, oldId });
+        Check.Eq(c.SwapTracker.TriesFor(newId), 1, "a refusal is a try");
+
+        // Leaving portal space ends tries and rests.
+        FakeHost.Portaling = true;
+        c.OnHeartbeat();
+        FakeHost.Portaling = false;
+        c.OnHeartbeat();
+        Check.Eq(c.SwapTracker.TriesFor(newId), 0, "after the portal: a fresh count");
     }
 
     // ── The tester's case ─────────────────────────────────────────────────────

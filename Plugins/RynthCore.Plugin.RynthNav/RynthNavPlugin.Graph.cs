@@ -29,7 +29,7 @@ public sealed partial class RynthNavPlugin
     private NavCoarse? _coarse;                  // the current leg's route (null = none, or none yet)
     private int _coarseRetry;                    // re-plans left before planning a route again
     private int _coarseOff;                      // re-plans in a row off the route
-    private bool _coarseAnnounced, _coarseNoRouteSaid;
+    private bool _coarseAnnounced, _coarseNoRouteSaid, _coarseGoalMovedSaid;
     private double _aimEw, _aimNs;               // where the last re-plan aimed (the blind push follows it)
 
     private void LoadGraph()
@@ -58,11 +58,12 @@ public sealed partial class RynthNavPlugin
     {
         _tileRegions[lb] = NavRegions.Build(md, out _);
         _tilePrints[lb] = NavRegions.Fingerprint(md);
+        _meshView.Register(lb, md);
         NavGraph? g = _graph;
         if (g != null && ReferenceEquals(g, _graphChecked)) CheckTile(g, lb);
     }
 
-    private void OnTileUnloaded(uint lb) { _tileRegions.Remove(lb); _tilePrints.Remove(lb); }
+    private void OnTileUnloaded(uint lb) { _tileRegions.Remove(lb); _tilePrints.Remove(lb); _meshView.Unregister(lb); }
 
     private void CheckTile(NavGraph g, uint lb)
     {
@@ -106,7 +107,8 @@ public sealed partial class RynthNavPlugin
 
     private void ResetCoarse()
     {
-        _coarse = null; _coarseRetry = 0; _coarseOff = 0; _coarseAnnounced = false; _coarseNoRouteSaid = false;
+        _coarse = null; _coarseRetry = 0; _coarseOff = 0; _coarseAnnounced = false; _coarseNoRouteSaid = false; _coarseGoalMovedSaid = false;
+        _jump.Hard = false;
         _coarseTask = null; _coarseVersion++;
     }
 
@@ -166,14 +168,24 @@ public sealed partial class RynthNavPlugin
         NavCoarse.Probe? target = null;
         int gx = (int)Math.Floor(_gotoTew / 192.0), gy = (int)Math.Floor(_gotoTns / 192.0);
         uint goalLb = gx is >= 0 and <= 255 && gy is >= 0 and <= 255 ? (uint)((gx << 8) | gy) : 0;
+        bool moved = false;
         try
         {
+            // Ground a walk from here can end on: the spot itself, or the nearest such ground
+            // when the spot is a pocket nothing links into (NavCoarse.ProbeReachable).
             target = _loadedTiles.Contains(goalLb)
-                ? NavCoarse.ProbeNear(g, _navMesh!, _query!, _gotoTew, _wz, _gotoTns, 40f, _tileRegions)
-                : NavCoarse.ProbeFile(g, NavDataDir, _gotoTew, _wz, _gotoTns, 40f);
+                ? NavCoarse.ProbeReachable(g, _navMesh!, _query!, _gotoTew, _wz, _gotoTns, 40f, _tileRegions, start.Region, out moved)
+                : NavCoarse.ProbeFile(g, NavDataDir, _gotoTew, _wz, _gotoTns, 40f, start.Region, out moved);
         }
         catch (Exception ex) { Host.Log($"[RynthNav] route: target tile unreadable: {ex.Message}"); }
         if (target == null) return;   // no navmesh at the target: head straight, as without a graph
+        if (moved && !_coarseGoalMovedSaid)
+        {
+            _coarseGoalMovedSaid = true;
+            double off = Math.Sqrt((target.Pt.X - _gotoTew) * (target.Pt.X - _gotoTew) + (target.Pt.Z - _gotoTns) * (target.Pt.Z - _gotoTns));
+            Host.Log($"[RynthNav] route: the spot itself can't be walked into (fenced-in ground, a roof or a rock); aiming at walkable ground {off:F0}u from it (region {target.Region})");
+            if (off >= ArrivalUnits) Say($"goto: that exact spot can't be walked to; going to the nearest walkable ground, {off:F0} yd from it");
+        }
 
         NavCoarse.Request req = NavCoarse.Request.Measure(g, start, target);
         int version = _coarseVersion, here = start.Region, goal = target.Region;
@@ -208,6 +220,30 @@ public sealed partial class RynthNavPlugin
                 NoLandRoute();
                 return;
             }
+            // On open ground (the start links to its neighbours, on a real landmass) and still no
+            // route though the goal end was already moved to ground a walk can end on: the graph
+            // knows of no way there. Until 2026-11-07 that stopped the goto ("pick a spot nearby";
+            // 11-01: heading straight had run into a bridge, then round in circles). But on the same
+            // land what is between is often a wall, a fence or a ledge the navmesh's 2 m agent doesn't
+            // cross and a jump does (Silentkelpie: "it should use more power to jump if needed").
+            // Now it heads for the spot along the trip's straight line jumping hard: three full jumps
+            // at each place it is stuck before stepping round, and the stuck tries and the 30 s
+            // progress watchdog still stop it where nothing gets it over.
+            if (g != null && g.RegionPortals(here).Length > 0 && g.ComponentSize(g.Component(here)) >= 8)
+            {
+                if (land == true)
+                {
+                    if (!_jump.Hard)
+                    {
+                        _jump.Hard = true;
+                        Host.Log("[RynthNav] route: no walking way in the route graph, but the same land: heading straight for it, jumping hard where it is blocked");
+                        Say("goto: no walking way there on the map (a wall or a ledge between?); heading straight for it and jumping hard where it's blocked");
+                    }
+                    return;
+                }
+                FinishGoto("stopped: the route graph has no walking way to that spot (nothing walkable within 96 yd of it links to where you are); pick a spot nearby");
+                return;
+            }
             if (!_coarseNoRouteSaid)
             {
                 _coarseNoRouteSaid = true;
@@ -217,6 +253,7 @@ public sealed partial class RynthNavPlugin
         }
         _coarse = c;
         _coarseOff = 0;
+        _jump.Hard = false;   // a walking way after all
         // A new route measures progress differently: restart the watchdog's best.
         _bestDist = double.MaxValue; _bestTick = _legTicks;
         Host.Log($"[RynthNav] route: {c.Count} border crossing(s), ~{c.Cost:F0}u walking vs {straight:F0}u straight ({expanded} expanded, {ms} ms)");

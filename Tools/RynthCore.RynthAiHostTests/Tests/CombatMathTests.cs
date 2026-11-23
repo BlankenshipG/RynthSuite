@@ -35,9 +35,7 @@ internal static class CombatMathTests
         r.Add("target range: closest first, then the one in front", ScanOrder);
         r.Add("target range: dead, unattackable, never-attack and spell projectiles are skipped", ScanFilters);
 
-        r.KnownFailure("damage text: a monster hitting our body part isn't our damage",
-            "TryParseOutgoingDamage only rejects \"you for\"; a hit like 'Olthoi Swarm Harvester blisters your lower leg for 12 points of acid damage!' is counted as a hit by us while casting, which skews the Damage tab averages and the kill-shot prediction (not fixed on any branch)",
-            BodyPartHitIsNotOurs);
+        r.Add("damage text: a monster hitting our body part isn't our damage", BodyPartHitIsNotOurs);   // was a known failure; fixed by feature/warchain-fix (the line must start with "You")
         r.Add("weapon choice: a weapon the character no longer has is skipped", WeaponMissingSkipped);   // was a known failure; fixed by 996b2a5
     }
 

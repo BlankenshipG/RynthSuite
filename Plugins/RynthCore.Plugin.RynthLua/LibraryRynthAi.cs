@@ -19,6 +19,11 @@ namespace RynthCore.Plugin.RynthLua;
 ///   ai.DistanceTo(objectOrId)         metres, -1 when unknown
 ///   ai.IsPathClear(objectOrIdOrName)  line of sight
 ///   ai.Command(text) (SubmitCommand)  a chat line as if typed (/ra, /vt, ...; AC's parser without RynthAi)
+///   ai.SetAttackHandler(fn)           this script chooses RynthAi's attack spells (CombatHookPump.cs);
+///   ai.SetHealHandler(fn)             ... and its heal spells, asked before kits. true, or false and why.
+///                                     fn(ctx) returns spellId, targetId [, "area"], or nil to let RynthAi choose
+///   ai.ClearCombatHandlers()          drops this script's handlers (stopping the script does too)
+///   ai.CombatHook                     { Supported, AttackOwner, HealOwner, Claimed }
 ///
 /// Everything except Available and Command raises "RynthAi isn't loaded ..." when RynthAi
 /// isn't there, so a script can check <c>ai.Available</c> first or pcall.
@@ -144,6 +149,23 @@ public sealed partial class RynthLuaPlugin
         m.Set("Command", command);
         m.Set("SubmitCommand", command);
 
+        // The combat hook (RynthAi.Combat): handlers run as script threads started by the pump.
+        DynValue SetHandler(CallbackArguments a, uint kind, string what)
+        {
+            DynValue fn = LuaArgs.At(LuaArgs.Of(a, m), 0);
+            if (!fn.IsNil() && fn.Type != DataType.Function)
+                throw new ScriptRuntimeException($"rynth.ai.{what}(fn) needs a function (or nil to clear it)");
+            string? refused = SetCombatHandler(ctx, kind, fn);
+            return refused == null ? DynValue.True : DynValue.NewTuple(DynValue.False, DynValue.NewString(refused));
+        }
+        m.Set("SetAttackHandler", DynValue.NewCallback((c, a) => SetHandler(a, RynthCore.Plugin.Shared.RynthAiCombat.KindAttack, "SetAttackHandler")));
+        m.Set("SetHealHandler", DynValue.NewCallback((c, a) => SetHandler(a, RynthCore.Plugin.Shared.RynthAiCombat.KindHeal, "SetHealHandler")));
+        m.Set("ClearCombatHandlers", DynValue.NewCallback((c, a) =>
+        {
+            ClearCombatHandlers(ctx);
+            return DynValue.Nil;
+        }));
+
         // Live fields: Available / IsLoaded, MacroRunning (read and write).
         var mt = new Table(s);
         mt.Set("__index", DynValue.NewCallback((c, a) =>
@@ -156,6 +178,15 @@ public sealed partial class RynthLuaPlugin
                     return DynValue.NewBoolean(_ai.Available);
                 case "MacroRunning":
                     return DynValue.NewBoolean(_ai.MacroRunning);
+                case "CombatHook":
+                {
+                    var h = new Table(s);
+                    h["Supported"] = _ai.CombatAvailable;
+                    h["AttackOwner"] = CombatOwner(RynthCore.Plugin.Shared.RynthAiCombat.KindAttack) is string ao ? DynValue.NewString(ao) : DynValue.Nil;
+                    h["HealOwner"] = CombatOwner(RynthCore.Plugin.Shared.RynthAiCombat.KindHeal) is string ho ? DynValue.NewString(ho) : DynValue.Nil;
+                    h["Claimed"] = CombatClaimed;
+                    return DynValue.NewTable(h);
+                }
                 default:
                     return DynValue.Nil;
             }
@@ -172,6 +203,7 @@ public sealed partial class RynthLuaPlugin
                     return DynValue.Nil;
                 case "Available":
                 case "IsLoaded":
+                case "CombatHook":
                     throw new ScriptRuntimeException($"rynth.ai.{key} is read-only");
                 default:
                     // Script's own fields on the module are fine.

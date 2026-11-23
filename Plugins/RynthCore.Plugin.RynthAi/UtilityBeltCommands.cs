@@ -57,10 +57,10 @@ public sealed partial class RynthAiPlugin
 
     private void UseClosestPortal()
     {
-        if (_objectCache == null || _playerId == 0) { ChatLine("[RynthAi] Not logged in."); return; }
+        if (_objectCache == null || _playerId == 0) { ReplyFail("[RynthAi] Not logged in."); return; }
         var best = FindNearestPositioned(IsPortalObject, out double bestD);
-        if (best == null) { ChatLine("[RynthAi] No portal nearby."); LogPortalMiss("closestportal"); return; }
-        ChatLine($"[RynthAi] Using {best.Name} ({bestD:F1} m).");
+        if (best == null) { ReplyFail("[RynthAi] No portal nearby."); LogPortalMiss("closestportal"); return; }
+        ReplyOk($"[RynthAi] Using {best.Name} ({bestD:F1} m).");
         Host.UseFor(unchecked((uint)best.Id), "Command", "/ub closestportal", UseKind.Asked);
     }
 
@@ -72,8 +72,32 @@ public sealed partial class RynthAiPlugin
     {
         string rest = fullCommand.Length > 3 ? fullCommand.Substring(3).Trim() : "";
         if (Host.HasSendPluginCommand && Host.SendPluginCommand("RynthNet", "ub", rest))
+        {
+            Reply.Answered();   // RynthNet answers its own verbs
             return;
-        ChatLine("[RynthAi] /ub bc, /ub bct and /ub netclients need the RynthNet plugin (the launcher's Plugins tab).");
+        }
+        ReplyFail("[RynthAi] /ub bc, /ub bct and /ub netclients need the RynthNet plugin (the launcher's Plugins tab).");
+    }
+
+    /// <summary>
+    /// The usage line for a /ub line RynthAi didn't take: the verb's usage when it is one RynthAi has
+    /// (the wrong arguments), else "unknown" and where the list is.
+    /// </summary>
+    private static string UbUsageFor(string line)
+    {
+        string[] w = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string verb = w.Length > 1 ? w[1].ToLowerInvariant() : "";
+        string? usage = MtVerbUsage(verb, "/ub") ?? verb switch
+        {
+            "follow" or "followp" => "/ub follow[p] <name>",
+            "ig" or "igp" => $"/ub {verb} <loot profile> to <player>",
+            "mexec" => "/ub mexec <expression>",
+            "propertydump" => "/ub propertydump [0xId]",
+            _ => null,
+        };
+        return usage != null
+            ? "[RynthAi] Usage: " + usage
+            : $"[RynthAi] Unknown /ub command{(verb.Length > 0 ? $" '{verb}'" : "")}. /ub help lists the ones RynthAi takes.";
     }
 
     /// <summary>
@@ -86,10 +110,28 @@ public sealed partial class RynthAiPlugin
 
         string cmd = parts[1].ToLower();
 
+        // ub-Rythai's verbs: that plugin answers; handled here only in the sense of "not unknown".
+        if (IsUbRythaiCommand(cmd, SplitUbLine(fullCommand).Args))
+        {
+            Reply.Answered();
+            return true;
+        }
+
+        // "/ub vtsetmetastate[State]" and the like: an expression, not a verb.
+        if (TryHandleUbExpression(fullCommand))
+            return true;
+
         // /ub jump[swzxc] [heading] [holdtime] — see Jumper.cs
         if (cmd.StartsWith("jump", StringComparison.Ordinal))
         {
             HandleJumpCommand(cmd, parts);
+            return true;
+        }
+
+        // /ub videopatch [enable|disable|...] (UtilityBelt's video patch) is the engine's: /rc videopatch.
+        if (cmd is "videopatch" or "video")
+        {
+            ForwardVideoPatch(parts, 2);
             return true;
         }
 
@@ -167,6 +209,11 @@ public sealed partial class RynthAiPlugin
 
         // Commands added in the 2026-09-28 parity pass (UtilityBeltExtraCommands.cs).
         if (TryHandleUbExtra(cmd, fullCommand))
+            return true;
+
+        // The rest of ub-IT's verbs: aliases, features, and accepted no-ops (UtilityBeltCompatCommands.cs).
+        // Before the /mt translation, so "/ub fellow dismiss" doesn't land on /mt fellow's usage line.
+        if (TryHandleUbCompat(cmd, fullCommand))
             return true;
 
         // /ub closestportal: use the nearest portal (UtilityBelt's command).

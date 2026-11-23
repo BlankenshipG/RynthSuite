@@ -14,6 +14,8 @@ public sealed class HudState
     /// <summary>Mini Remote gem grid size (UB layout: 5 columns × 6 rows).</summary>
     public const int MiniRemoteColumns = 5;
     public const int MiniRemoteSlotCount = 30;
+    /// <summary>Mini Remote slot icon edge in pixels: the grow / shrink range and the default.</summary>
+    public const float MinMiniRemoteSlotSize = 18f, MaxMiniRemoteSlotSize = 64f, DefaultMiniRemoteSlotSize = 28f;
 
     /// <summary>The "Inventory HUDs" setup window is open.</summary>
     public bool ShowSetup;
@@ -36,16 +38,32 @@ public sealed class HudState
     public bool MiniShowTarget = true;
     /// <summary>Pet row: the summon that is out (health, time left), else the next combat essence.</summary>
     public bool MiniShowPet = true;
+    /// <summary>
+    /// Pet capture row (ILT / ACECustom): auto-capture enable, lens pick, and status.
+    /// The same AutoCaptureEnabled setting as Mini Remote > Pets > Monster capture.
+    /// </summary>
+    public bool MiniShowCapture = true;
     public bool MiniShowGems = true;
     public bool MiniShowToggles = true;
+    /// <summary>Obsolete since 2026-10-20 (kept so huds.json loads): the Bank section's switch is RynthILT's (copied once).</summary>
     public bool MiniShowBank = true;
     public bool MiniShowRebuff = true;
     /// <summary>Chat translator row: on/off, receive / send language swap.</summary>
     public bool MiniShowTranslate = true;
-    /// <summary>Temple guardian row: the last riddle answer with a Give button (only while one is recent).</summary>
+    /// <summary>Obsolete since 2026-10-20 (kept so huds.json loads): the Guardian line's switch is RynthILT's (copied once).</summary>
     public bool MiniShowGuardian = true;
     /// <summary>Gem grid slots, row-major from the top-left (empty Name = unassigned).</summary>
     public List<HudItemEntry> MiniRemoteSlots = new();
+    /// <summary>
+    /// Slot icon edge in pixels (Ctrl+wheel over the slots, or Options > Slot size).
+    /// Clamped to <see cref="MinMiniRemoteSlotSize"/>..<see cref="MaxMiniRemoteSlotSize"/>.
+    /// </summary>
+    public float MiniRemoteSlotSize = DefaultMiniRemoteSlotSize;
+    /// <summary>
+    /// The Mini Remote's selected tab: "" for the remote itself, else a tab id: its own
+    /// (quests, pets) or RynthILT's (character, banking, gear, charms, games).
+    /// </summary>
+    public string MiniRemoteTab = string.Empty;
 }
 
 /// <summary>An item pinned to a HUD. Matched by name; Wcid / IconDid are remembered so the
@@ -115,5 +133,10 @@ internal sealed class HudStore
         while (s.MiniRemoteSlots.Count < HudState.MiniRemoteSlotCount) s.MiniRemoteSlots.Add(new HudItemEntry());
         if (s.MiniRemoteSlots.Count > HudState.MiniRemoteSlotCount)
             s.MiniRemoteSlots.RemoveRange(HudState.MiniRemoteSlotCount, s.MiniRemoteSlots.Count - HudState.MiniRemoteSlotCount);
+        s.MiniRemoteTab ??= string.Empty;
+        // A huds.json from before the setting has no value (0): use the default.
+        s.MiniRemoteSlotSize = s.MiniRemoteSlotSize <= 0f || float.IsNaN(s.MiniRemoteSlotSize)
+            ? HudState.DefaultMiniRemoteSlotSize
+            : Math.Clamp(s.MiniRemoteSlotSize, HudState.MinMiniRemoteSlotSize, HudState.MaxMiniRemoteSlotSize);
     }
 }

@@ -38,6 +38,9 @@ internal sealed class CastTracker
         public bool Done;         // its result line, or UseDone(0) after its incantation
         public bool Nudged;       // the one movement nudge for this held cast has gone out
         public bool StuckLogged;
+        // The script combat hook chose this cast (a heal): no early nudge, HeldAfterIncantMs only.
+        // A Vitality Siphon's result can come 2.75 s after its incantation (2026-10-10 log).
+        public bool Script;
         public bool HasIncantation => IncantAt != DateTime.MinValue;
     }
 
@@ -60,7 +63,7 @@ internal sealed class CastTracker
 
     public CastTracker(Action<string> log) => _log = log;
 
-    public Func<DateTime> Clock = () => DateTime.Now;
+    public Func<DateTime> Clock = () => RynthClock.Now;
     public DateTime Now => Clock();
 
     /// <summary>The last cast sent.</summary>
@@ -156,6 +159,8 @@ internal sealed class CastTracker
     private void Close(Cast c, string kind)
     {
         c.Done = true;
+        // The server is in the cast's recoil now: one heal may be queued behind it (ActionPacer).
+        RynthCore.Plugin.Shared.ActionPacer.NoteCastResult();
         DateTime now = Now;
         string nudged = c.Nudged ? " (after the movement nudge)" : "";
         if (c.HasIncantation)

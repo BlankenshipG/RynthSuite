@@ -17,16 +17,17 @@ namespace RynthCore.Plugin.RynthAi;
 [JsonSerializable(typeof(MetaRuleDto))]
 [JsonSerializable(typeof(MetaCommand))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Meta.MetaScheduleConfig))]
-// UB seed, translation, diagnostics, ILT Hub, HUD and item info files persist through this
+// UB seed, translation, diagnostics, Mini Remote, HUD and item info files persist through this
 // context (NativeAOT cannot reflect).
 [JsonSerializable(typeof(RynthCore.CreatureSeed.UbMobSeedFile))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Translate.TranslateSettings))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.RynthLogConfig))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Huds.HudState))]
-[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.IltHub.IltHubState))]
-[JsonSerializable(typeof(System.Collections.Generic.List<RynthCore.Plugin.RynthAi.IltHub.IltBankTransaction>), TypeInfoPropertyName = "IltBankTransactionList")]
-[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.IltHub.IltAugCostFile))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.MiniRemote.MiniRemoteState))]
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.MiniRemote.LegacyHubFile))]
 [JsonSerializable(typeof(RynthCore.Plugin.RynthAi.BuffProfile))]
+// The feature catalog (Docs/features/*.json, embedded): Find a Feature (Features/FeatureCatalog.cs).
+[JsonSerializable(typeof(RynthCore.Plugin.RynthAi.Features.FeatureFile))]
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     IncludeFields = true,

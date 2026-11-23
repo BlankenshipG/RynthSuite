@@ -20,14 +20,27 @@ public static unsafe class PluginExports
     private static int Init(RynthCoreApiNative* api) => Runtime.Init(api);
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginShutdown", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static void Shutdown() => Runtime.Shutdown();
+    public static void Shutdown()
+    {
+        try { Runtime.Shutdown(); }   // an exception out of a native export fail-fasts the client
+        catch { }
+    }
 
     // UTF-8 literals live in the module's read-only data: nothing to allocate or free.
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginName", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static IntPtr GetName() => LiteralPointer("RynthOracle"u8);
+    public static IntPtr GetName()
+    {
+        try { return LiteralPointer("RynthOracle"u8); }
+        catch { return IntPtr.Zero; }
+    }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginVersion", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static IntPtr GetVersion() => LiteralPointer("0.2.0"u8);
+    public static IntPtr GetVersion()
+    {
+        // Keep in step with RynthOraclePlugin.Version (a u8 literal can't be built from a const string).
+        try { return LiteralPointer("0.7.6"u8); }
+        catch { return IntPtr.Zero; }
+    }
 
     private static IntPtr LiteralPointer(ReadOnlySpan<byte> literal)
     {

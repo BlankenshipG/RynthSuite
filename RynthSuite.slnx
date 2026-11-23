@@ -13,6 +13,8 @@
     <Project Path="Tools/RynthLua.CompatTests/RynthLua.CompatTests.csproj" />
     <Project Path="Tools/RynthCore.RynthAiTests/RynthCore.RynthAiTests.csproj" />
     <Project Path="Tools/RynthCore.RynthAiHostTests/RynthCore.RynthAiHostTests.csproj" />
+    <Project Path="Tools/RynthSuite.BoundaryTests/RynthSuite.BoundaryTests.csproj" />
+    <Project Path="Tools/RynthNet.Tests/RynthNet.Tests.csproj" />
   </Folder>
   <Project Path="../RynthCore/src/RynthCore.PluginCore/RynthCore.PluginCore.csproj" />
   <Project Path="../RynthCore/src/RynthCore.PluginSdk/RynthCore.PluginSdk.csproj" />

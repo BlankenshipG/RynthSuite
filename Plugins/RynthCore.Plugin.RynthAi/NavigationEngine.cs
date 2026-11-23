@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
 using RynthCore.Plugin.Shared;
@@ -71,11 +72,27 @@ internal sealed class NavigationEngine
     private long   _globalSettleStart;
 
     // ── Route state ──────────────────────────────────────────────────────────
+    // Where nav stopped for a pause (combat, loot, buff, door); NaN when not paused. With
+    // NavResumeNearest on, a pause that moved the character re-picks the closest waypoint.
+    private double _pauseNs = double.NaN;
+    private double _pauseEw = double.NaN;
+    private bool   _resumeCheckPending;      // nav took over again; check _pauseNs/_pauseEw on the next steer tick
+    private const double ResumeMovedYards    = 10.0;   // moved less while paused: carry on to the same waypoint
+    private const double ResumeTeleportYards = 400.0;  // moved more: a teleport, which the portal handling owns
     private int    _linearDir  = 1;
     private bool   _inPause;
     private int    _pauseIdx = -1;     // the Pause waypoint _pauseUntil belongs to
     private long   _pauseUntil;
-    private double _prevDist = double.MaxValue;
+    // Closest the character has come to the current waypoint since it became the target (or
+    // since a pause / escape / teleport reset it). It used to hold only the previous tick's
+    // distance, so a "sweep pass" needed the distance to grow 0.3 yd in ONE 33 ms tick (over
+    // 9 yd/s straight away from the point): just past a point the distance grows slowly, the
+    // pass was never seen, and nav turned round and walked back to the point (2026-10-05).
+    private double _closestDist = double.MaxValue;
+    // Where the character stood when it started on the current waypoint (NaN = take it on the
+    // next steering tick). With the waypoint it gives the way the route arrives at the point,
+    // for the pass-through rule (PassedThrough).
+    private double _legStartNs = double.NaN, _legStartEw = double.NaN;
 
     // ── Portal/Recall state machine ──────────────────────────────────────────
     private enum PortalState
@@ -147,7 +164,7 @@ internal sealed class NavigationEngine
         public int    Doorways;
         public long   StartedAt;
         public long   DeadlineAt;
-        public double PrevDist = double.MaxValue;
+        public double ClosestDist = double.MaxValue;   // closest to the current detour point so far
         public bool   Paused;          // nav was stopped (combat, loot, buff, door) mid-detour
         public long   PausedAt;
         public double PausedNs = double.NaN, PausedEw = double.NaN;
@@ -164,6 +181,21 @@ internal sealed class NavigationEngine
     private const int    StuckSpotRepeat      = 3;       // stucks within StuckSpotYards: go straight to a detour
     private const double StuckSpotYards       = 5.0;
     private const double DetourReplanMovedYd  = 5.0;     // moved this far while paused: plan again
+
+    // Backtrack (2026-11-08, "if navigation in the map gets stuck it should use backtrack to get unstuck"): the way
+    // just walked, kept as a short trail; a stuck spot the map has no way round is left by walking back along it
+    // (BacktrackYd), on the same level, once per spot, before the side-step escapes.
+    private readonly List<(double Ns, double Ew, float Z)> _trail = new();
+    private const double TrailStepYd = 1.5;
+    private const int    TrailMax    = 40;
+    private const double BacktrackYd = 8.0;
+    private double _backtrackSpotNs = double.NaN, _backtrackSpotEw = double.NaN;
+
+    /// <summary>
+    /// The waypoint is a level above or below with no walk to it (NavRecoveryPlanner.OtherLevelWhy): the route's owner
+    /// may plan again from here (the dungeon patrol and dunnav do). The argument is the waypoint's index.
+    /// </summary>
+    public Action<int>? WaypointOnOtherLevel;
     private const int    DetourMaxReplans     = 3;
     private const double DetourDoorCheckMs    = 400.0;
     private const double DetourDoorLookYd     = 12.0;    // look for doors this far along the next leg
@@ -174,8 +206,17 @@ internal sealed class NavigationEngine
     private double OffTrackYards     => Math.Max(OffTrackMinYards, _settings.NavOffTrackYards);
     private int    MaxDetourAttempts => Math.Clamp(_settings.NavMaxDetourAttempts, 1, 10);
 
+    /// <summary>Every detour for the current waypoint has been tried and the character is still stuck there
+    /// (only the escapes are left, for as long as it takes): the dungeon explore takes this as a way it can't
+    /// get through, something the map doesn't have standing in it (a spider web spawned in a doorway).</summary>
+    public bool DetoursUsedUpAndStuck => _detour == null && _detourAttempts >= MaxDetourAttempts && _stuckCount >= 2;
+
     private INavRecoveryPlanner? _planner;
     private Detour? _detour;
+    // Steep ground ahead (CheckSteepAhead): the waypoint and spot the leg was last checked from.
+    private const double SteepRecheckYards = 10.0;
+    private int    _steepCheckIdx = -1;
+    private double _steepCheckNs, _steepCheckEw;
     private int    _detourAttempts;          // detours tried (or failed to plan) for the current waypoint
     private bool   _detourGaveUpNotified;
     private int    _recoveryNumber;
@@ -195,6 +236,16 @@ internal sealed class NavigationEngine
     private long   _areaMismatchSince;
     private string _areaMessage = string.Empty;
     private string _areaAnnounced = string.Empty;
+    // The two places the last mismatch named ("the landscape", "in dungeon 0x5756").
+    private string _areaRouteName = string.Empty;
+    private string _areaPlayerName = string.Empty;
+    // The look along the route for a waypoint in the character's area (TryCarryOnHere) runs once
+    // per route / landblock / indoors-or-out; a look that found none is not repeated on the
+    // 3 s rechecks. Null route = not looked yet.
+    private NavRouteParser? _areaScanRoute;
+    private uint _areaScanLb = uint.MaxValue;
+    private bool _areaScanInCell;
+    private bool _areaScanNone;
     // A route that walks INTO a portal has its last point on this side and the next
     // one on the other side. For a few seconds after reaching that last point, keep
     // walking on through it (the way the route came in) so the portal can fire,
@@ -244,10 +295,39 @@ internal sealed class NavigationEngine
     private double ReachFor(NavPoint p) => p.Doorway ? Math.Min(ArrivalYards, DoorwayReachYd) : ArrivalYards;
     private double SweepFor(NavPoint p) => ReachFor(p) * (p.Doorway ? Math.Min(SweepMult, DoorwaySweepMult) : SweepMult);
 
-    // Lookahead: within this distance of a waypoint, blend the aim point toward
-    // the next one so corners are cut smoothly. 0 = off (aim straight at each
-    // waypoint). Tunable in Advanced ▸ Navigation ▸ Steering.
-    private double LookaheadYards => Math.Max(0.0, _settings.NavLookaheadYards);
+    // Lookahead (corner rounding): within this distance of a waypoint, blend the aim point
+    // toward the next one so corners are rounded. It used to be the Lookahead setting alone
+    // (4 yd), whatever the nav point reach: at a 1 yd reach the aim was already 75% of the way
+    // down the next leg when the character got to 1 yd, so it cut the corner, never got within
+    // the reach, and ran into the wall at the corner (2026-10-05). Now the reach decides how
+    // much rounding there is: none at or under CornerRoundFreeReachYd, then CornerRoundPerReachYd
+    // per yard of reach above it, never more than the Lookahead setting (Advanced > Navigation >
+    // Steering; 0 = off). Blending only matters where it starts outside the reach, so there is
+    // none up to a 2 yd reach (the 1.5 yd default gives 1 yd, inside it); it reaches the 4 yd
+    // setting at a 3 yd reach, so 3-5 yd round corners as before. Doorway points never blend.
+    internal const double CornerRoundFreeReachYd = 1.0, CornerRoundPerReachYd = 2.0;
+    internal static double CornerLookaheadYards(double lookaheadSetting, double reachYd)
+        => Math.Clamp(CornerRoundPerReachYd * (reachYd - CornerRoundFreeReachYd), 0.0, Math.Max(0.0, lookaheadSetting));
+    private double LookaheadYards => CornerLookaheadYards(_settings.NavLookaheadYards, ArrivalYards);
+
+    // Pass-through: a plain waypoint the character has gone past (it is beyond the point along
+    // the way it came, and no farther to the side than the sweep radius) counts as reached,
+    // so nav doesn't turn round to walk back to it. "Beyond along the way it came" means the
+    // point is behind the character: a corner cut toward the next point never qualifies.
+    // Doorway points keep their own tight reach and sweep and never use it.
+    private const double PassMinLegYd = 1.0;   // shorter approach: no reliable direction
+    private bool PassedThrough(NavPoint pt, double ns, double ew)
+    {
+        if (pt.Doorway || double.IsNaN(_legStartNs)) return false;
+        double ux = (pt.NS - _legStartNs) * 240.0, uy = (pt.EW - _legStartEw) * 240.0;
+        double len = Math.Sqrt(ux * ux + uy * uy);
+        if (len < PassMinLegYd) return false;
+        ux /= len; uy /= len;
+        double ax = (ns - pt.NS) * 240.0, ay = (ew - pt.EW) * 240.0;
+        double along = ax * ux + ay * uy;
+        double side  = Math.Abs(ax * uy - ay * ux);
+        return along > 0.0 && side <= SweepFor(pt);
+    }
 
 
     // Mode 0 heading servo: cap the heading change we command per tick so the
@@ -361,16 +441,22 @@ internal sealed class NavigationEngine
             }
             if (!_hasStopped)
             {
-                ClearTurnMotions();
+                // The macro switched off with nav idle (no route, between routes): the character may be
+                // the player's, running by hand, and is left running (the owner, 2026-11-07). Nav's own
+                // movement is still stopped.
+                bool navMoving = _isMovingForward || _isTurning || _tier1TurnDir != 0;
+                bool sendStops = _settings.IsMacroRunning || navMoving;
+                if (sendStops) ClearTurnMotions();
                 if (_stopRequestedAt == long.MaxValue)
                     _stopRequestedAt = Now;
 
                 if (Now - _stopRequestedAt >= (long)StopDebounceMs)
                 {
-                    _host.SetAutoRunBy("Nav", false);
+                    if (sendStops) _host.SetAutoRunBy("Nav", false);
                     _isMovingForward = false;
                     _isTurning       = false;
                     _hasStopped      = true;
+                    MarkPausePosition();
                     RememberFiredPortalAction();
                     ResetPortalState();
                 }
@@ -379,6 +465,7 @@ internal sealed class NavigationEngine
         }
 
         _stopRequestedAt = long.MaxValue;
+        if (_hasStopped) _resumeCheckPending = true;
         _hasStopped      = false;
 
         // Fellowship-follow takes priority over route nav while enabled: steer
@@ -409,18 +496,27 @@ internal sealed class NavigationEngine
         // so a new route doesn't inherit the old route's pause/portal/stuck progress.
         if (!ReferenceEquals(route, _lastRoute))
         {
+            // Outdoor Hunt plans its walk again every 8 s: that is the same walk, not a new route.
+            // Resetting here kept a character pinned at a wall on the first rung of the stuck ladder
+            // (a jump) for good: no count ever built up, so no detour was ever tried (2026-11-06).
+            bool sameWalk = route.OutdoorHuntWalk && _lastRoute?.OutdoorHuntWalk == true;
             _lastRoute      = route;
             _inPause        = false;
-            _prevDist       = double.MaxValue;
+            _closestDist    = double.MaxValue;
             _linearDir      = 1;
-            _watchdogNs     = double.NaN;
-            _watchdogEw     = double.NaN;
-            _stuckCount     = 0;
-            _inRecovery     = false;
+            if (!sameWalk)
+            {
+                _watchdogNs = double.NaN;
+                _watchdogEw = double.NaN;
+                _stuckCount = 0;
+                _inRecovery = false;
+            }
             _hasGoodHeading = false;
+            // The loader chose the new route's start index; a pause on the old route says nothing.
+            ClearPausePosition();
             ResetPortalState();
-            ResetRecovery("the route changed");
-            _host.Log($"Nav: route swap detected, {route.Points.Count} pts, startIdx={_settings.ActiveNavIndex}");
+            if (!sameWalk) ResetRecovery("the route changed");
+            _host.Log($"Nav: route swap detected, {route.Points.Count} pts, startIdx={_settings.ActiveNavIndex}{(sameWalk ? " (the same hunt walk: the stuck count carries on)" : "")}");
         }
 
         // STEP 5: the self-promote from "Default" to "Navigating" is gone. Tick()
@@ -462,7 +558,7 @@ internal sealed class NavigationEngine
                     _watchdogNs     = double.NaN;
                     _watchdogEw     = double.NaN;
                     _watchdogNext   = Now + (long)WatchdogMs;
-                    _prevDist       = double.MaxValue;
+                    _closestDist    = double.MaxValue;
                     _globalSettling = false;
                     ResetRecovery("teleported");
                 }
@@ -506,6 +602,13 @@ internal sealed class NavigationEngine
             }
         }
 
+        // Back from a pause, past any teleport settle: rejoin at the closest waypoint if it moved us.
+        if (_resumeCheckPending)
+        {
+            _resumeCheckPending = false;
+            ResumeAfterPause();
+        }
+
         int idx = _settings.ActiveNavIndex;
         if (!IndexValid(idx, route)) { HandleRouteEnd(route); return; }
 
@@ -547,6 +650,7 @@ internal sealed class NavigationEngine
         _firedRoute      = null;
 
         if (!TryGetPos(out double ns, out double ew)) return;
+        NoteTrail(ns, ew);
 
         // Route recovery. The area hold comes first: when the waypoint is in another
         // dungeon (or dungeon vs landscape) no detour or escape can reach it.
@@ -555,6 +659,8 @@ internal sealed class NavigationEngine
             if (AreaMismatchHold(route, idx, pt)) return;
             if (_detour != null) { TickDetour(route, ns, ew); return; }
             CheckOffTrack(route, idx, ns, ew);
+            if (_detour != null) return;
+            CheckSteepAhead(route, idx, pt, ns, ew);
             if (_detour != null) return;
         }
         else if (_detour != null || _areaMismatch)
@@ -578,11 +684,15 @@ internal sealed class NavigationEngine
         }
         _campHoldAnnounced = false;
 
+        // A dungeon waypoint a level above or below (a pit under it, a ledge over it) isn't reached by standing
+        // under or over it (2026-11-08: "arrived" at waypoints 17 m overhead from the bottom of a pit).
+        bool levelOk = !OnOtherLevel(pt);
+
         // Arrival check
-        if (dist < ReachFor(pt))
+        if (levelOk && dist < ReachFor(pt))
         {
             _host.Log($"Nav: arrived at [{idx}] dist={dist:F1}yd → advancing");
-            _prevDist = double.MaxValue;
+            _closestDist = double.MaxValue;
             UpdateStatusLine(idx, dist, route, 0.0);
             // Advance before the jump: the Jumper pauses nav and later restores what it
             // saw, so jumping first turned a finished Once route back on (re-run from [0]).
@@ -591,17 +701,33 @@ internal sealed class NavigationEngine
             return;
         }
 
-        // Closest-approach detection — prevents circling.
-        // Matches old NavigationManager exactly.
-        if (_prevDist < SweepFor(pt) && dist > _prevDist + 0.3)
+        // First tick on this waypoint (or after a pause / escape / teleport): remember where
+        // the approach starts, for the pass-through rule.
+        if (_closestDist == double.MaxValue) { _legStartNs = ns; _legStartEw = ew; }
+
+        // Went past it: the point is behind, close enough to the side. Counts as reached
+        // instead of turning round to walk back to it.
+        if (levelOk && PassedThrough(pt, ns, ew))
         {
-            _host.Log($"Nav: sweep-pass [{idx}] prev={_prevDist:F1} now={dist:F1}yd → advancing");
-            _prevDist = double.MaxValue;
+            _host.Log($"Nav: passed [{idx}] dist={dist:F1}yd → advancing");
+            _closestDist = double.MaxValue;
+            UpdateStatusLine(idx, dist, route, 0.0);
             Advance(route);
             if (pt.Type == NavPointType.Jump) FireJump(pt, idx);
             return;
         }
-        _prevDist = dist;
+
+        // Closest-approach detection — prevents circling: within the sweep radius, then
+        // 0.3 yd farther out than the closest it came.
+        if (levelOk && _closestDist < SweepFor(pt) && dist > _closestDist + 0.3)
+        {
+            _host.Log($"Nav: sweep-pass [{idx}] closest={_closestDist:F1} now={dist:F1}yd → advancing");
+            _closestDist = double.MaxValue;
+            Advance(route);
+            if (pt.Type == NavPointType.Jump) FireJump(pt, idx);
+            return;
+        }
+        _closestDist = Math.Min(_closestDist, dist);
 
         SteerToWaypoint(idx, pt, route, ns, ew, dist);
     }
@@ -622,7 +748,7 @@ internal sealed class NavigationEngine
         // closest-approach reading from before the pause says nothing about where we
         // are now; kept, the first tick back reads the displacement as a sweep-pass
         // and advances past a waypoint that was never reached.
-        _prevDist        = double.MaxValue;
+        _closestDist     = double.MaxValue;
         _stopRequestedAt = long.MaxValue;
         // A detour survives the pause: it re-plans on the way back if the pause
         // moved us. Whatever moved us, being far off the route afterwards is not
@@ -637,24 +763,82 @@ internal sealed class NavigationEngine
         _isMovingForward = false;
         _isTurning       = false;
         _hasStopped      = true;
+        MarkPausePosition();
     }
+
+    /// <summary>Remembers where the first stop of a pause happened (later stops in the same pause keep it).</summary>
+    private void MarkPausePosition()
+    {
+        if (!double.IsNaN(_pauseNs)) return;
+        if (!TryGetPos(out double ns, out double ew)) return;
+        _pauseNs = ns;
+        _pauseEw = ew;
+    }
+
+    private void ClearPausePosition()
+    {
+        _pauseNs = double.NaN;
+        _pauseEw = double.NaN;
+        _resumeCheckPending = false;
+    }
+
+    /// <summary>
+    /// Nav took over again after a pause. With <c>NavResumeNearest</c> on and the pause having
+    /// moved the character <see cref="ResumeMovedYards"/> or more (a chase, a corpse run), the
+    /// route re-picks its closest waypoint instead of walking back to the one it was heading for.
+    /// A detour or area hold in progress owns getting back, so it is left alone.
+    /// </summary>
+    private void ResumeAfterPause()
+    {
+        double pNs = _pauseNs, pEw = _pauseEw;
+        ClearPausePosition();
+        if (!_settings.NavResumeNearest || double.IsNaN(pNs)) return;
+        if (_detour != null || _areaMismatch) return;
+        if (KeepWaypointAfterPause?.Invoke() == true) return;
+        if (!TryGetPos(out double ns, out double ew)) return;
+
+        double movedYd = Math.Sqrt(Sq(ns - pNs) + Sq(ew - pEw)) * 240.0;
+        if (movedYd < ResumeMovedYards || movedYd > ResumeTeleportYards) return;
+        RepickNearestWaypoint($"back from a pause that moved {movedYd:F0}yd", resetRecovery: false);
+    }
+
+    /// <summary>
+    /// True while the route must carry on to the waypoint it was heading for after a pause, even
+    /// with NavResumeNearest on (set by the plugin: the dungeon patrol). A patrol loop comes back
+    /// past the rooms it started in, so the closest waypoint after a chase is often one near the
+    /// END of the loop, and everything in between would be skipped.
+    /// </summary>
+    public Func<bool>? KeepWaypointAfterPause;
+
+    /// <summary>Sends a Chat waypoint's text as if typed in chat (set by the plugin).</summary>
+    public Action<string>? ChatSubmit;
 
     /// <summary>
     /// Points the route at the waypoint nearest the player (macro start). Circular
     /// and Linear routes pick from the whole route; a Once route only from the
     /// current waypoint onward, so finished steps (a recall, a portal) aren't
-    /// repeated. Only plain waypoints are candidates; if the current one is a
-    /// Recall/Portal/Chat/Pause step it is kept.
+    /// repeated, and a finished Once route stays finished. Only plain waypoints are
+    /// candidates; if the current one is a Recall/Portal/Chat/Pause step it is kept.
+    /// A Linear route keeps its direction. With <c>NavResumeNearest</c> off the
+    /// route keeps its last waypoint, unless <paramref name="always"/> (hazard escapes
+    /// and corpse runs, which leave the route behind).
     /// </summary>
-    /// <summary>Sends a Chat waypoint's text as if typed in chat (set by the plugin).</summary>
-    public Action<string>? ChatSubmit;
-
-    public void ResumeFromNearestWaypoint()
+    public void ResumeFromNearestWaypoint(bool always = false)
     {
-        ResetRecovery("macro started");
+        ClearPausePosition();
+        if (!always && !_settings.NavResumeNearest) return;
+        RepickNearestWaypoint("macro start", resetRecovery: true);
+    }
+
+    private void RepickNearestWaypoint(string why, bool resetRecovery)
+    {
+        if (resetRecovery) ResetRecovery("macro started");
         var route = _settings.CurrentRoute;
         if (route == null || route.Points.Count == 0) return;
         if (route.RouteType == NavRouteType.Follow) return;
+        // A finished Once route (index left past its end) is done: picking from [0] here
+        // used to turn it back on at the nearest point, so a stop + start re-ran it.
+        if (_settings.NavRouteFinished()) return;
         if (!TryGetPos(out double ns, out double ew)) return;
 
         int cur = _settings.ActiveNavIndex;
@@ -685,14 +869,56 @@ internal sealed class NavigationEngine
         string how = "nearest";
         int walkBest = PickNearestByWalk(route, from, once, cur, ns, ew, out double walkYd);
         if (walkBest >= 0) { best = walkBest; how = $"nearest on foot ({walkYd:F0}yd walk)"; }
+        else
+        {
+            // Already walked past the nearest point toward the next one: the closest spot on
+            // the route lies on the leg ahead, so head for its far end instead of turning back.
+            int ahead = PassedToward(route, best, ns, ew);
+            if (ahead >= 0) { best = ahead; how = "next after the nearest"; }
+        }
         if (best == cur) return;
 
-        _host.Log($"Nav: macro start — {how} waypoint [{best}] ({Math.Sqrt(Sq(route.Points[best].NS - ns) + Sq(route.Points[best].EW - ew)) * 240.0:F0}yd) instead of [{cur}]");
+        _host.Log($"Nav: {why} — {how} waypoint [{best}] ({Math.Sqrt(Sq(route.Points[best].NS - ns) + Sq(route.Points[best].EW - ew)) * 240.0:F0}yd) instead of [{cur}]");
         _settings.ActiveNavIndex = best;
-        _prevDist   = double.MaxValue;
+        _closestDist = double.MaxValue;
         _stuckCount = 0;
         _watchdogNs = double.NaN;
         _watchdogEw = double.NaN;
+    }
+
+    /// <summary>
+    /// The waypoint after <paramref name="idx"/> in the direction the route runs, when the
+    /// closest spot on the route is on the leg out of <paramref name="idx"/> (the player has
+    /// walked past it) rather than on the leg into it; otherwise -1. The next point must be a
+    /// plain waypoint (a step is never jumped to), and a Linear route at its end has no leg
+    /// ahead in its current direction. With no plain point before <paramref name="idx"/> the
+    /// leg in is the point itself.
+    /// </summary>
+    private int PassedToward(NavRouteParser route, int idx, double ns, double ew)
+    {
+        int n = route.Points.Count;
+        int step = route.RouteType == NavRouteType.Linear ? _linearDir : 1;
+        int next = idx + step, prev = idx - step;
+        if (route.RouteType == NavRouteType.Circular) { next = (idx + 1) % n; prev = (idx - 1 + n) % n; }
+        if (!IndexValid(next, route) || next == idx) return -1;
+        var a = route.Points[idx];
+        var b = route.Points[next];
+        if (!NavRouteParser.IsPlainWaypoint(b.Type)) return -1;
+
+        double legOut = SegmentDistSq(ns, ew, a, b);
+        double legIn  = IndexValid(prev, route) && prev != idx && NavRouteParser.IsPlainWaypoint(route.Points[prev].Type)
+            ? SegmentDistSq(ns, ew, route.Points[prev], a)
+            : Sq(ns - a.NS) + Sq(ew - a.EW);
+        return legOut < legIn ? next : -1;
+    }
+
+    /// <summary>Squared map distance from (ns, ew) to the leg a→b.</summary>
+    private static double SegmentDistSq(double ns, double ew, NavPoint a, NavPoint b)
+    {
+        double vN = b.NS - a.NS, vE = b.EW - a.EW;
+        double len = vN * vN + vE * vE;
+        double t = len <= 0 ? 0 : Math.Clamp(((ns - a.NS) * vN + (ew - a.EW) * vE) / len, 0, 1);
+        return Sq(ns - (a.NS + t * vN)) + Sq(ew - (a.EW + t * vE));
     }
 
     private const int WalkCandidates = 5;
@@ -740,6 +966,7 @@ internal sealed class NavigationEngine
     public void ResetRouteState()
     {
         Stop();
+        ClearPausePosition();
         ResetRecovery("route reset");
         _teleportedRoute = null;
         _firedRoute      = null;
@@ -747,10 +974,27 @@ internal sealed class NavigationEngine
         _linearDir      = 1;
         _stuckCount     = 0;
         _recoveryKind   = RecoveryKind.Jump;
-        _prevDist       = double.MaxValue;
+        _closestDist    = double.MaxValue;
         _watchdogNs     = double.NaN;
         _watchdogEw     = double.NaN;
         _hasGoodHeading = false;
+    }
+
+    /// <summary>
+    /// /ra nav restart: the loaded route starts over from its first point, as when it was
+    /// loaded with NavResumeNearest off (a Linear route heading out again, a finished Once
+    /// route running again). Nav is switched on; the macro is left as it is. False (nothing
+    /// done) with no waypoints to walk (none loaded, or a Follow route).
+    /// </summary>
+    public bool RestartRoute()
+    {
+        var route = _settings.CurrentRoute;
+        if (route == null || route.Points.Count == 0 || route.RouteType == NavRouteType.Follow) return false;
+        ResetRouteState();
+        _settings.ActiveNavIndex   = 0;
+        _settings.EnableNavigation = true;
+        _host.Log($"Nav: route restarted from [0] ({route.RouteType}, {route.Points.Count} pts)");
+        return true;
     }
 
     /// <summary>
@@ -1146,7 +1390,7 @@ internal sealed class NavigationEngine
     private void Advance(NavRouteParser route)
     {
         int oldIdx = _settings.ActiveNavIndex;
-        _prevDist    = double.MaxValue;
+        _closestDist = double.MaxValue;
         _portalState = PortalState.None;
         // Reaching a waypoint is progress: the next snag gets a fresh detour budget.
         _detourAttempts       = 0;
@@ -1238,7 +1482,7 @@ internal sealed class NavigationEngine
     /// current route's iteration direction. Used by the dense-waypoint
     /// skip loop in <see cref="Advance"/>. Mirrors the single-step logic
     /// in the main switch; factored out so the skip loop can call it
-    /// without re-clearing _prevDist / _portalState.
+    /// without re-clearing _closestDist / _portalState.
     /// </summary>
     private void AdvanceOneIndex(NavRouteParser route)
     {
@@ -1285,14 +1529,17 @@ internal sealed class NavigationEngine
     /// A finite (Once) route ran off its last point: stop and disable nav, but leave
     /// the points intact. This used to <c>Points.Clear()</c> the in-memory route, so
     /// re-enabling nav was a silent no-op until the profile was reloaded
-    /// (2026-06-03 audit P2). The index is left past the end; re-enabling nav lands
-    /// in <see cref="HandleRouteEnd"/>, which rewinds it for a genuine re-run.
+    /// (2026-06-03 audit P2). The index is left past the end, which marks the route
+    /// finished (<see cref="LegacyUiSettings.NavRouteFinished"/>): it stays finished
+    /// over a macro stop/start and a meta turning nav on, and runs again when it is
+    /// loaded again, edited, or restarted (/ra nav restart, or the player's Nav switch /
+    /// Start Navigation button, <see cref="LegacyUiSettings.RearmFinishedNavRoute"/>).
     /// </summary>
     private void CompleteOnceRoute(NavRouteParser route)
     {
         _settings.EnableNavigation = false;
         StopMovement();
-        _host.Log($"Nav: Once route complete ({route.Points.Count} pts) — nav disabled, route retained for re-run");
+        _host.Log($"Nav: Once route complete ({route.Points.Count} pts) — nav disabled, route retained (load it again or /ra nav restart to re-run)");
     }
 
     private void HandleRouteEnd(NavRouteParser route)
@@ -1303,16 +1550,19 @@ internal sealed class NavigationEngine
             return;
         }
 
-        // Nav was re-enabled on a finished Once route (CompleteOnceRoute leaves the
-        // index past the end). Rewind so the re-run actually walks instead of
-        // silently doing nothing. Cannot loop: completion always disables nav, and
-        // Tick returns early while it is disabled.
-        if (route.RouteType == NavRouteType.Once
-            && _settings.ActiveNavIndex >= route.Points.Count
-            && route.Points.Count > 0)
+        // Nav was switched on over a finished Once route (CompleteOnceRoute leaves the
+        // index past the end). This used to rewind it to [0], so anything that turned nav
+        // on re-ran the route: a meta's "/vt opt set enablenav true" replayed by a macro
+        // start, an expression. It stays finished, as a finished VTank Once route (its
+        // points used up) does; the player's Nav switch / Start Navigation button and
+        // /ra nav restart rewind it before nav gets here. Nav goes off again so the
+        // arbiter doesn't hold "Navigating" (above combat with BoostNavPriority) for a
+        // route with nothing left to walk.
+        if (_settings.NavRouteFinished())
         {
-            _host.Log("Nav: Once route re-armed — restarting from point [0]");
-            _settings.ActiveNavIndex = 0;
+            _settings.EnableNavigation = false;
+            StopMovement();
+            _host.Log($"Nav: the Once route is finished ({route.Points.Count} pts) — nav stays off; load it again or /ra nav restart to re-run it");
             return;
         }
 
@@ -1352,7 +1602,7 @@ internal sealed class NavigationEngine
     private void HoldAtCampRoute(int idx, double dist, NavRouteParser route)
     {
         if (_isMovingForward || _isTurning) StopMovement();
-        _prevDist = double.MaxValue;
+        _closestDist = double.MaxValue;
         UpdateStatusLine(idx, dist, route, 0.0);
         if (!_campHoldAnnounced)
         {
@@ -1448,7 +1698,7 @@ internal sealed class NavigationEngine
             _host.Log($"Nav: no player id — cannot fire recall {pt.SpellId}");
             return;
         }
-        _host.CastSpell(target, pt.SpellId);
+        _host.CastSpellFor(target, pt.SpellId, "Nav", $"recall spell {pt.SpellId}");
         _host.Log($"Nav: CastSpell(recall {pt.SpellId}) on player 0x{target:X8}");
     }
 
@@ -1616,7 +1866,12 @@ internal sealed class NavigationEngine
             return false;
         }
 
-        _host.UseFor((uint)bestId, "Nav", $"portal/NPC waypoint '{target}'");
+        // A use the engine did not send (UseObject said no) is not a use: false lets the caller ask again.
+        if (!_host.UseFor((uint)bestId, "Nav", $"portal/NPC waypoint '{target}'"))
+        {
+            _host.Log($"Nav: UseObject portal '{target}' (0x{bestId:X8}) was not sent - will retry");
+            return false;
+        }
         // Publish the resolved object so the marker renderer can draw a ring +
         // line to the portal's real position (the waypoint coord is a placeholder).
         _settings.ActivePortalObjId = (uint)bestId;
@@ -1707,7 +1962,7 @@ internal sealed class NavigationEngine
                 // teleport happened but wasn't seen, or the route stays on this side).
                 if (NextWalkTargetBeyond(route, _settings.ActiveNavIndex, OffTrackYards, out int farIdx, out double farYd))
                 {
-                    string what = pt.Type == NavPointType.Recall ? $"the recall (spell {pt.SpellId})" : $"the portal '{pt.TargetName}'";
+                    string what = pt.Type == NavPointType.Recall ? $"the recall ({NavPoint.RecallName(pt.SpellId)})" : $"the portal '{pt.TargetName}'";
                     string msg = $"Nav: {what} didn't teleport within {ActionTimeoutMs / 1000:F0}s, and the next waypoint [{farIdx}] is {farYd:F0}yd away - navigation stopped.";
                     _host.Log(msg);
                     _host.WriteToChat(msg, 1);
@@ -2164,6 +2419,85 @@ internal sealed class NavigationEngine
         _watchdogEw = ew;
     }
 
+    // ── Escapes and portals (2026-11-15) ────────────────────────────────────
+    // DreamWeave Thread 0x00B5: the character arrives on the Thread Exit; stuck on a bad first point
+    // beside it, the +75 degree burst ran it through the portal and out of the Thread, twice. A portal
+    // fires the moment the character touches it, so every burst heading is checked against the
+    // portals near before it is run.
+
+    /// <summary>The portals near the character (world x east, y north, z), for the stuck escapes; null or
+    /// empty: none known. RynthAiPlugin sets it (the landscape's portals within EscapePortalRangeMeters).</summary>
+    public Func<IReadOnlyList<(double X, double Y, double Z)>>? EscapePortals { get; set; }
+
+    /// <summary>Portals farther than this are left out of the escape check.</summary>
+    internal const double EscapePortalRangeMeters = 25.0;
+    /// <summary>How far a burst can carry the character (RecoveryBurstMs at a run, rounded well up).</summary>
+    internal const double EscapeBurstMeters = 7.0;
+    /// <summary>A burst keeps at least this far from a portal (DungeonPathfinder.PortalKeepOutDefault).</summary>
+    internal const double EscapePortalKeepMeters = DungeonPathfinder.PortalKeepOutDefault;
+    private const double EscapePortalLevelMeters = DungeonPathfinder.PortalLevelBand;
+    // Tried after the rung's own heading, in this order.
+    private static readonly double[] EscapeFallbackDeg = { +SideStepDeg, -SideStepDeg, BackOutDeg, -BackOutDeg, +120, -120, +40, -40, +100, -100, +20, -20 };
+
+    /// <summary>
+    /// Keeps the escape burst at heading curDeg + offset away from every portal near: true with
+    /// <paramref name="offset"/> left alone when it is clear (note null), or changed to the first
+    /// fallback that is (note says so); false when every heading runs at one (note: the portal).
+    /// A burst is clear when, over its EscapeBurstMeters, it never comes nearer a portal on its level
+    /// than EscapePortalKeepMeters, or (the character already that near) than it is now.
+    /// </summary>
+    internal bool PortalSafeEscapeOffset(double curDeg, ref double offset, out string? note)
+    {
+        note = null;
+        var near = EscapePortals?.Invoke();
+        if (near == null || near.Count == 0) return true;
+        if (!_host.TryGetPlayerPose(out uint cell, out float lx, out float ly, out float lz, out _, out _, out _, out _) || cell == 0) return true;
+        double px = ((cell >> 24) & 0xFF) * 192.0 + lx, py = ((cell >> 16) & 0xFF) * 192.0 + ly;
+        return EscapeOffsetClear(px, py, lz, curDeg, near, ref offset, out note);
+    }
+
+    /// <summary>The pure half of <see cref="PortalSafeEscapeOffset"/> (world position given).</summary>
+    internal static bool EscapeOffsetClear(double px, double py, double pz, double curDeg,
+                                           IReadOnlyList<(double X, double Y, double Z)> portals, ref double offset, out string? note)
+    {
+        note = null;
+        double first = offset;
+        string? worst = null;
+        foreach (double off in new[] { first }.Concat(EscapeFallbackDeg.Where(f => Math.Abs(f - first) > 0.01)))
+        {
+            double h = (curDeg + off) * Math.PI / 180.0;
+            double ex = px + Math.Sin(h) * EscapeBurstMeters, ey = py + Math.Cos(h) * EscapeBurstMeters;   // 0 = north, clockwise
+            bool clear = true;
+            foreach (var p in portals)
+            {
+                if (Math.Abs(p.Z - pz) > EscapePortalLevelMeters) continue;
+                double now = Math.Sqrt((p.X - px) * (p.X - px) + (p.Y - py) * (p.Y - py));
+                double keep = Math.Min(EscapePortalKeepMeters, now) - 0.05;
+                if (SegmentDistance(px, py, ex, ey, p.X, p.Y) < keep)
+                {
+                    clear = false;
+                    worst ??= $"portal at ({p.X:F1},{p.Y:F1}) {now:F1} m away";
+                    break;
+                }
+            }
+            if (!clear) continue;
+            if (Math.Abs(off - first) > 0.01)
+                note = $"escape burst turned {off:+0;-0}° instead of {first:+0;-0}° (that way runs at the {worst})";
+            offset = off;
+            return true;
+        }
+        note = worst;
+        return false;
+    }
+
+    private static double SegmentDistance(double ax, double ay, double bx, double by, double x, double y)
+    {
+        double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+        double t = l2 < 1e-12 ? 0 : Math.Clamp(((x - ax) * dx + (y - ay) * dy) / l2, 0, 1);
+        double cx = ax + dx * t - x, cy = ay + dy * t - y;
+        return Math.Sqrt(cx * cx + cy * cy);
+    }
+
     private void BeginRecovery(NavRouteParser route)
     {
         // The waypoint is in another area: no detour or escape can reach it, and
@@ -2196,6 +2530,9 @@ internal sealed class NavigationEngine
             EndDetour("stuck on the detour", success: false);
         else if (TryStuckDetour(route))
             return;
+        // The map had no way round (or its way snagged too): walk back the way we came, then on again.
+        if (_stuckCount >= 2 && TryBacktrack(route))
+            return;
 
         // Rungs 2+ need a heading we can command. Without TurnToHeading the only
         // primitive we have is the jump, so stay on rung 1 rather than autorunning
@@ -2216,6 +2553,19 @@ internal sealed class NavigationEngine
             _ => BackOutDeg,
         };
 
+        // A burst must not run the character into a portal (it fires on touch): the rung's heading if
+        // it keeps away from every portal near, else the nearest one that does; none: the jump instead.
+        if (!PortalSafeEscapeOffset(curDeg, ref offset, out string? portalNote))
+        {
+            _host.Log($"Nav: stuck x{_stuckCount} — every escape heading runs at a portal ({portalNote}): jumping instead.");
+            _recoveryKind  = RecoveryKind.Jump;
+            _recoveryUntil = Now + (long)RecoveryMs;
+            _inRecovery    = true;
+            _host.JumpNonAutonomous(0.5f);
+            return;
+        }
+        if (portalNote != null) _host.Log($"Nav: stuck x{_stuckCount} — {portalNote}.");
+
         double escapeHeading = curDeg + offset;
         if (escapeHeading >= 360.0) escapeHeading -= 360.0; else if (escapeHeading < 0.0) escapeHeading += 360.0;
 
@@ -2229,7 +2579,7 @@ internal sealed class NavigationEngine
         // The escape moves us off the approach line, so the closest-approach
         // tracker's last reading is meaningless — reset it or the next steer
         // tick reads the retreat as a sweep-pass and advances the index.
-        _prevDist = double.MaxValue;
+        _closestDist = double.MaxValue;
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -2259,6 +2609,12 @@ internal sealed class NavigationEngine
         _areaPlayerLb         = uint.MaxValue;
         _areaRetryAt          = 0;
         _areaMismatch         = false;
+        // A new route, a teleport or a macro start: a hold that comes back says so again (a route
+        // loaded again over the same hold used to change nothing the player could see, 2026-11-01).
+        _areaAnnounced        = string.Empty;
+        _areaScanRoute        = null;
+        _areaScanNone         = false;
+        _settings.NavAreaHoldOffersPatrol = false;
     }
 
     private string DescribeRecovery()
@@ -2278,6 +2634,17 @@ internal sealed class NavigationEngine
     /// join those, so nothing is attempted; one chat line per mismatch. The check is
     /// recomputed only when the waypoint, the route or the character's landblock/cell
     /// kind changes, and resumes on its own when they match again (e.g. after a portal).
+    ///
+    /// Three cases (2026-11-01):
+    ///   - At the route's own way out (the character stands at the last waypoint before the
+    ///     change, a walk-in portal): walk on through it for a few seconds, then hold.
+    ///   - Anywhere else (the character got here by a portal, a recall, a death, or loaded the
+    ///     route here): the route is looked along, in the order it is walked, for the first
+    ///     waypoint in the character's area, and nav carries on from there. A Circular route
+    ///     whose loop starts with a recall cast in this dungeon goes on to that recall.
+    ///   - No waypoint of the route is here: hold, and say once what to do (load a route for
+    ///     here; in a dungeon, or press Patrol).
+    /// Nothing is ever walked in an area its waypoint isn't in.
     /// </summary>
     private bool AreaMismatchHold(NavRouteParser route, int idx, NavPoint pt)
     {
@@ -2306,20 +2673,39 @@ internal sealed class NavigationEngine
             if (_areaMismatch)
             {
                 if (!was) _areaMismatchSince = Now;
+                _areaRouteName  = routeArea;
+                _areaPlayerName = playerArea;
                 _areaMessage = $"Nav: this route is in a different area ({routeArea}) - you are {playerArea}. Navigation stopped.";
                 if (_detour != null) EndDetour("the route is in a different area", success: false);
             }
             else if (was)
             {
                 _areaAnnounced = string.Empty;
+                _settings.NavAreaHoldOffersPatrol = false;
                 _host.Log($"Nav: the route's area matches again at waypoint [{idx}] - navigation resumes");
             }
         }
 
         if (!_areaMismatch) return false;
 
-        if (Now - _areaMismatchSince < (long)AreaGraceMs && AreaGraceWalk(route, idx))
+        if (AtAreaBoundary(route, idx))
+        {
+            // The route's own way out: walk on through for the grace, then hold (the portal didn't fire).
+            if (Now - _areaMismatchSince < (long)AreaGraceMs && AreaGraceWalk(route, idx))
+                return true;
+        }
+        else if (TryCarryOnHere(route, idx, cell, lb, inCell))
+        {
             return true;
+        }
+        else if (_areaScanNone)
+        {
+            // Nothing of this route is here: say what to do instead of only "stopped".
+            _areaMessage = $"Nav: this route is in a different area ({_areaRouteName}) - you are {_areaPlayerName}, and nothing ahead on it is here. "
+                         + (inCell ? "Navigation is waiting: load a route for this dungeon, or press Patrol to patrol it."
+                                   : "Navigation is waiting: load a route for here.");
+            _settings.NavAreaHoldOffersPatrol = inCell;
+        }
 
         // Hold: one chat line per mismatch.
         if (_areaMessage != _areaAnnounced)
@@ -2330,9 +2716,107 @@ internal sealed class NavigationEngine
         }
         StopMovement();
         _settings.NavIsStuck    = true;
-        _settings.NavStatusLine = "Nav: route is in a different area - stopped";
+        _settings.NavStatusLine = _areaScanNone
+            ? $"Nav: this route is for {_areaRouteName} - load a route for here{(inCell ? " or press Patrol" : "")}"
+            : "Nav: route is in a different area - stopped";
         return true;
     }
+
+    /// <summary>
+    /// The character stands at (within AreaGraceNearYd of) the walk point just before
+    /// <paramref name="idx"/>: the route's own way into the other area (a walk-in portal there).
+    /// </summary>
+    private bool AtAreaBoundary(NavRouteParser route, int idx)
+    {
+        int prev = PrevIndex(idx, route);
+        if (prev < 0 || !IsWalkTarget(route.Points[prev].Type)) return false;
+        if (!TryGetPos(out double ns, out double ew)) return false;
+        var p = route.Points[prev];
+        return NavYd(p.NS - ns, p.EW - ew) <= AreaGraceNearYd;
+    }
+
+    /// <summary>
+    /// The route looked along from <paramref name="idx"/> in the order it is walked (a Circular
+    /// route round to the point before it, a Linear route to its end and back, a Once route to
+    /// its end) for the first waypoint in the character's area, of any kind (a recall cast here,
+    /// a portal used here, a point). Found: nav carries on from it, said once in chat, and true.
+    /// Not found: false, remembered (<see cref="_areaScanNone"/>) until the route or the
+    /// character's area changes.
+    /// </summary>
+    private bool TryCarryOnHere(NavRouteParser route, int idx, uint cell, uint lb, bool inCell)
+    {
+        if (ReferenceEquals(route, _areaScanRoute) && lb == _areaScanLb && inCell == _areaScanInCell && _areaScanNone)
+            return false;
+        _areaScanRoute  = route;
+        _areaScanLb     = lb;
+        _areaScanInCell = inCell;
+        _areaScanNone   = false;
+
+        // Only a clear Match counts: the dats are loaded by now (the current waypoint's check said
+        // Mismatch), so Unknown means a point off the map, which is nowhere to carry on from.
+        int found = -1, foundDir = _linearDir;
+        foreach (var (k, dir) in WalkOrderAfter(route, idx))
+        {
+            var p = route.Points[k];
+            if (_planner!.CheckArea(cell, p.NS, p.EW, out _, out _) != NavAreaCheck.Match) continue;
+            found = k; foundDir = dir;
+            break;
+        }
+        if (found < 0)
+        {
+            _areaScanNone = true;
+            return false;
+        }
+
+        var to = route.Points[found];
+        string msg = $"Nav: waypoint [{idx}] is in another area ({_areaRouteName}); [{found}] {to} is here ({PlaceName(_areaPlayerName)}) - carrying on from [{found}].";
+        _host.WriteToChat(msg, 1);
+        _host.Log($"{msg} [cell 0x{cell:X8}]");
+
+        _settings.ActiveNavIndex = found;
+        if (route.RouteType == NavRouteType.Linear) _linearDir = foundDir;
+        _areaMismatch    = false;
+        _areaAnnounced   = string.Empty;
+        _settings.NavIsStuck = false;
+        _settings.NavAreaHoldOffersPatrol = false;
+        _settings.NavStatusLine = $"Nav: carrying on from [{found}], the route's next waypoint here";
+        _closestDist     = double.MaxValue;
+        _legStartNs      = double.NaN;
+        _legStartEw      = double.NaN;
+        _watchdogNs      = double.NaN;
+        _watchdogEw      = double.NaN;
+        _stuckCount      = 0;
+        StopMovement();
+        return true;
+    }
+
+    /// <summary>
+    /// The waypoints after <paramref name="idx"/> in the order nav walks them, each with the Linear
+    /// direction it is reached in. At most one lap; <paramref name="idx"/> itself is not included.
+    /// </summary>
+    private IEnumerable<(int Idx, int Dir)> WalkOrderAfter(NavRouteParser route, int idx)
+    {
+        int n = route.Points.Count;
+        switch (route.RouteType)
+        {
+            case NavRouteType.Circular:
+                for (int s = 1; s < n; s++) yield return ((idx + s) % n, 1);
+                break;
+            case NavRouteType.Once:
+                for (int k = idx + 1; k < n; k++) yield return (k, 1);
+                break;
+            case NavRouteType.Linear:
+                int d = _linearDir >= 0 ? 1 : -1;
+                for (int k = idx + d; k >= 0 && k < n; k += d) yield return (k, d);
+                // ... then back from the far end: the points behind idx, reached heading the other way.
+                for (int k = idx - d; k >= 0 && k < n; k -= d) yield return (k, -d);
+                break;
+        }
+    }
+
+    /// <summary>"in dungeon 0x5756" / "on the landscape" (CheckArea's wording) as a place: "dungeon 0x5756".</summary>
+    private static string PlaceName(string playerArea)
+        => playerArea.StartsWith("in ", StringComparison.Ordinal) || playerArea.StartsWith("on ", StringComparison.Ordinal) ? playerArea[3..] : playerArea;
 
     /// <summary>
     /// Mismatch grace: when the character is at (within AreaGraceNearYd of) the last
@@ -2395,6 +2879,27 @@ internal sealed class NavigationEngine
         _offTrackArmed = false;
         _offTrackSince = 0;
         TryStartDetour(route, idx, $"off track, {off:F0}yd from the route for {OffTrackGraceMs / 1000:F0}s");
+    }
+
+    // ── Steep ground ahead ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Before the character runs into it: when the straight way to the waypoint climbs ground
+    /// too steep to walk (RynthVision's red slopes, on land or under water), walk a RynthNav
+    /// navmesh way round instead (a detour from the same budget as the stuck ones). Checked for
+    /// each new waypoint and again every <see cref="SteepRecheckYards"/> walked toward it.
+    /// </summary>
+    private void CheckSteepAhead(NavRouteParser route, int idx, NavPoint pt, double ns, double ew)
+    {
+        if (_planner == null || !IsWalkTarget(pt.Type)) return;
+        if (idx == _steepCheckIdx && NavYd(ns - _steepCheckNs, ew - _steepCheckEw) < SteepRecheckYards) return;
+        _steepCheckIdx = idx;
+        _steepCheckNs = ns;
+        _steepCheckEw = ew;
+        // Out of tries for this waypoint: walk straight as before (the stuck escapes still apply).
+        if (_detourAttempts >= MaxDetourAttempts) return;
+        if (!_planner.CrossesSteepGround(ns, ew, pt.NS, pt.EW, out double atYd)) return;
+        TryStartDetour(route, idx, $"steep ground {atYd:F0}yd ahead on the way to waypoint {idx + 1}");
     }
 
     /// <summary>Yards from the character to the leg that ends at waypoint <paramref name="idx"/>.</summary>
@@ -2550,9 +3055,19 @@ internal sealed class NavigationEngine
         string skipNote = skipped > 0 ? $" (passes over {skipped} waypoint(s))" : "";
 
         var plan = _planner.TryPlan(route.Points[rejoin], out string why);
+        // The navmesh path starts where the character's spot snaps onto the mesh, which can be
+        // on the far side of the slope it stands against: a first leg up that slope gets stuck
+        // again at once (Silentkelpie 2026-10-19, "reached 2/9 ... stuck on the detour").
+        if (plan != null && plan.Points.Count > 0
+            && _planner.CrossesSteepGround(ns, ew, plan.Points[0].NS, plan.Points[0].EW, out double firstAt))
+        {
+            why = $"its first leg climbs steep ground {firstAt:F0}yd ahead";
+            plan = null;
+        }
         if (plan == null)
         {
             _host.Log($"Nav: recovery #{number} ({reason}) rejoin=[{rejoin}]{skipNote} planner=none - result: no plan ({why}); attempt {_detourAttempts}/{MaxDetourAttempts}, using the stuck escapes");
+            if (why == NavRecoveryPlanner.OtherLevelWhy) WaypointOnOtherLevel?.Invoke(rejoin);
             if (_detourAttempts >= MaxDetourAttempts) NotifyGaveUp(idx);
             return false;
         }
@@ -2577,7 +3092,7 @@ internal sealed class NavigationEngine
 
         StopMovement();
         _inRecovery          = false;
-        _prevDist            = double.MaxValue;
+        _closestDist         = double.MaxValue;
         _settings.NavIsStuck = true;
         return true;
     }
@@ -2604,7 +3119,7 @@ internal sealed class NavigationEngine
                   + $"reached {Math.Min(d.Index, d.Points.Count)}/{d.Points.Count}, door requests {d.DoorRequestCount}, re-plans {d.Replans}, "
                   + $"{(Now - d.StartedAt) / 1000.0:F1}s - result: {result}");
 
-        _prevDist = double.MaxValue;
+        _closestDist = double.MaxValue;
         if (!_inRecovery) _settings.NavIsStuck = false;
     }
 
@@ -2635,7 +3150,7 @@ internal sealed class NavigationEngine
             // against the deadline; if the pause moved us, plan again from here.
             d.Paused      = false;
             d.DeadlineAt += Now - d.PausedAt;
-            d.PrevDist    = double.MaxValue;
+            d.ClosestDist = double.MaxValue;
             double moved  = double.IsNaN(d.PausedNs) ? 0.0 : NavYd(ns - d.PausedNs, ew - d.PausedEw);
             if (moved > DetourReplanMovedYd && !ReplanDetour(route, d, moved)) return;
         }
@@ -2650,10 +3165,10 @@ internal sealed class NavigationEngine
 
         var p = d.Points[d.Index];
         double dist = NavYd(p.NS - ns, p.EW - ew);
-        if (dist < ReachFor(p) || (d.PrevDist < SweepFor(p) && dist > d.PrevDist + 0.3))
+        if (dist < ReachFor(p) || (d.ClosestDist < SweepFor(p) && dist > d.ClosestDist + 0.3))
         {
             d.Index++;
-            d.PrevDist = double.MaxValue;
+            d.ClosestDist = double.MaxValue;
             if (d.Index >= d.Points.Count)
             {
                 // Back on the route: resume at the rejoin waypoint; normal nav walks the last leg.
@@ -2662,7 +3177,7 @@ internal sealed class NavigationEngine
             }
             return;
         }
-        d.PrevDist = dist;
+        d.ClosestDist = Math.Min(d.ClosestDist, dist);
 
         // Aim point: blend toward the following point near arrival, but less than the
         // route does (doorways are narrow).
@@ -2796,9 +3311,24 @@ internal sealed class NavigationEngine
         }
     }
 
+    // Already stopped, StopMovement sends a reminder at most this often (as StartForward re-asserts).
+    private const long StopReassertMs = 1000;
+    private long _lastStopSentMs;
+    private bool _stopSent;
+
     private void StopMovement()
     {
+        // The pause, chat, portal, settle and idle paths call this every tick. It sent autorun-off and
+        // both turn keys each time even with the character standing still: in portal space the game
+        // thread takes none of them, 137 piled up and ran 12.7 s late on the far side, against the next
+        // route leg (Dargoth Hera's report, 2026-10-19). Now it sends when something moves, and a
+        // reminder once a second while stopped (something else may have started the character).
+        bool moving = _isMovingForward || _isTurning || _tier1TurnDir != 0;
         _isTurning = false;
+        long now = Now;
+        if (!moving && _stopSent && now - _lastStopSentMs < StopReassertMs) return;
+        _stopSent = true;
+        _lastStopSentMs = now;
         StopForward();
         ClearTurnMotions();
     }
@@ -2831,6 +3361,79 @@ internal sealed class NavigationEngine
 
     private bool TryGetPos(out double ns, out double ew)
         => NavCoordinateHelper.TryGetNavCoords(_host, out ns, out ew);
+
+    /// <summary>The character's height and cell (world units), when the engine has them.</summary>
+    private bool TryGetZ(out float z, out uint cell)
+    {
+        z = 0; cell = 0;
+        return _host.HasGetPlayerPose && _host.TryGetPlayerPose(out cell, out _, out _, out z, out _, out _, out _, out _);
+    }
+
+    /// <summary>In a dungeon, the waypoint (with a height) is a level above or below (DungeonPathfinder.LevelApartZ).</summary>
+    private bool OnOtherLevel(NavPoint pt)
+    {
+        if (pt.Z == 0.0 || !TryGetZ(out float z, out uint cell) || (cell & 0xFFFF) < 0x0100) return false;
+        return Math.Abs(z - pt.Z * 240.0) > DungeonPathfinder.LevelApartZ;
+    }
+
+    /// <summary>The trail of where the steering walked (for TryBacktrack); a jump of 30 yd or more starts it over.</summary>
+    private void NoteTrail(double ns, double ew)
+    {
+        if (!TryGetZ(out float z, out _)) return;
+        if (_trail.Count > 0)
+        {
+            var l = _trail[^1];
+            double d = NavYd(ns - l.Ns, ew - l.Ew);
+            if (d < TrailStepYd) return;
+            if (d > 30.0) _trail.Clear();
+        }
+        _trail.Add((ns, ew, z));
+        if (_trail.Count > TrailMax) _trail.RemoveAt(0);
+    }
+
+    /// <summary>
+    /// Stuck where the map has no way round: back along the trail (same level, up to BacktrackYd), as a detour that
+    /// rejoins the same waypoint. Once per stuck spot.
+    /// </summary>
+    private bool TryBacktrack(NavRouteParser route)
+    {
+        if (!RecoveryEnabled || _detour != null || _areaMismatch) return false;
+        int idx = _settings.ActiveNavIndex;
+        if (!IndexValid(idx, route) || !IsWalkTarget(route.Points[idx].Type)) return false;
+        if (!TryGetPos(out double ns, out double ew) || !TryGetZ(out float z, out _)) return false;
+        if (!double.IsNaN(_backtrackSpotNs) && NavYd(ns - _backtrackSpotNs, ew - _backtrackSpotEw) <= StuckSpotYards) return false;
+
+        var pts = new List<NavPoint>();
+        double went = 0, lastNs = ns, lastEw = ew;
+        for (int i = _trail.Count - 1; i >= 0 && went < BacktrackYd; i--)
+        {
+            var c = _trail[i];
+            if (Math.Abs(c.Z - z) > 3.0) break;                       // not down off a ledge, nor up one
+            double step = NavYd(c.Ns - lastNs, c.Ew - lastEw);
+            if (step < 1.0 && pts.Count == 0) continue;               // the spot we're stuck on
+            went += step;
+            lastNs = c.Ns; lastEw = c.Ew;
+            pts.Add(new NavPoint { Type = NavPointType.Point, NS = c.Ns, EW = c.Ew, Z = c.Z / 240.0 });
+        }
+        if (pts.Count == 0 || went < 2.0) return false;
+
+        _backtrackSpotNs = ns;
+        _backtrackSpotEw = ew;
+        long now = Now;
+        int number = ++_recoveryNumber;
+        _detour = new Detour
+        {
+            Number = number, Reason = "stuck, the map has no way round: backtracking", Planner = "backtrack",
+            Points = pts, StartIdx = idx, RejoinIdx = idx, LengthYd = went, StartedAt = now,
+            DeadlineAt = now + 10000 + (long)(went * 600.0),
+        };
+        _host.Log($"Nav: recovery #{number} started (stuck at [{idx}]) via backtrack: {pts.Count} pts, {went:F0}yd back along the way we came");
+        StopMovement();
+        _inRecovery          = false;
+        _closestDist         = double.MaxValue;
+        _settings.NavIsStuck = true;
+        return true;
+    }
 
     private static bool IndexValid(int i, NavRouteParser r)
         => r?.Points != null && i >= 0 && i < r.Points.Count;

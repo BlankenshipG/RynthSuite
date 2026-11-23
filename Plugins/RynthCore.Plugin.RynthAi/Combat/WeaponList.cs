@@ -134,13 +134,15 @@ internal static class WeaponList
     /// "Unknown" for an element not known yet. The panel sends the copies back on an edit;
     /// <see cref="MergeEdited"/> maps them onto the saved entries by id.
     /// </summary>
-    public static List<ItemRule> ForDisplay(IEnumerable<ItemRule> rules, Func<ItemRule, string> fullName)
+    public static List<ItemRule> ForDisplay(IEnumerable<ItemRule> rules, Func<ItemRule, string> fullName, Func<ItemRule, string>? kind = null)
     {
         var list = new List<ItemRule>();
         foreach (var r in rules)
             list.Add(new ItemRule
             {
                 Id = r.Id, Name = fullName(r), Action = r.Action, KeepBuffed = r.KeepBuffed,
+                NoBuff = !r.KeepBuffed,   // the face's "No buff" toggle (drawn on shield rows only)
+                Kind = kind?.Invoke(r) ?? "",
                 // A shield shows "Shield" in the element column (it has no element).
                 Element = IsShieldRule(r) ? ShieldAction : r.Element.Length > 0 ? r.Element : UnknownLabel,
                 ElementSource = r.ElementSource,
@@ -148,11 +150,41 @@ internal static class WeaponList
         return list;
     }
 
+    /// <summary>Appended to a listed item's name in the pickers when it isn't carried (<see cref="MissingIds"/>).</summary>
+    public const string MissingSuffix = " (missing)";
+
+    /// <summary>
+    /// The listed items the character no longer carries: neither in the pack
+    /// (<paramref name="inventory"/>, WorldObjectCache.GetInventory) nor wielded. The client
+    /// can still know an object that left (sold, given, on a mule), so the saved name alone
+    /// looked fine while combat couldn't use it (2026-10-11, Drakkon's buff wand 0x8000EF07,
+    /// shown as "Wand"). An empty inventory means it isn't known yet (logging in): nothing is
+    /// reported missing then. For the Items panel's warning and the pickers' "(missing)".
+    /// </summary>
+    public static HashSet<int> MissingIds(IEnumerable<ItemRule> rules, IEnumerable<WorldObject> inventory,
+        Func<int, WorldObject?> lookup, Func<WorldObject, bool> isWielded)
+    {
+        var missing = new HashSet<int>();
+        var carried = new HashSet<int>();
+        foreach (var wo in inventory) carried.Add(wo.Id);
+        if (carried.Count == 0) return missing;
+        foreach (var r in rules)
+        {
+            if (r.Id == 0 || carried.Contains(r.Id)) continue;
+            var wo = lookup(r.Id);
+            if (wo != null && isWielded(wo)) continue;
+            missing.Add(r.Id);
+        }
+        return missing;
+    }
+
     /// <summary>
     /// The Items panel's edited list, mapped onto the saved one by id: the saved name stays
     /// (the panel shows the full name; entries are matched and saved by id), an element the
     /// user changed becomes theirs ("set"), and "Unknown" stays unknown. Order and deletions
-    /// follow the panel.
+    /// follow the panel. The face's "noBuff" (<see cref="ItemRule.NoBuff"/>) sets KeepBuffed on a
+    /// shield entry only; on a weapon it is ignored, and absent (an older engine) it changes
+    /// nothing.
     /// </summary>
     public static List<ItemRule> MergeEdited(IReadOnlyList<ItemRule> saved, IEnumerable<ItemRule> edited)
     {
@@ -168,8 +200,9 @@ internal static class WeaponList
                 bool changed = !elem.Equals(old.Element, StringComparison.OrdinalIgnoreCase);
                 list.Add(new ItemRule
                 {
-                    // The panel carries only id, name and element: the rest stays as saved.
-                    Id = old.Id, Name = old.Name, Action = old.Action, KeepBuffed = old.KeepBuffed,
+                    // The panel carries id, name, element and (shields) noBuff: the rest stays as saved.
+                    Id = old.Id, Name = old.Name, Action = old.Action,
+                    KeepBuffed = IsShieldRule(old) && e.NoBuff is bool noBuff ? !noBuff : old.KeepBuffed,
                     Element = changed ? elem : old.Element,
                     ElementSource = changed ? (elem.Length > 0 ? SourceSet : "") : old.ElementSource,
                 });
@@ -177,6 +210,8 @@ internal static class WeaponList
             else
             {
                 e.Element = elem;
+                if (IsShieldRule(e) && e.NoBuff is bool noBuff) e.KeepBuffed = !noBuff;
+                e.NoBuff = null;   // wire only: never saved
                 list.Add(e);
             }
         }
@@ -190,29 +225,46 @@ internal static class WeaponList
     /// class; never by name). 0 = none.
     /// </summary>
     public static int FindWand(IEnumerable<ItemRule> rules, Func<int, WorldObject?> lookup, Func<WorldObject, bool> isWielded,
-        IEnumerable<WorldObject> inventory, bool allowUnlisted, out bool unlisted)
+        IEnumerable<WorldObject> inventory, bool allowUnlisted, out bool unlisted, Func<WorldObject, bool>? skip = null,
+        Func<WorldObject, int>? rank = null)
     {
+        // 2026-10-18 deep dive (Drakkon): the wand is the caster in hand, else a listed caster that is
+        // carried and not skipped (lowest rank first, then list order). Any other caster from the pack
+        // only when nothing listed is carried: no caster on the Items list, or every listed one was
+        // dropped or lost (owner, 2026-10-18), and allowUnlisted. A listed caster that is carried but
+        // can't be wielded never opens the pack: the old fallback had Drakkon trying casters he never
+        // listed, and the same-name stand-in took any pack item named "Wand" for his lost one.
         unlisted = false;
-        int first = 0;
-        bool anyListedWand = false;
+        var pack = inventory as ICollection<WorldObject> ?? new List<WorldObject>(inventory);
+        var carried = new HashSet<int>();
+        foreach (var wo in pack) carried.Add(wo.Id);
+        // A caster already in hand is the one to use, listed or not: it is wielded, so it can be.
+        foreach (var wo in pack)
+            if (IsWand(wo) && isWielded(wo)) return wo.Id;
+        bool anyListedCarried = false;
+        int best = 0, bestRank = int.MaxValue;
         foreach (var r in rules)
         {
             var wo = lookup(r.Id);
-            if (wo == null) continue;
-            if (!IsWand(wo)) continue;
-            anyListedWand = true;
+            if (wo == null || !IsWand(wo)) continue;
             if (isWielded(wo)) return r.Id;
-            if (first == 0) first = r.Id;
+            // Only a wand the character still carries: a listed wand that left the pack (sold, given,
+            // on a mule) gets no answer from the server (2026-10-11, wand 0x8000EF07 shown as '?').
+            if (!carried.Contains(wo.Id)) continue;
+            anyListedCarried = true;
+            if (skip != null && skip(wo)) continue;   // can't be wielded (requirement, not identified yet, refused)
+            int k = rank?.Invoke(wo) ?? 0;
+            if (k < bestRank) { best = r.Id; bestRank = k; }
         }
-        if (first != 0) return first;
-        if (anyListedWand || !allowUnlisted) return 0;
-        foreach (var wo in inventory)
-            if (wo.ObjectClass == AcObjectClass.WandStaffOrb)
-            {
-                unlisted = true;
-                return wo.Id;
-            }
-        return 0;
+        if (best != 0 || anyListedCarried || !allowUnlisted) return best;
+        foreach (var wo in pack)
+        {
+            if (wo.ObjectClass != AcObjectClass.WandStaffOrb || (skip != null && skip(wo))) continue;
+            int k = rank?.Invoke(wo) ?? 0;
+            if (k < bestRank) { best = wo.Id; bestRank = k; }
+        }
+        unlisted = best != 0;
+        return best;
     }
 
     /// <summary>

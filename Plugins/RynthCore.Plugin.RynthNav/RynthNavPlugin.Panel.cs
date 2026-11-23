@@ -94,7 +94,7 @@ public sealed partial class RynthNavPlugin
                 return "casting " + (o != null ? o.Name : label.Length > 0 ? label : "a recall");
             }
             case "portal":
-                if (NextStepIsHub) return $"taking the Town Network to {HubWhere(HubExitOf(_routeIdx + 1))}";
+                if (NextStepIsHub) return $"going into {TheHub(HubExitOf(_routeIdx + 1))}";
                 return last && _enterName.Length > 0 ? "going into " + _enterName : "taking portal " + label;
             case "town":
                 return HubLine(left);
@@ -102,7 +102,7 @@ public sealed partial class RynthNavPlugin
         string far = left >= 0 ? ", " + NavCoords.FmtDistance(left) + " left" : "";
         if (hasStep && step.UseRecall) return "getting ready to cast " + label;
         if (hasStep && step.UsePortal && NextStepIsHub)
-            return $"walking to the Town Network portal{far} (to {HubWhere(HubExitOf(_routeIdx + 1))})";
+            return $"walking to the portal into {TheHub(HubExitOf(_routeIdx + 1))}{far}";
         if (hasStep && step.UsePortal)
             return last && _enterName.Length > 0 ? $"walking to {_enterName}'s portal{far}" : $"walking to the portal {label}{far}";
         return $"walking to {name}{far}";
@@ -114,13 +114,14 @@ public sealed partial class RynthNavPlugin
         long now = NowMs;
         if (landblockChanged && _hasPose)
         {
-            try { _tileHere = File.Exists(Path.Combine(NavDataDir, $"nav_{CurrentLandblock:X4}.tile")) ? 1 : 0; } catch { _tileHere = -1; }
+            // A dungeon's tile is its landblock's surface: no navmesh here (RynthNavPlugin.InDungeon).
+            try { _tileHere = !InDungeon(_cellId) && File.Exists(Path.Combine(NavDataDir, $"nav_{CurrentLandblock:X4}.tile")) ? 1 : 0; } catch { _tileHere = -1; }
         }
         if (now < _nextInfoMs || now - Interlocked.Read(ref _lastStatusPollMs) > PanelPollWindowMs) return;
         _nextInfoMs = now + InfoRefreshMs;
         if (Interlocked.Exchange(ref _infoBusy, 1) != 0) return;
         uint lb = CurrentLandblock;
-        bool hasPose = _hasPose;
+        bool hasPose = _hasPose, dungeon = InDungeon(_cellId);
         Task.Run(() =>
         {
             try
@@ -129,7 +130,7 @@ public sealed partial class RynthNavPlugin
                 if (Directory.Exists(NavDataDir))
                     foreach (string _ in Directory.EnumerateFiles(NavDataDir, "nav_*.tile")) n++;
                 _tilesOnDisk = n;
-                if (hasPose) _tileHere = File.Exists(Path.Combine(NavDataDir, $"nav_{lb:X4}.tile")) ? 1 : 0;
+                if (hasPose) _tileHere = !dungeon && File.Exists(Path.Combine(NavDataDir, $"nav_{lb:X4}.tile")) ? 1 : 0;
             }
             catch { }
             finally { Interlocked.Exchange(ref _infoBusy, 0); }
@@ -152,6 +153,20 @@ public sealed partial class RynthNavPlugin
           .Append("\",\"tileHere\":").Append(_tileHere).Append(",\"indoors\":").Append(_hasPose && (cell & 0xFFFF) >= 0x100 ? 1 : 0)
           .Append(",\"onDisk\":").Append(_tilesOnDisk)
           .Append(",\"townNet\":").Append(_townNet != null ? 1 : 0).Append(",\"townNetStatus\":\"").Append(Esc(_townNetStatus)).Append("\"}");
+        // Path markers (RynthNavPlugin.Markers.cs) and "save as nav route" (RynthNavPlugin.SaveRoute.cs), 0.6.6+. The mesh view (RynthNavPlugin.MeshView.cs), 0.6.7+.
+        sb.Append(",\"mesh\":{\"on\":").Append(_meshOn ? 1 : 0).Append(",\"floor\":").Append(_meshFloor ? 1 : 0)
+          .Append(",\"walls\":").Append(_meshWalls ? 1 : 0).Append(",\"radius\":").Append(_meshRadius.ToString("F0", ci))
+          .Append(",\"triangles\":").Append(_meshBudget).Append(",\"drawn\":").Append(_meshDrawn).Append('}');
+        PlannedTrip? trip = _trip;
+        sb.Append(",\"markers\":{\"on\":").Append(_markersOn ? 1 : 0).Append(",\"labels\":").Append(_markerLabels ? 1 : 0)
+          .Append(",\"guide\":").Append(_markerGuide ? 1 : 0).Append(",\"shown\":").Append(trip != null && _tripShown ? 1 : 0)
+          .Append(",\"status\":\"").Append(Esc(_markerStatus)).Append("\"}");
+        string pathJson = PathJson();                       // the walking path, for the engine's World Map
+        if (pathJson.Length > 0) sb.Append(",\"path\":").Append(pathJson);
+        sb.Append(",\"save\":{\"can\":").Append(trip != null ? 1 : 0).Append(",\"for\":\"").Append(Esc(trip?.Goal ?? ""))
+          .Append("\",\"name\":\"").Append(Esc(_saveDefault)).Append("\",\"conflict\":\"").Append(Esc(_saveConflict))
+          .Append("\",\"busy\":").Append(_saveBusy ? 1 : 0).Append(",\"last\":\"").Append(Esc(_saveLast)).Append("\"}");
+        AppendLearnJson(sb);   // learning portals (RynthNavPlugin.LearnPortals.cs)
     }
 
     // ── The character's own recall spots, for the Recalls section (travel JSON) ──

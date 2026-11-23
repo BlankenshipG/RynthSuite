@@ -199,6 +199,22 @@ internal sealed class DungeonGeometry
         return true;
     }
 
+    /// <summary>
+    /// One portal polygon on its own (a building's door to the outside has no twin in another
+    /// cell): its centre at floor level (z = its lowest vertex), its horizontal facing (either way
+    /// round), its width and its top. False for a floor or ceiling portal (a shaft).
+    /// </summary>
+    internal static bool TryOpening(Vector3[] v, out double x, out double y, out double z,
+                                    out double nx, out double ny, out double width, out double top)
+    {
+        x = y = z = nx = ny = width = top = 0;
+        if (v == null || v.Length < 3 || !TryPortalPoly(v, out var pp)) return false;
+        x = pp.X; y = pp.Y; z = pp.Z; nx = pp.Nx; ny = pp.Ny; width = pp.Width;
+        top = double.MinValue;
+        foreach (var p in v) top = Math.Max(top, p.Z);
+        return true;
+    }
+
     private static bool TryMatch(DungeonGeometry g, DungeonNavNode a, DungeonNavNode b,
                                  List<PortalPoly> aList, List<PortalPoly> bList, out DungeonDoorway door)
     {
@@ -281,11 +297,11 @@ internal sealed class DungeonGeometry
 
     public bool TryGetDoorway(uint a, uint b, out DungeonDoorway door) => _doorways.TryGetValue(EdgeKey(a, b), out door!);
 
-    /// <summary>Openings whose centre is within r (horizontally) of (x, y) and 2 m of height z.</summary>
-    public IEnumerable<DungeonDoorway> DoorwaysNear(double x, double y, double z, double r)
+    /// <summary>Openings whose centre is within r (horizontally) of (x, y) and <paramref name="dz"/> of height z.</summary>
+    public IEnumerable<DungeonDoorway> DoorwaysNear(double x, double y, double z, double r, double dz = 2.0)
     {
         foreach (var d in _doorways.Values)
-            if ((d.X - x) * (d.X - x) + (d.Y - y) * (d.Y - y) <= r * r && Math.Abs(d.Z - z) < 2.0) yield return d;
+            if ((d.X - x) * (d.X - x) + (d.Y - y) * (d.Y - y) <= r * r && Math.Abs(d.Z - z) < dz) yield return d;
     }
 
     public bool HasFloor(uint cell) => _floors.ContainsKey(cell);
@@ -303,6 +319,42 @@ internal sealed class DungeonGeometry
             if (dz >= -FloorAbove && dz <= FloorBelow) return true;
         }
         return false;
+    }
+
+    /// <summary>The height of the cell's floor at (x, y), the floor polygon nearest
+    /// <paramref name="zRef"/> in height if several are under it (any height apart). False when
+    /// (x, y) is off the cell's floor or the cell has no floor data.</summary>
+    internal bool TryCellFloorHeight(uint cell, double x, double y, double zRef, out double h)
+    {
+        h = 0;
+        if (!_floors.TryGetValue(cell, out var list)) return false;
+        double best = double.MaxValue;
+        foreach (var v in list)
+        {
+            if (!InsidePolygon2D(v, x, y)) continue;
+            NewellNormal(v, out double nx, out double ny, out double nz);
+            if (Math.Abs(nz) < 1e-9) continue;
+            double px = 0, py = 0, pz = 0;
+            foreach (var q in v) { px += q.X; py += q.Y; pz += q.Z; }
+            px /= v.Length; py /= v.Length; pz /= v.Length;
+            double fh = pz - (nx * (x - px) + ny * (y - py)) / nz;
+            if (Math.Abs(fh - zRef) < best) { best = Math.Abs(fh - zRef); h = fh; }
+        }
+        return best < double.MaxValue;
+    }
+
+    /// <summary>The box round the cell's floor polygons (false: no floor data).</summary>
+    internal bool TryCellFloorBounds(uint cell, out double minX, out double minY, out double maxX, out double maxY)
+    {
+        minX = minY = double.MaxValue; maxX = maxY = double.MinValue;
+        if (!_floors.TryGetValue(cell, out var list)) return false;
+        foreach (var v in list)
+            foreach (var q in v)
+            {
+                minX = Math.Min(minX, q.X); maxX = Math.Max(maxX, q.X);
+                minY = Math.Min(minY, q.Y); maxY = Math.Max(maxY, q.Y);
+            }
+        return minX <= maxX;
     }
 
     /// <summary>True when (x, y) is on the floor of any of <paramref name="cells"/>; also true
@@ -693,6 +745,40 @@ internal sealed class DungeonGeometry
                 }
             }
         return hit;
+    }
+
+    /// <summary>
+    /// Line of sight between two points on the floor (the Sweep patrol): no wall of the landblock
+    /// reaching into knee-to-head height between them (the same band <see cref="SegmentClear"/>
+    /// uses), whichever cells the walls belong to. Floors aren't looked at: a monster sees across
+    /// a gap.
+    /// </summary>
+    internal bool SightClear(double x0, double y0, double z0, double x1, double y1, double z1)
+        => !WallHit(x0, y0, x1, y1, Math.Min(z0, z1) + WallBandLow, Math.Max(z0, z1) + WallBandHigh, out _);
+
+    /// <summary>A point on the cell's floor: the centre of its biggest floor polygon. False when
+    /// the dats give the cell no floor (then its origin stands in).</summary>
+    internal bool TryCellFloorCentre(uint cell, out double x, out double y, out double z)
+    {
+        x = y = z = 0;
+        if (!_floors.TryGetValue(cell, out var list) || list.Count == 0) return false;
+        double bestArea = -1;
+        foreach (var v in list)
+        {
+            if (v.Length < 3) continue;
+            double area = 0, cx = 0, cy = 0, cz = 0;
+            for (int i = 0; i < v.Length; i++)
+            {
+                var a = v[i]; var b = v[(i + 1) % v.Length];
+                area += a.X * b.Y - b.X * a.Y;
+                cx += a.X; cy += a.Y; cz += a.Z;
+            }
+            area = Math.Abs(area) * 0.5;
+            if (area <= bestArea) continue;
+            bestArea = area;
+            x = cx / v.Length; y = cy / v.Length; z = cz / v.Length;
+        }
+        return bestArea > 0;
     }
 
     /// <summary>Walls (footprint and height range) within r of (x, y), for offline inspection.</summary>

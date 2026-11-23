@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using RynthCore.Loot;
+using RynthCore.Loot.Editing;
+using RynthCore.Loot.T11;
 using RynthCore.Plugin.RynthInventory.Data;
 using RynthCore.PluginSdk;
 
@@ -18,6 +21,12 @@ namespace RynthCore.Plugin.RynthInventory.Scanning;
 /// </summary>
 internal sealed class InventoryScanner
 {
+    /// <summary>
+    /// On Infinite Leaftide (2026-11-07, "make sure all t11 attributes stuff is gated behind infinite
+    /// leaftide"): only there is an item's text read for T11 attributes.
+    /// </summary>
+    public bool Ilt { get; set; }
+
     // STypeInt
     private const uint StackSize = 12, MaxStackSize = 11, Value = 19, EncumbranceVal = 5, ItemsCapacity = 6,
         CurrentWieldedLocation = 10, MaterialType = 131, ItemWorkmanship = 105, ArmorLevel = 28,
@@ -35,12 +44,26 @@ internal sealed class InventoryScanner
     private readonly uint[] _contents = new uint[MaxContents];
     private readonly uint[] _spellBuf = new uint[64];
     private readonly Dictionary<uint, bool> _isPack = new();
+    // T11 parses by item, redone only when the item's text changes (the periodic scan reads every item).
+    private readonly Dictionary<uint, T11Entry> _t11 = new();
+
+    private sealed class T11Entry
+    {
+        public string Name = string.Empty, LongDesc = string.Empty, Use = string.Empty;
+        public T11ServerProps Server;
+        public T11ItemInfo Info = T11ItemInfo.None;
+    }
+
+    // STypeInt / STypeString the facts need beyond the record's own fields.
+    private const uint ValidLocations = 9, WeaponSkill = 48;
+    private const uint StrName = 1, StrUse = 14, StrLongDesc = 16;
 
     public bool Warmed;
 
     public void Reset()
     {
         _isPack.Clear();
+        _t11.Clear();
         Warmed = false;
     }
 
@@ -229,7 +252,73 @@ internal sealed class InventoryScanner
             it.SpellNames = new string[it.Spells.Length];
             for (int i = 0; i < it.Spells.Length; i++) it.SpellNames[i] = SpellTable.Name(it.Spells[i]);
         }
+        ReadFacts(host, id, it);
         return it;
+    }
+
+    /// <summary>
+    /// What a "like this" rule tests (2026-10-24, /ginv like): the item's class as RynthAi
+    /// classifies it, every int and float property the Add to loot profile checklist offers, and
+    /// for T11 gear its virtual T11 keys and the wield / rating values its appraisal strips.
+    /// </summary>
+    private void ReadFacts(RynthCoreHost host, uint id, ItemRecord it)
+    {
+        it.HasFacts = true;
+        host.TryGetObjectIntProperty(id, ValidLocations, out int slots);
+        host.TryGetObjectIntProperty(id, WeaponSkill, out int skill);
+        bool spellDid = host.HasGetObjectDataIdProperty
+            && host.TryGetObjectDataIdProperty(id, DidSpell, out uint did) && did != 0;
+        it.ObjectClass = (int)AcItemClassifier.Classify(it.ItemType, it.Name, spellDid, slots, skill);
+
+        var ints = new Dictionary<int, int>();
+        foreach (int key in LootItemAttributes.IntKeys)
+            if (host.TryGetObjectIntProperty(id, unchecked((uint)key), out int v) && v != 0) ints[key] = v;
+        if (host.HasGetObjectDoubleProperty)
+        {
+            var doubles = new Dictionary<int, double>();
+            foreach (int key in LootItemAttributes.DoubleKeys)
+                if (host.TryGetObjectDoubleProperty(id, unchecked((uint)key), out double v) && v != 0 && double.IsFinite(v)) doubles[key] = v;
+            if (doubles.Count > 0) it.Doubles = doubles;
+        }
+
+        T11ItemInfo t = Ilt ? T11Of(host, id, it.Name) : T11ItemInfo.None;
+        if (t.IsT11)
+        {
+            foreach (var (key, _) in T11Keys.Names())
+            {
+                if (key == T11Keys.CanWield) continue;   // depends on the character looking
+                if (T11Keys.TryGetValue(t, key, null, out int v) && v != 0) ints[key] = v;
+            }
+            foreach (int key in LootItemAttributes.IntKeys)
+                if (T11Keys.IsStrippedKey(key) && !ints.ContainsKey(key) && T11Keys.TryGetStrippedValue(t, key, out int v) && v != 0)
+                    ints[key] = v;
+        }
+        if (ints.Count > 0) it.Ints = ints;
+    }
+
+    /// <summary>The item's T11 reading (None for other items); only T11-named or T11-stamped items are parsed.</summary>
+    private T11ItemInfo T11Of(RynthCoreHost host, uint id, string name)
+    {
+        host.TryGetObjectIntProperty(id, (uint)T11Catalog.PropZcTier, out int zc);
+        host.TryGetObjectIntProperty(id, (uint)T11Catalog.PropWeaponAugScaleTier, out int wt);
+        if (!host.TryGetObjectIntProperty(id, (uint)T11Catalog.PropWeaponAugScaleQuality, out int wq)) wq = -1;
+        var server = new T11ServerProps(zc, wt, wq);
+        if (!name.StartsWith(T11Catalog.NamePrefix, StringComparison.Ordinal) && server.Tier < T11Catalog.MinTier)
+            return T11ItemInfo.None;
+        string desc = string.Empty, use = string.Empty;
+        if (host.HasGetObjectStringProperty)
+        {
+            host.TryGetObjectStringProperty(id, StrLongDesc, out desc);
+            host.TryGetObjectStringProperty(id, StrUse, out use);
+        }
+        if (_t11.TryGetValue(id, out T11Entry? e) && e.Name == name && e.LongDesc == desc && e.Use == use && e.Server == server)
+            return e.Info;
+        if (_t11.Count > 4096) _t11.Clear();
+        T11ItemInfo info;
+        try { info = T11ItemInfo.Parse(name, desc, use, server); }
+        catch (Exception) { info = T11ItemInfo.None; }
+        _t11[id] = new T11Entry { Name = name, LongDesc = desc ?? string.Empty, Use = use ?? string.Empty, Server = server, Info = info };
+        return info;
     }
 
     // ── Storage ─────────────────────────────────────────────────────────────

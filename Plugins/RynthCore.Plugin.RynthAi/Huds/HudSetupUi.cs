@@ -11,6 +11,7 @@ using System.Linq;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Huds;
 
@@ -24,6 +25,8 @@ internal sealed class HudSetupUi
     private string _packFilter = string.Empty;
     private int _slot;
 
+    // Where the player left this window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.InventoryHuds");
     public HudSetupUi(HudController hud) => _hud = hud;
 
     public void Render()
@@ -31,9 +34,11 @@ internal sealed class HudSetupUi
         var s = _hud.State;
         ImGui.SetNextWindowSize(new Vector2(640, 520), ImGuiCond.FirstUseEver);
         bool open = true;
+        _spot.Apply();
         bool visible = ImGui.Begin("Inventory HUDs##rynthhudsetup", ref open);
         if (!open) s.ShowSetup = false;
         if (!visible) { ImGui.End(); return; }
+        _spot.Track();
 
         RenderHudToggles(s);
         ImGui.Separator();
@@ -59,7 +64,7 @@ internal sealed class HudSetupUi
 
     private void RenderItemLists(HudState s)
     {
-        ImGui.TextWrapped("Left = shown on the HUD. Right = in your pack but not on the HUD. "
+        SafeImGui.TextWrapped("Left = shown on the HUD. Right = in your pack but not on the HUD. "
                           + "< pins the highlighted right row; > removes the highlighted left row. "
                           + "Add from inventory uses the item selected in the game.");
 
@@ -148,7 +153,7 @@ internal sealed class HudSetupUi
         ImGui.SetCursorPos(start);
         HudDraw.Icon(_hud.Icons, iconDid, name, ListIcon, dim);
         ImGui.SameLine();
-        if (dim) ImGui.TextDisabled(label);
+        if (dim) SafeImGui.TextDisabled(label);
         else ImGui.TextUnformatted(label);
         return clicked;
     }
@@ -158,7 +163,7 @@ internal sealed class HudSetupUi
         var slots = s.MiniRemoteSlots.ToArray();
         if (slots.Length == 0) return;
         ImGui.TextColored(LegacyDashboardRenderer.ColTeal, "Mini Remote slots");
-        ImGui.TextDisabled($"Slot 01 = top-left of the Mini Remote grid ({HudState.MiniRemoteColumns} per row). "
+        SafeImGui.TextDisabled($"Slot 01 = top-left of the Mini Remote grid ({HudState.MiniRemoteColumns} per row). "
                            + "Select an item in your pack, pick the slot, then Set.");
         _slot = Math.Clamp(_slot, 0, slots.Length - 1);
         string Label(int i) => $"{i + 1:00} - {(slots[i].IsEmpty ? "(empty)" : slots[i].Name)}";

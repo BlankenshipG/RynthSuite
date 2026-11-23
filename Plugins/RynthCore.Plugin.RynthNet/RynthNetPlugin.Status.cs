@@ -60,6 +60,11 @@ public sealed unsafe partial class RynthNetPlugin
             if (Host.HasIsPortaling) w.WriteBoolean("portal", Host.IsPortaling());
             if (Host.HasGetBusyState) w.WriteNumber("busy", Host.GetBusyState());
             if (Host.HasGetVitae && _playerId != 0) w.WriteNumber("vitae", Math.Round(Host.GetVitae(_playerId), 3));
+            // 0.1.1: the character's object id (the same on every client: the engine's
+            // Characters panel selects it when it is in view) and AC's combat mode
+            // (1 peace, 2 melee, 4 missile, 8 magic). Older clients just don't send them.
+            if (_playerId != 0) w.WriteNumber("id", _playerId);
+            if (Host.HasGetCurrentCombatMode) w.WriteNumber("cmode", Host.GetCurrentCombatMode());
             if (bot != null)
             {
                 try

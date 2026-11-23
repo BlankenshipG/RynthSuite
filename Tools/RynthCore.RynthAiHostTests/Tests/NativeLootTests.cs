@@ -14,8 +14,9 @@ namespace RynthCore.RynthAiHostTests.Tests;
 // when the selected profile is a .json file.
 internal static class NativeLootTests
 {
-    private const int MaxDamage = 54, Value = 19, ArmorLevel = 28, Workmanship = 105, Material = 131;
-    private const int DamageVariance = 22, DamageMod = 62, WeaponDefense = 29;
+    private const int MaxDamage = 44, Value = 19, ArmorLevel = 28, Workmanship = 105, Material = 131;
+    // ACE PropertyFloat ids (WeaponOffense 62 / DamageMod 63; 61 is EconRecoveryInterval).
+    private const int DamageVariance = 22, WeaponOffense = 62, DamageMod = 63, WeaponDefense = 29;
 
     public static void Register(Runner r)
     {
@@ -32,6 +33,7 @@ internal static class NativeLootTests
         r.Add("loot native: string regex, case-insensitive, falls back to the name", StringValue);
         r.Add("loot native: min damage = max - variance * max", MinDamage);
         r.Add("loot native: damage percent reads DamageMod * 100", DamagePercent);
+        r.Add("loot native: DoubleValueKey ids are ACE's PropertyFloat (DamageMod 63, not WeaponOffense 62)", DoubleValueKeyIds);
         r.Add("loot native: total ratings sum keys 370-376 and 379 only", TotalRatings);
         r.Add("loot native: character skill (null, stub and live skills)", CharacterSkill);
         r.Add("loot native: unknown condition type passes", UnknownConditionPasses);
@@ -40,9 +42,8 @@ internal static class NativeLootTests
         r.Add("loot native: profile JSON round trip keeps rules and order", JsonRoundTrip);
         r.Add("loot native: malformed or missing JSON profile", MalformedJson);
         r.Add("loot native: an invalid regex in a String rule does not match", InvalidRegexDoesNotThrow);   // was a known failure; fixed by a2902c3
-        r.KnownFailure("loot native: Keep # with a count of 0 survives a save and load",
-            "LootJsonContext skips default values when writing, so KeepCount 0 is left out and loads back as the initializer's 1",
-            KeepCountZeroRoundTrip);
+        r.Add("loot native: Keep # with a count of 0 survives a save and load", KeepCountZeroRoundTrip);   // was a known failure
+        r.Add("loot native: salvage combine turned off survives a save and load", SalvageCombineOffRoundTrip);
     }
 
     private static LootRule Rule(string name, LootAction action, params LootCondition[] conds)
@@ -211,6 +212,35 @@ internal static class NativeLootTests
         var bow = new Item("Bow").Dbl(DamageMod, 1.5);
         Check.True(Eval(new DamagePercentGECondition { Value = 150 }, bow), "1.5 -> 150%");
         Check.False(Eval(new DamagePercentGECondition { Value = 151 }, bow), "above");
+
+        // A launcher with a big attack mod and a small damage mod: the rule must read the damage
+        // mod (63). With DamageMod = 62 in the enum (before 2026-10-05) it read the attack mod.
+        var launcher = new Item("Bow").Dbl(WeaponOffense, 1.5).Dbl(DamageMod, 1.1).Dbl(61, 2.0);
+        Check.True(Eval(new DamagePercentGECondition { Value = 110 }, launcher), "damage mod 1.1 -> 110%");
+        Check.False(Eval(new DamagePercentGECondition { Value = 111 }, launcher), "the 1.5 attack mod is not read");
+        Check.False(Eval(new DamagePercentGECondition { Value = 150 }, new Item("Bow").Dbl(WeaponOffense, 1.5)),
+            "attack mod alone: no damage percent");
+    }
+
+    private static void DoubleValueKeyIds()
+    {
+        Check.Eq((int)DoubleValueKey.DamageVariance, 22, "DamageVariance");
+        Check.Eq((int)DoubleValueKey.MaximumVelocity, 26, "MaximumVelocity");
+        Check.Eq((int)DoubleValueKey.WeaponDefense, 29, "WeaponDefense");
+        Check.Eq((int)DoubleValueKey.UseRadius, 54, "UseRadius");
+        Check.Eq((int)DoubleValueKey.WeaponOffense, 62, "WeaponOffense");
+        Check.Eq((int)DoubleValueKey.DamageMod, 63, "DamageMod");
+        Check.Eq((int)DoubleValueKey.PowerLevel, 92, "PowerLevel");
+        Check.Eq((int)DoubleValueKey.AccuracyLevel, 93, "AccuracyLevel");
+        Check.Eq((int)AcFloatProperty.AttackBonus, 62, "LootSdk AttackBonus = WeaponOffense");
+        Check.Eq((int)AcFloatProperty.DamageMod, 63, "LootSdk DamageMod");
+        Check.Eq((int)AcFloatProperty.ManaConvMod, 144, "LootSdk ManaConvMod");
+        Check.Eq((int)AcFloatProperty.SlayerDamageBonus, 138, "LootSdk SlayerDamageBonus");
+
+        // The double-key condition reads the id it is given: 63 is the damage mod.
+        var bow = new Item("Bow").Dbl(WeaponOffense, 1.25).Dbl(DamageMod, 1.05);
+        Check.True(Eval(new DoubleValKeyGECondition { Key = 63, Value = 1.05 }, bow), "key 63 reads DamageMod");
+        Check.False(Eval(new DoubleValKeyGECondition { Key = 63, Value = 1.06 }, bow), "not WeaponOffense");
     }
 
     private static void TotalRatings()
@@ -334,5 +364,17 @@ internal static class NativeLootTests
         string path = TempFile("keep0.json");
         Profile(rule).Save(path);
         Check.Eq(LootProfile.Load(path).Rules[0].KeepCount, 0, "KeepCount after reload");
+    }
+
+    /// <summary>LootJsonContext skips default values: SalvageCombine.Enabled = false was left out and loaded back as true.</summary>
+    private static void SalvageCombineOffRoundTrip()
+    {
+        var p = Profile(Rule("any", LootAction.Salvage));
+        p.SalvageCombine = new SalvageCombineSettings { Enabled = false };
+        string path = TempFile("combine-off.json");
+        p.Save(path);
+        var loaded = LootProfile.Load(path);
+        Check.NotNull(loaded.SalvageCombine, "SalvageCombine after reload");
+        Check.False(loaded.SalvageCombine?.Enabled ?? true, "SalvageCombine.Enabled stays off");
     }
 }

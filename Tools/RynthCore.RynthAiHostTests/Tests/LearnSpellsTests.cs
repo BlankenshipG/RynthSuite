@@ -56,7 +56,19 @@ internal static class LearnSpellsTests
         r.Add("learn: with the setting off nothing is looted or read", SettingOffDoesNothing);
         r.Add("learn: a scroll already in the pack is read, only at a safe moment", PackScrollAtSafeMoment);
         r.Add("learn: a read with no answer is retried once, then given up", ReadTimeoutBounded);
+        r.Add("learn: a combat stance from before a read is requested once after it", StanceRestoredAfterRead);
+        r.Add("learn: no restore from Peace, with Peace Mode When Idle, or once the mode changed", StanceNotRestoredWhenNotWanted);
+        r.Add("learn: scrolls back to back restore the stance once, after the last", StanceRestoredOnceAfterSeries);
+        r.Add("learn: a fight during the read window is not fought over", StanceNotRestoredIntoAFight);
+        r.Add("learn: a restore that would come minutes late (no ticks, or busy for ever) is dropped", StanceTooLate);
+        r.Add("learn: a changed weapon in hand cancels the restore", StanceWeaponChanged);
+        r.Add("learn: pacing holds do not use up the restore budget", StancePacerHold);
+        r.Add("learn: Peace Mode When Idle switched on mid-window cancels the restore", StancePeaceIdleToggled);
+        r.Add("learn: a restore that never lands is tried 3 times, then given up", StanceNeverLands);
+        r.Add("learn: Reset and the macro stopping close the series", StanceResetAndMacroStop);
         r.Add("learn: settings - on by default, old files keep it on, /vt opt and metas reach ReadUnknownScrolls", Settings);
+        r.Add("learn: the gap to the next read counts from the last read's UseDone (no UseDone: 1.5 s from its end)", ReadGapFromUseDone);
+        r.Add("learn: the stance goes back at the last read's UseDone when no scroll is pending; a pending scroll waits", StanceRestoredAtLastUseDone);
     }
 
     // ── World ─────────────────────────────────────────────────────────────────
@@ -160,6 +172,7 @@ internal static class LearnSpellsTests
             S = s;
             typeof(RynthPluginBase).GetMethod("Attach", Any)!.Invoke(P, new object[] { FakeHost.LastApi });
             var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+            typeof(LegacyDashboardRenderer).GetField("_profileLoaded", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(dash, true);   // a stand-in with its profile in memory
             typeof(LegacyDashboardRenderer).GetField("_settings", Any)!.SetValue(dash, S);
             Set("_dashboard", dash);
             Cache = new WorldObjectCache(host);
@@ -225,6 +238,331 @@ internal static class LearnSpellsTests
         }
     }
 
+    // ── Stance restore ────────────────────────────────────────────────────────
+
+    private static ScrollLearner StanceRig(int modeBefore, bool peaceIdle, int scrolls, out Clock clock, out LegacyUiSettings s,
+        Action? setup = null, params uint[] extraIds)
+    {
+        BaseWorld();
+        setup?.Invoke();
+        FakeHost.CombatModeCalls = true;
+        FakeHost.CombatModeValue = modeBefore;
+        AddScroll(PackScroll, FlameBoltIII, "Scroll of Flame Bolt III", Player);
+        var ids = new List<uint> { PackScroll };
+        ids.AddRange(extraIds);
+        if (scrolls > 1) { AddScroll(Scroll2, FrostBoltI, "Scroll of Frost Bolt I", Player); ids.Add(Scroll2); }
+        var host = FakeHost.Create(Player);
+        var cache = FakeHost.MakeCache(host, Player, ids);
+        clock = new Clock();
+        s = Settings0();
+        s.PeaceModeWhenIdle = peaceIdle;
+        return Learner(host, s, cache, clock);
+    }
+
+    /// <summary>The read starts (the server then puts us in Peace), and ends with the scroll destroyed.</summary>
+    private static void FinishARead(ScrollLearner l, Clock c)
+    {
+        TickUntilRead(l, c);
+        Check.True(l.IsReading, "a read started");
+        FakeHost.CombatModeValue = CombatMode.NonCombat;
+        Learned();
+        l.OnChat("The scroll is destroyed.");
+        c.Now += 100;
+        l.Tick(true, 0);
+        Check.False(l.IsReading, "the read is over");
+    }
+
+    /// <summary>The scroll taught its spell (the fake server never deletes it, so mark it known).</summary>
+    private static void Learned() =>
+        FakeHost.Spellbook.Add((uint)(FakeHost.Uses.Last() == PackScroll ? FlameBoltIII : FrostBoltI));
+
+    private static void Quiet(ScrollLearner l, Clock c, long ms, bool safe = true, int busy = 0)
+    {
+        for (long t = 0; t < ms; t += 250) { c.Now += 250; l.Tick(safe, busy); }
+    }
+
+    private static void StanceRestoredAfterRead()
+    {
+        var l = StanceRig(CombatMode.Magic, false, 1, out var c, out _);
+        FinishARead(l, c);
+        Quiet(l, c, 1_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "not at once: a next scroll may follow");
+        Quiet(l, c, 3_000);
+        Check.Eq(string.Join(",", FakeHost.CombatModeRequests), CombatMode.Magic.ToString(), "Magic requested once after the read");
+        FakeHost.CombatModeValue = CombatMode.Magic;   // the client switched
+        Quiet(l, c, 6_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 1, "and not again");
+
+        // The client is busy: the request waits, then goes out.
+        var b = StanceRig(CombatMode.Melee, false, 1, out var cb, out _);
+        FinishARead(b, cb);
+        Quiet(b, cb, 5_000, busy: 2);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "busy: held");
+        Quiet(b, cb, 500);
+        Check.Eq(string.Join(",", FakeHost.CombatModeRequests), CombatMode.Melee.ToString(), "free again: Melee requested");
+        Done();
+    }
+
+    private static void StanceNotRestoredWhenNotWanted()
+    {
+        var peace = StanceRig(CombatMode.NonCombat, false, 1, out var c1, out _);
+        FinishARead(peace, c1);
+        Quiet(peace, c1, 8_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "Peace before the read: nothing");
+
+        var idle = StanceRig(CombatMode.Magic, true, 1, out var c2, out _);
+        FinishARead(idle, c2);
+        Quiet(idle, c2, 8_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "Peace Mode When Idle on: nothing");
+
+        var moved = StanceRig(CombatMode.Magic, false, 1, out var c3, out _);
+        FinishARead(moved, c3);
+        FakeHost.CombatModeValue = CombatMode.Melee;   // something else chose a mode
+        Quiet(moved, c3, 8_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "another subsystem set a mode: left alone");
+        Done();
+    }
+
+    private static void StanceRestoredOnceAfterSeries()
+    {
+        var l = StanceRig(CombatMode.Magic, false, 2, out var c, out _);
+        FinishARead(l, c);
+        Quiet(l, c, 2_000);   // the second scroll starts inside the settle time
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "no restore between reads");
+        if (!l.IsReading) TickUntilRead(l, c);
+        Check.True(l.IsReading, "the second scroll is being read");
+        FakeHost.CombatModeValue = CombatMode.NonCombat;
+        Learned();
+        l.OnChat("The scroll is destroyed.");
+        c.Now += 100;
+        l.Tick(true, 0);
+        Check.False(l.IsReading, "second read over");
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "still none");
+        Quiet(l, c, 3_750);
+        Check.Eq(string.Join(",", FakeHost.CombatModeRequests), CombatMode.Magic.ToString(), "one restore, after the last: ");
+        Done();
+    }
+
+    private static void StanceNotRestoredIntoAFight()
+    {
+        // The fight starts in the settle window and combat sets its own stance.
+        var l = StanceRig(CombatMode.Magic, false, 1, out var c, out _);
+        FinishARead(l, c);
+        Quiet(l, c, 1_000, safe: false);
+        FakeHost.CombatModeValue = CombatMode.Missile;
+        Quiet(l, c, 8_000, safe: false);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "combat owns the mode: no restore");
+
+        // Still in Peace when the settle time ends but a fight holds the tick: dropped, not queued behind it.
+        var f = StanceRig(CombatMode.Magic, false, 1, out var c2, out _);
+        FinishARead(f, c2);
+        Quiet(f, c2, 4_000, safe: false);
+        Quiet(f, c2, 4_000, safe: true);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "not safe at restore time: dropped");
+        Check.True(Logged("stance not restored"), "and logged: " + LearnLogs());
+        Done();
+    }
+
+    private const uint SwordW = 0x80000601, DaggerW = 0x80000602;
+    private static void Weapons()
+    {
+        foreach (var (id, name) in new[] { (SwordW, "Long Sword"), (DaggerW, "Dagger") })
+        {
+            FakeHost.Names[id] = name;
+            FakeHost.ItemTypes[id] = 0x1;
+            FakeHost.Ints[(id, 9)] = 0x00100000;
+        }
+        FakeHost.Ints[(SwordW, 10)] = 0x00100000;   // the sword is in hand
+    }
+
+    private static void StanceTooLate()
+    {
+        // No learner tick for 20 minutes (a death hold, a vendor hold): not Melee from a past life.
+        var l = StanceRig(CombatMode.Melee, false, 1, out var c, out _);
+        FinishARead(l, c);
+        c.Now += 1_200_000;
+        l.Tick(true, 0);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "20 minutes later: no request");
+        Check.True(Logged("stance not restored (too late)"), "and logged: " + LearnLogs());
+        Quiet(l, c, 4_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "and the series is closed");
+
+        // The client stays busy for ten minutes: dropped at the limit, not sent when it frees up.
+        var b = StanceRig(CombatMode.Magic, false, 1, out var cb, out _);
+        FinishARead(b, cb);
+        Quiet(b, cb, 600_000, busy: 1);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "busy for 10 minutes: nothing sent");
+        Quiet(b, cb, 2_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "and not when it frees up");
+        Check.True(Logged("stance not restored (too late)"), "logged: " + LearnLogs());
+        Done();
+    }
+
+    private static void StanceWeaponChanged()
+    {
+        // ACE reverts a mode the wielded weapon doesn't fit: a different weapon in hand cancels the restore.
+        var l = StanceRig(CombatMode.Melee, false, 1, out var c, out _, Weapons, SwordW, DaggerW);
+        FinishARead(l, c);
+        FakeHost.Ints.Remove((SwordW, 10));
+        FakeHost.Ints[(DaggerW, 10)] = 0x00100000;
+        Quiet(l, c, 6_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "another weapon in hand: no request");
+        Check.True(Logged("stance not restored (the weapon changed)"), "logged: " + LearnLogs());
+
+        // Same weapon: restored.
+        var s = StanceRig(CombatMode.Melee, false, 1, out var c2, out _, Weapons, SwordW, DaggerW);
+        FinishARead(s, c2);
+        Quiet(s, c2, 4_000);
+        Check.Eq(string.Join(",", FakeHost.CombatModeRequests), CombatMode.Melee.ToString(), "the same weapon: Melee requested");
+        Check.True(Logged("restoring Melee mode"), "the log names the mode: " + LearnLogs());
+        Done();
+    }
+
+    private static void StancePacerHold()
+    {
+        var l = StanceRig(CombatMode.Magic, false, 1, out var c, out _);
+        long t = 50_000_000;
+        ActionPacer.Reset(); ActionPacer.Enabled = true; ActionPacer.NowMs = () => t;
+        try
+        {
+            FinishARead(l, c);
+            var host = FakeHost.Create(Player);
+            // Another subsystem's action has no answer yet, so a mode change is held for the whole window.
+            for (long ms = 0; ms < 8_000; ms += 250)
+            {
+                c.Now += 250; t += 250;
+                if (ActionPacer.Current(host) == null) ActionPacer.Begin(host, PacedKind.ItemUse, 1, "x", "Other", 0);
+                l.Tick(true, 0);
+            }
+            Check.Eq(FakeHost.CombatModeRequests.Count, 0, "held by the pacer: nothing sent");
+            Check.False(Logged("did not change mode"), "and no false give-up: " + LearnLogs());
+
+            // The action is answered: exactly one request.
+            ActionPacer.Reset(); ActionPacer.Enabled = true; ActionPacer.NowMs = () => t;
+            Quiet(l, c, 500);
+            Check.Eq(string.Join(",", FakeHost.CombatModeRequests), CombatMode.Magic.ToString(), "answered: exactly one request");
+        }
+        finally { ActionPacer.Enabled = false; ActionPacer.Reset(); ActionPacer.NowMs = () => Environment.TickCount64; Done(); }
+    }
+
+    private static void StancePeaceIdleToggled()
+    {
+        var l = StanceRig(CombatMode.Magic, false, 1, out var c, out var s);
+        FinishARead(l, c);
+        Quiet(l, c, 1_000);
+        s.PeaceModeWhenIdle = true;
+        Quiet(l, c, 8_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "switched on mid-window: no request");
+        Check.False(Logged("stance not restored"), "and silently: " + LearnLogs());
+        Done();
+    }
+
+    private static void StanceNeverLands()
+    {
+        var l = StanceRig(CombatMode.Magic, false, 1, out var c, out _);
+        FinishARead(l, c);
+        Quiet(l, c, 12_000);   // the client never reads Magic
+        Check.Eq(FakeHost.CombatModeRequests.Count, ScrollLearner.RestoreMaxRequests, "exactly the cap");
+        Check.True(Logged("stance not restored (the client did not change mode)"), "then the give-up line: " + LearnLogs());
+        Quiet(l, c, 8_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, ScrollLearner.RestoreMaxRequests, "and no more");
+        Done();
+    }
+
+    private static void StanceResetAndMacroStop()
+    {
+        var l = StanceRig(CombatMode.Magic, false, 1, out var c, out _);
+        FinishARead(l, c);
+        l.Reset();
+        Quiet(l, c, 8_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "Reset closes the series");
+
+        // The macro stops while in Peace: no request, and it says why.
+        var m = StanceRig(CombatMode.Magic, false, 1, out var c2, out var s2);
+        FinishARead(m, c2);
+        s2.IsMacroRunning = false;
+        c2.Now += 500; m.Tick(true, 0);
+        Quiet(m, c2, 6_000);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "macro stopped: no request");
+        Check.True(Logged("stance not restored (the macro stopped)"), "logged when it was in Peace: " + LearnLogs());
+
+        // Still in stance (the read never took it out): closes without a log.
+        var n = StanceRig(CombatMode.Magic, false, 1, out var c3, out var s3);
+        FinishARead(n, c3);
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        FakeHost.Logs.Clear();
+        s3.IsMacroRunning = false;
+        c3.Now += 500; n.Tick(true, 0);
+        Check.False(Logged("stance not restored"), "still in stance: closed silently: " + LearnLogs());
+        Done();
+    }
+
+    // ── Read pacing from UseDone (UseDone ~0.7 s after "The scroll is destroyed.") ──
+
+    /// <summary>As FinishARead, with the read taking ~2 s like ACE's (stance, read motion, 1 s read).</summary>
+    private static void FinishARealRead(ScrollLearner l, Clock c)
+    {
+        TickUntilRead(l, c);
+        Check.True(l.IsReading, "a read started");
+        FakeHost.CombatModeValue = CombatMode.NonCombat;
+        c.Now += 1_900;
+        Learned();
+        l.OnChat("The scroll is destroyed.");
+        c.Now += 100;
+        l.Tick(true, 0);
+        Check.False(l.IsReading, "the read is over");
+    }
+    private static void ReadGapFromUseDone()
+    {
+        // UseDone seen: the next read goes 250 ms after it, well inside the old 1.5 s from the chat.
+        var l = StanceRig(CombatMode.NonCombat, false, 2, out var c, out _, () => FakeHost.ServerGates = true);
+        FinishARealRead(l, c);                       // chat answer at t, ticked at t+100
+        c.Now += 600; FakeHost.UseDone(0);       // the server's UseDone ~0.7 s after the chat
+        l.Tick(true, 0);
+        Check.False(l.IsReading, "not at the UseDone itself");
+        c.Now += ScrollLearner.ReadGapAfterUseDoneMs;
+        l.Tick(true, 0);
+        Check.True(l.IsReading, "the next read starts 250 ms after the UseDone (950 ms after the chat)");
+        Check.Eq(FakeHost.Uses.Count, 2, "two reads sent");
+        Done();
+
+        // No UseDone (an older engine or a lost one): 1.5 s from the read's end, as before.
+        var n = StanceRig(CombatMode.NonCombat, false, 2, out var cn, out _, () => FakeHost.ServerGates = true);
+        FinishARealRead(n, cn);
+        cn.Now += 850; n.Tick(true, 0);
+        Check.False(n.IsReading, "no UseDone: not at 950 ms");
+        cn.Now += 700; n.Tick(true, 0);
+        Check.True(n.IsReading, "no UseDone: 1.55 s after the read ended (its chat, seen on the next tick)");
+
+        // A UseDone that came before the read's send does not count for it.
+        var o = StanceRig(CombatMode.NonCombat, false, 2, out var co, out _, () => FakeHost.ServerGates = true);
+        FakeHost.UseDone(0);                     // an older action's answer
+        FinishARealRead(o, co);
+        co.Now += 850; o.Tick(true, 0);
+        Check.False(o.IsReading, "an earlier UseDone is not this read's");
+        Done();
+    }
+
+    private static void StanceRestoredAtLastUseDone()
+    {
+        // The last scroll: the stance goes back at its UseDone, not 3.5 s after the chat.
+        var l = StanceRig(CombatMode.Magic, false, 1, out var c, out _, () => FakeHost.ServerGates = true);
+        FinishARealRead(l, c);
+        l.Tick(true, 0);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "not before the UseDone");
+        c.Now += 600; FakeHost.UseDone(0);
+        l.Tick(true, 0);
+        Check.Eq(string.Join(",", FakeHost.CombatModeRequests), CombatMode.Magic.ToString(), "Magic requested at the UseDone");
+        Done();
+
+        // Another scroll is pending: no restore at the first read's UseDone; that read comes next.
+        var s = StanceRig(CombatMode.Magic, false, 2, out var cs, out _, () => FakeHost.ServerGates = true);
+        FinishARealRead(s, cs);
+        cs.Now += 600; FakeHost.UseDone(0);
+        s.Tick(true, 0);
+        Check.Eq(FakeHost.CombatModeRequests.Count, 0, "a scroll is pending: no restore at the UseDone");
+        Done();
+    }
     // ── Tests ─────────────────────────────────────────────────────────────────
 
     private static void AceRule()

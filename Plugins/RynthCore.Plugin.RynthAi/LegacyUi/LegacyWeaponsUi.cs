@@ -32,6 +32,17 @@ internal sealed class LegacyWeaponsUi
             _host.WriteToChat("[RynthAi] No item selected — click a weapon in your inventory first.", 1);
             return;
         }
+        AddWeapon(selId);
+    }
+
+    /// <summary>
+    /// Adds the weapon, wand or shield <paramref name="selId"/> to the Items list (the weapons the
+    /// Damage panel and combat may use): Add Selected, and the Inventory panel's right-click
+    /// "Add to Damage panel weapons" (RynthPluginAddWeaponById, 2026-10-25). Says in chat what it did.
+    /// </summary>
+    public void AddWeapon(uint selId)
+    {
+        if (selId == 0) return;
         if (_worldFilter == null) { _host.WriteToChat("[RynthAi] Object cache not ready.", 1); return; }
 
         var wo = _worldFilter[(int)selId];
@@ -129,6 +140,11 @@ internal sealed class LegacyWeaponsUi
             }
             string? type = PackConsumableType(wo);
             if (type == null || _settings.ConsumableRules.Any(x => x.Id == wo.Id)) continue;
+            // An "...Essence" that is no combat pet device (appraised: no charges, no Summoning
+            // requirement, no summoning-gem icon; PetDeviceKind) is not listed as a combat pet: a
+            // listed "Common Golem Essence" summoned a passive pet that held the slot
+            // (2026-11-08, R-20261108-215240-651b). One not appraised yet is still listed, as before.
+            if (type == "Pet" && PetDeviceKind.IsNotCombat(_host, unchecked((uint)wo.Id))) continue;
             _settings.ConsumableRules.Add(new ConsumableRule { Id = wo.Id, Name = wo.Name, Type = type });
             consumables++;
         }
@@ -136,34 +152,60 @@ internal sealed class LegacyWeaponsUi
     }
 
     /// <summary>
-    /// Removes weapons and consumables this character has nothing of, by id or by
-    /// name: entries a profile picked up from another character. Returns their names.
+    /// Removes weapons and consumables this character has nothing of: entries a profile
+    /// picked up from another character. Returns their names. See <see cref="CleanMissing"/>.
     /// </summary>
-    public List<string> PruneNotOwned(IReadOnlyList<WorldObject> inventory)
+    public List<string> PruneNotOwned(IReadOnlyList<WorldObject> inventory) => CleanMissing(inventory).Removed;
+
+    /// <summary>
+    /// Clears out weapons and consumables whose item is no longer in
+    /// <paramref name="inventory"/> (owned items: main pack, side packs, wielded gear).
+    /// An entry whose item is gone, but with an unlisted item of the same name in the pack
+    /// (a new stack of kits, a replacement weapon), is re-pointed at that item instead of
+    /// removed. Returns the names removed and the names re-pointed.
+    /// </summary>
+    public (List<string> Removed, List<string> Relinked) CleanMissing(IReadOnlyList<WorldObject> inventory)
     {
-        var ids   = new HashSet<int>(inventory.Select(w => w.Id));
-        var names = new HashSet<string>(inventory.Select(w => w.Name), StringComparer.OrdinalIgnoreCase);
-        var removed = new List<string>();
-        _settings.ItemRules.RemoveAll(r =>
+        var removed  = new List<string>();
+        var relinked = new List<string>();
+        CleanList(_settings.ItemRules, r => r.Id, (r, id) => r.Id = id, r => r.Name, inventory, removed, relinked);
+        CleanList(_settings.ConsumableRules, r => r.Id, (r, id) => r.Id = id, r => r.Name, inventory, removed, relinked);
+        return (removed, relinked);
+    }
+
+    private static void CleanList<T>(List<T> rules, Func<T, int> getId, Action<T, int> setId, Func<T, string> getName,
+                                     IReadOnlyList<WorldObject> inventory, List<string> removed, List<string> relinked)
+    {
+        var owned = new HashSet<int>(inventory.Select(w => w.Id));
+        // Items already listed by a live entry: a gone entry is never pointed at one of them.
+        var listed = new HashSet<int>(rules.Select(getId).Where(owned.Contains));
+        rules.RemoveAll(r =>
         {
-            bool gone = !ids.Contains(r.Id) && !names.Contains(r.Name);
-            if (gone) removed.Add(r.Name);
-            return gone;
+            if (owned.Contains(getId(r))) return false;
+            string name = getName(r);
+            var spare = inventory.FirstOrDefault(w => !listed.Contains(w.Id)
+                && string.Equals(w.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (spare != null)
+            {
+                setId(r, spare.Id);
+                listed.Add(spare.Id);
+                relinked.Add(name);
+                return false;
+            }
+            removed.Add(name);
+            return true;
         });
-        _settings.ConsumableRules.RemoveAll(r =>
-        {
-            bool gone = !ids.Contains(r.Id) && !names.Contains(r.Name);
-            if (gone) removed.Add(r.Name);
-            return gone;
-        });
-        return removed;
     }
 
     internal static string? PackConsumableType(WorldObject wo)
     {
         switch (wo.ObjectClass)
         {
-            case AcObjectClass.HealingKit: return "HealthKit";
+            case AcObjectClass.HealingKit:
+                // A kit restores the vital in its name: a Greater Mana Kit is no healing kit (DreamWeave has them).
+                if ((wo.Name ?? "").Contains("Stamina", StringComparison.OrdinalIgnoreCase)) return "StaminaKit";
+                if ((wo.Name ?? "").Contains("Mana", StringComparison.OrdinalIgnoreCase)) return "ManaKit";
+                return "HealthKit";
             case AcObjectClass.Food:       return PotionType(wo);
             case AcObjectClass.Lockpick:   return "Lockpick";
             case AcObjectClass.Misc:
@@ -202,20 +244,22 @@ internal sealed class LegacyWeaponsUi
         string? potion = PotionType(wo);
         if (potion != null) return potion;
 
-        // Health items
+        // Health items: a kit is used on yourself, anything else (Conquest's Health Tincture is
+        // no Food) is used with no target, like a potion.
         if (name.Contains("Heal", StringComparison.OrdinalIgnoreCase) ||
             name.Contains("Health", StringComparison.OrdinalIgnoreCase) ||
             name.Contains("Elixir of Healing", StringComparison.OrdinalIgnoreCase))
-            return "HealthKit";
+            return BuffManager.IsUseOnSelfKit(wo) ? "HealthKit" : "HealthPotion";
 
-        // Mana items
-        if (name.Contains("Mana", StringComparison.OrdinalIgnoreCase) ||
-            name.Contains("Mana Stone", StringComparison.OrdinalIgnoreCase))
-            return "ManaStone";
+        // Mana items. A mana kit (it restores your own mana, like a stamina kit) is no stone: typed
+        // ManaStone it switched off the ordinary stones and Drakkon's gear ran dry (10-23).
+        if (name.Contains("Mana", StringComparison.OrdinalIgnoreCase))
+            return name.TrimEnd().EndsWith(" Kit", StringComparison.OrdinalIgnoreCase) ? "ManaKit" : "ManaStone";
 
-        // Stamina items
+        // Stamina items. A stamina kit is used on yourself, not drunk: its own type, so the
+        // potion step never takes it ("Stamina" is the old name for stamina potions).
         if (name.Contains("Stamina", StringComparison.OrdinalIgnoreCase))
-            return "Stamina";
+            return name.TrimEnd().EndsWith(" Kit", StringComparison.OrdinalIgnoreCase) ? "StaminaKit" : "Stamina";
 
         // Lockpicks
         if (name.Contains("Lockpick", StringComparison.OrdinalIgnoreCase) ||

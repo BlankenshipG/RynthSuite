@@ -45,20 +45,212 @@ internal static class MetaTests
         r.Add("meta: expression condition fails closed on errors", ExpressionCondition);
         r.Add("meta: need-to-buff with no buff manager, unknown condition types", NeedToBuffAndUnknown);
         r.Add("meta action: chat commands, /ra, /vt and /mt", ChatCommands);
+        r.Add("meta action: the /vt verbs and options the metas use that were missing (2026-10-17)", VtPortedVerbs);
         r.Add("meta action: SetMetaState, CallMetaState and ReturnFromCall", CallReturn);
         r.Add("meta action: All runs every child in order", AllAction);
         r.Add("meta action: embedded nav route", EmbeddedNav);
+        r.Add("meta .af: EmbedNav and NAV names lose stray brackets ('None]' was loaded as a route named 'None]')", EmbedNavStrayBrackets);
+        r.Add("meta action: EmbedNav [None] with no route behind it is an empty route (no 'None.nav', no 'Route missing')", EmbedNavNoneKeepsRoute);
+        r.Add("meta action: a [None] route with points loads, as in VTank (an old 'None]' key too)", EmbedNavNoneWithPointsLoads);
+        r.Add("meta .met: VTank's [None] embedded nav - with points it is a route, empty it is no nav", MetEmbedNavNone);
         r.Add("meta action: watchdog", Watchdog);
         r.Add("meta action: RA options, chat expression, expression, views", MiscActions);
         r.Add("meta: an exception in a tick is caught and forces a reset", ExceptionInTick);
         r.Add("meta: state snapshot", Snapshot);
         r.Add("meta: VendorClosed fires after a vendor closes", VendorClosedFires);   // was a known failure; fixed by ef68455
         r.Add("meta: InventoryItemCount counts stack sizes", InventoryCountsStacks);   // was a known failure; fixed by 716f16d
-        r.KnownFailure("meta: SecondsInStateP keeps counting across a call and return",
-            "SecondsInStateP_GE survives a macro stop/start since 1ee6145, but still restarts whenever the state is re-entered (SetState, Call, Return), as VTank documents it; RynthScript says it survives re-entry. Open compatibility call (2026-09-30 audit, question 16)",
-            SecondsInStatePPersists);
+        r.Add("meta: SecondsInStateP keeps counting across a call and return", SecondsInStatePPersists);   // was a known failure (2026-09-30 audit, question 16: RynthScript's re-entry rule)
+        r.Add("meta: SecondsInStateP pauses in a call, survives SetState to itself, restarts on a new state or meta", SecondsInStatePRules);
         r.Add("meta: MainHealthPHE / MainManaPHE mean 'percent >='", PercentConditionsAreGE);   // was a known failure; fixed by a7c4618
         r.Add("meta: a negative vital threshold never holds", NegativeVitalThreshold);   // was a known failure; fixed by 6f72b67
+        r.Add("meta edit: saving a rule keeps the running meta's state, clocks and latch", EditKeepsRunningMeta);
+        r.Add("meta edit: a saved rule keeps CallState's return state and ChatCapture's colours", EditKeepsHiddenFields);
+        r.Add("meta edit: the editor's Set current text matches the landblock / landcell", SetCurrentMatches);
+        r.Add("meta edit: a new state's Never -> None rule keeps it through a save and reload", NewStateSurvivesReload);
+        r.Add("meta: rule names survive a save and reload (.af \"~~ @name\")", RuleNamesRoundTrip);
+        r.Add("meta edit: an update without a name (an engine without rule names) keeps the rule's name", UpdateKeepsName);
+    }
+
+    private static void SetCurrentMatches()
+    {
+        FakeHost.Reset();
+        foreach (uint cell in new uint[] { 0xA9B4001Cu, 0x00070143u, 0x8B370105u, 0x0001FFFEu })
+        {
+            FakeHost.PlayerPose = (cell, 10f, 10f, 0f);
+            var rig = new Rig(FakeHost.Create(), Player);
+            string block = RynthCore.Engine.UI.Data.MetaLocation.Text(RynthCore.Engine.UI.Data.MetaLocation.LandblockCondition, cell)!;
+            string here = RynthCore.Engine.UI.Data.MetaLocation.Text(RynthCore.Engine.UI.Data.MetaLocation.LandcellCondition, cell)!;
+            Check.True(rig.Holds(C.Landblock_EQ, block), $"Landblock == {block} holds at {cell:X8}");
+            Check.True(rig.Holds(C.Landcell_EQ, here), $"Landcell == {here} holds at {cell:X8}");
+            FakeHost.PlayerPose = (cell + 0x00010000u, 10f, 10f, 0f);
+            Check.False(rig.Holds(C.Landblock_EQ, block), $"not in the next landblock ({cell:X8})");
+            FakeHost.PlayerPose = (cell + 1, 10f, 10f, 0f);
+            Check.False(rig.Holds(C.Landcell_EQ, here), $"not in the next cell ({cell:X8})");
+        }
+    }
+
+    private static void NewStateSurvivesReload()
+    {
+        // What "+ New state..." adds (engine MetaRuleEdit.Placeholder): Never -> None in the new state.
+        var rules = new List<MetaRule>
+        {
+            Rule("Default", C.Always, "", A.SetMetaState, "Loot"),
+            new() { State = "Loot", Condition = C.Never, Action = A.None },
+        };
+        string text = AfFileWriter.SaveToString(rules, new Dictionary<string, List<string>>());
+        var back = AfFileParser.LoadFromText(text);
+        Check.Eq(back.Rules.Count, 2, "both rules back");
+        var loot = back.Rules.FirstOrDefault(x => x.State == "Loot");
+        Check.NotNull(loot, "the new state is still there");
+        if (loot != null)
+        {
+            Check.Eq(loot.Condition, C.Never, "Never");
+            Check.Eq(loot.Action, A.None, "None");
+        }
+
+        // It never fires, and SetState into it just sits there.
+        var rig = new Rig(rules: new[] { Rule("Default", C.Always, "", A.SetMetaState, "Loot"), Mark("Loot", C.Never, "", "x") });
+        rig.Tick();
+        rig.Tick(5);
+        Check.Eq(rig.S.CurrentState, "Loot", "moved into the new state");
+        Check.False(rig.Has("x"), "its Never rule never fires");
+    }
+
+    private static void RuleNamesRoundTrip()
+    {
+        var named = Rule("Hunt", C.Always, "", A.ChatCommand, "/vt start");
+        named.Name = "Start hunting";
+        var both = Rule("Hunt", C.Never, "", A.None, "");
+        both.Name = "  Parked " + "\r\n" + " rule ";   // trimmed, kept on one line
+        both.Enabled = false;
+        var plain = Rule("Hunt", C.Always, "", A.None, "");
+        var rules = new List<MetaRule> { named, both, plain };
+
+        string text = AfFileWriter.SaveToString(rules, new Dictionary<string, List<string>>());
+        Check.True(text.Contains("~~ @name Start hunting"), "written as a ~~ @name line");
+        var back = AfFileParser.LoadFromText(text);
+        Check.Eq(back.Rules.Count, 3, "every rule back");
+        Check.Eq(back.Warnings.Count, 0, "no warnings");
+        if (back.Rules.Count == 3)
+        {
+            Check.Eq(back.Rules[0].Name, "Start hunting", "the name");
+            Check.Eq(back.Rules[1].Name, "Parked    rule", "one line, trimmed");
+            Check.False(back.Rules[1].Enabled, "a name and @disabled together");
+            Check.Eq(back.Rules[2].Name, "", "a name belongs to one rule only");
+        }
+
+        // Hand-written: either marker order; "@names" and an empty "@name" are just comments.
+        var hand = AfFileParser.LoadFromText(string.Join("\n", new[]
+        {
+            "STATE: {Default} ~~ {",
+            "\t~~ @disabled",
+            "\t~~ @name Second",
+            "\tIF:\tAlways",
+            "\t\tDO:\tNone",
+            "\t~~ @names are just a comment",
+            "\tIF:\tNever",
+            "\t\tDO:\tNone",
+            "\t~~ @name",
+            "\tIF:\tNever",
+            "\t\tDO:\tNone",
+            "~~ }",
+        }));
+        Check.Eq(hand.Rules.Count, 3, "three rules");
+        if (hand.Rules.Count == 3)
+        {
+            Check.Eq(hand.Rules[0].Name, "Second", "name after @disabled");
+            Check.False(hand.Rules[0].Enabled, "still disabled");
+            Check.Eq(hand.Rules[1].Name, "", "@names is a comment");
+            Check.Eq(hand.Rules[2].Name, "", "an empty @name is a comment");
+        }
+    }
+
+    private static void UpdateKeepsName()
+    {
+        var rule = Rule("Default", C.Always, "", A.None, "");
+        rule.Name = "Keep me";
+        var rules = new List<MetaRule> { rule };
+        MetaRuleEdits.Replace(rules, 0, Rule("Default", C.Never, "", A.None, ""), keepName: true);
+        Check.Eq(rules[0].Name, "Keep me", "an engine without names doesn't wipe it");
+        Check.Eq(rules[0].Condition, C.Never, "the edit applied");
+        var renamed = Rule("Default", C.Never, "", A.None, "");
+        renamed.Name = "New name";
+        MetaRuleEdits.Replace(rules, 0, renamed);
+        Check.Eq(rules[0].Name, "New name", "a sent name replaces it");
+        MetaRuleEdits.Replace(rules, 0, Rule("Default", C.Never, "", A.None, ""));
+        Check.Eq(rules[0].Name, "", "a sent empty name clears it");
+    }
+
+    // ── Panel edits on a running meta (MetaRuleEdits, update_rule; 2026-10-05 autosave) ─────
+
+    private static void EditKeepsRunningMeta()
+    {
+        var rig = new Rig(rules: new[]
+        {
+            Mark("Default", C.Always, "", "a"),
+            Mark("Default", C.SecondsInState_GE, "10", "t"),
+        });
+        rig.Tick();
+        Check.Eq(rig.Var("a"), "1", "the Always rule fired on entry");
+        rig.Tick(6);
+
+        // What the editor's autosave sends: an edited copy of rule 0, then the structural bump
+        // TryAutoSaveMetaCmd makes.
+        MetaRule edited = Mark("Default", C.Always, "", "a");
+        edited.ActionData = "setvar[a, getvar[a]+10]";
+        Check.True(MetaRuleEdits.Replace(rig.S.MetaRules, 0, edited), "replaced");
+        rig.S.MetaRulesStructuralVersion++;
+        rig.Tick();
+        Check.Eq(rig.Var("a"), "1", "the edited rule did not fire again (latch kept)");
+        Check.Eq(rig.S.CurrentState, "Default", "state unchanged");
+        Check.Near(rig.M.GetStateSnapshot().SecondsInState, 6, 1e-9, "seconds in state not restarted");
+        rig.Tick(4.5);
+        Check.Eq(rig.Var("t"), "1", "the 10 s rule fired on the original clock");
+
+        // A real state entry re-arms it, now with the edited action.
+        rig.S.ForceStateReset = true;
+        rig.Tick();
+        Check.Eq(rig.Var("a"), "11", "re-armed by a state entry, runs the edited action");
+
+        // Out of range: nothing changes.
+        Check.False(MetaRuleEdits.Replace(rig.S.MetaRules, 5, Mark("Default", C.Never, "", "z")), "bad index refused");
+        Check.Eq(rig.S.MetaRules.Count, 2, "rule count unchanged");
+
+        // Before the fix (a plain replace) the same edit fired the rule again.
+        var old = new Rig(rules: new[] { Mark("Default", C.Always, "", "a") });
+        old.Tick();
+        old.S.MetaRules[0] = Mark("Default", C.Always, "", "a");
+        old.S.MetaRulesStructuralVersion++;
+        old.Tick();
+        Check.Eq(old.Var("a"), "2", "a plain replace re-fires (what MetaRuleEdits prevents)");
+    }
+
+    private static void EditKeepsHiddenFields()
+    {
+        var call = new MetaRule
+        {
+            State = "Default", Condition = C.ChatMessageCapture, ConditionData = "x", ChatColors = "2;4",
+            Action = A.CallMetaState, ActionData = "Buff", CallReturnState = "Hunt",
+        };
+        var rules = new List<MetaRule> { call };
+        // The panel's DTO carries neither field.
+        var edited = new MetaRule { State = "Default", Condition = C.ChatMessageCapture, ConditionData = "y", Action = A.CallMetaState, ActionData = "Buff2" };
+        MetaRuleEdits.Replace(rules, 0, edited);
+        Check.Eq(rules[0].CallReturnState, "Hunt", "CallState return kept");
+        Check.Eq(rules[0].ChatColors, "2;4", "ChatCapture colours kept");
+        Check.Eq(rules[0].ActionData, "Buff2", "the edit applied");
+
+        // Changing the action / condition drops them.
+        var other = new MetaRule { State = "Default", Condition = C.Always, Action = A.SetMetaState, ActionData = "Buff" };
+        MetaRuleEdits.Replace(rules, 0, other);
+        Check.Eq(rules[0].CallReturnState, "", "not a CallState any more");
+        Check.Eq(rules[0].ChatColors, "", "not a ChatCapture any more");
+
+        // Nested: an All's ChatCapture child by position.
+        var parent = new MetaRule { Condition = C.All, Children = { new MetaRule { Condition = C.ChatMessageCapture, ChatColors = "7" } } };
+        var parentEdit = new MetaRule { Condition = C.All, Children = { new MetaRule { Condition = C.ChatMessageCapture, ConditionData = "z" } } };
+        MetaRuleEdits.KeepHidden(parent, parentEdit);
+        Check.Eq(parentEdit.Children[0].ChatColors, "7", "child colours kept");
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────────
@@ -483,7 +675,8 @@ internal static class MetaTests
         }
         FakeHost.NotAttackable.Add(crier);
         var host = FakeHost.Create();
-        // The lurker never got a health update (untracked); the dead one reads 0.
+        // The lurker never got a health update (untracked: ACE sends health only once a monster is selected,
+        // appraised or hit, so most monsters nearby have none); the dead one reads 0.
         var cache = FakeHost.MakeCache(host, Player, new[] { drudge, farDrudge, crier, dead, lurker },
             new Dictionary<uint, float> { [drudge] = 1f, [farDrudge] = 0.5f, [crier] = 1f, [dead] = 0f });
         var rig = new Rig(host, Player);
@@ -492,23 +685,30 @@ internal static class MetaTests
         rig.S.MonsterRules.Add(new MonsterRule { Name = "^Drudge" });
 
         Check.True(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,20,1"), "one drudge within 20");
-        Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,20,2"), "dead and untracked ones do not count");
-        Check.True(rig.Holds(C.MonsterNameCountWithinDistance, "drudge,100,2"), "two within 100 (ignores case, inclusive)");
-        Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,99.9,2"), "the far one is at 100");
+        Check.True(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,20,2"), "the untracked lurker counts (R-20261119-123029-4bd1)");
+        Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,20,3"), "the dead one does not");
+        Check.True(rig.Holds(C.MonsterNameCountWithinDistance, "drudge,100,3"), "three within 100 (ignores case, inclusive)");
+        Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,99.9,3"), "the far one is at 100");
         Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "Crier,20,1"), "not attackable");
         Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,x,1"), "bad distance");
         Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,20"), "missing count");
         Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "(,20,1"), "bad regex");
         Check.True(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,20,0"), "at least 0 always holds");
 
-        Check.True(rig.Holds(C.NoMonstersWithinDistance, "9"), "none within 9 (crier, dead, untracked skipped)");
+        Check.True(rig.Holds(C.NoMonstersWithinDistance, "4"), "none within 4 (the crier at 1 is not attackable)");
+        Check.False(rig.Holds(C.NoMonstersWithinDistance, "5"), "the untracked lurker at 5 is a monster (the dead one there is not)");
         Check.False(rig.Holds(C.NoMonstersWithinDistance, "10"), "the drudge at 10");
+        // A ghost (combat's GhostTracker: the server no longer has it) is left out, like the combat scan leaves it.
+        rig.M.SetGhostCheck(id => id == unchecked((int)lurker));
+        Check.True(rig.Holds(C.NoMonstersWithinDistance, "9"), "the lurker is a ghost: none within 9");
+        Check.False(rig.Holds(C.MonsterNameCountWithinDistance, "Drudge,20,2"), "a ghost is not counted by name either");
+        rig.M.SetGhostCheck(null);
         Check.False(rig.Holds(C.NoMonstersWithinDistance, ""), "empty means 20");
         Check.False(rig.Holds(C.NoMonstersWithinDistance, "0"), "0 means 20");
         Check.False(rig.Holds(C.NoMonstersWithinDistance, "junk"), "junk means 20");
 
-        // Priority counts use the Monsters list (Default excluded) and, unlike the two above,
-        // do count a monster that never had a health update.
+        // Priority counts use the Monsters list (Default excluded) and, like the two above,
+        // count a monster that never had a health update.
         Check.True(rig.Holds(C.MonsterPriorityCountWithinDistance, "2,20"), "drudge + untracked lurker");
         Check.False(rig.Holds(C.MonsterPriorityCountWithinDistance, "3,20"), "not three within 20");
         Check.True(rig.Holds(C.MonsterPriorityCountWithinDistance, "3,100"), "three within 100");
@@ -696,6 +896,8 @@ internal static class MetaTests
         Check.True(rig.Ra.Contains("/ra stop"), "/vt stop");
         RunAction(rig, A.ChatCommand, "/vt nav load Hive Loop");
         Check.True(rig.Ra.Contains("/ra nav load Hive Loop"), "/vt nav load keeps spaces");
+        RunAction(rig, A.ChatCommand, "/vt meta load Night Farm");
+        Check.True(rig.Ra.Contains("/ra meta load Night Farm"), "/vt meta load is /ra meta load (one implementation; a new name makes a blank meta)");
         RunAction(rig, A.ChatCommand, "/vt setattackbar 0.75");
         Check.True(rig.Ra.Contains("/ra power 75"), "/vt setattackbar 0.75 -> 75%");
         RunAction(rig, A.ChatCommand, "/vt setattackbar 3");
@@ -720,6 +922,90 @@ internal static class MetaTests
         RunAction(reversed, A.ChatCommand, "/vt reverseroute");
         Check.Near(reversed.S.CurrentRoute.Points[0].EW, 3, 1e-9, "route reversed");
         Check.Eq(reversed.S.ActiveNavIndex, 2, "index mirrored");
+    }
+
+    // /vt verbs and options found in ub-IT and the metas on disk (universalremote.met, SASocietyTasks.met,
+    // FoundryIzexi.met, DerethExploration (1).met) that RynthAi didn't handle.
+    private static void VtPortedVerbs()
+    {
+        FakeHost.Reset();
+        FakeHost.TapJumpCalls = true;   // the engine's tap jump, for /vt tapjump
+        var rig = new Rig(FakeHost.Create(), Player);
+
+        // /vt e toggles the macro. Straight to the /vt handler: a meta doesn't run with the macro off.
+        rig.S.IsMacroRunning = false;
+        Check.True(rig.M.TryHandleVtCommand("/vt e") && rig.Ra.Contains("/ra start"), "/vt e with the macro off starts it");
+        rig.S.IsMacroRunning = true;
+        Check.True(rig.M.TryHandleVtCommand("/vt e") && rig.Ra.Contains("/ra stop"), "/vt e with the macro on stops it");
+
+        // /vt jump heading shift holdms -> /ra jump[s] heading hold; /vt tapjump -> the engine's tap jump.
+        RunAction(rig, A.ChatCommand, "/vt jump 90 true 750");
+        Check.True(rig.Ra.Contains("/ra jumps 90 750"), "/vt jump 90 true 750 -> /ra jumps 90 750");
+        RunAction(rig, A.ChatCommand, "/vt jump 180 false 300");
+        Check.True(rig.Ra.Contains("/ra jump 180 300"), "shift false -> /ra jump");
+        int taps = FakeHost.TapJumps;
+        RunAction(rig, A.ChatCommand, "/vt tapjump");
+        Check.Eq(FakeHost.TapJumps, taps + 1, "/vt tapjump");
+
+        // Settings profiles go to /ra settings; other /vt settings verbs are still swallowed.
+        RunAction(rig, A.ChatCommand, "/vt settings savechar Banes");
+        Check.True(rig.Ra.Contains("/ra settings savechar Banes"), "/vt settings savechar");
+        RunAction(rig, A.ChatCommand, "/vt settings loadchar Base Profile");
+        Check.True(rig.Ra.Contains("/ra settings loadchar Base Profile"), "/vt settings loadchar keeps spaces");
+
+        // looting load = loot load; equipitemsfor -> /ra equipfor.
+        RunAction(rig, A.ChatCommand, "/vt looting load NoSuchProfile.utl");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("Loot profile not found: NoSuchProfile.utl")), "/vt looting load is handled as loot load");
+        RunAction(rig, A.ChatCommand, "/vt equipitemsfor Pyre Skeleton");
+        Check.True(rig.Ra.Contains("/ra equipfor Pyre Skeleton"), "/vt equipitemsfor -> /ra equipfor");
+
+        // Distances: VTank landblock units (x240) -> yards; a value over 1 is already yards.
+        RunAction(rig, A.ChatCommand, "/vt opt set attackdistance .01666");
+        Check.Eq(rig.S.MonsterRange, 4, "attackdistance .01666 -> 4 yd (was dropped: an int setter refused the decimal)");
+        RunAction(rig, A.ChatCommand, "/vt opt set attackrange 0.04166");
+        Check.Eq(rig.S.MonsterRange, 10, "attackrange 0.04166 -> 10 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set approachdistance 0.0175");
+        Check.Eq(rig.S.ApproachRange, 4, "approachdistance 0.0175 -> 4 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set dooropenrange 0.005");
+        Check.Near(rig.S.OpenDoorRange, 1.2, 1e-3, "dooropenrange 0.005 -> 1.2 yd (was 0.005 yd)");
+        RunAction(rig, A.ChatCommand, "/vt opt set ringdistance 0.025");
+        Check.Eq(rig.S.RingRange, 6, "ringdistance 0.025 -> 6 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set corpseapproachrange-max 0.05");
+        Check.Near(rig.S.CorpseApproachRangeMax, 12, 1e-3, "corpseapproachrange-max 0.05 -> 12 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set minimumringtargets 3");
+        Check.Eq(rig.S.MinRingTargets, 3, "minimumringtargets");
+        RunAction(rig, A.ChatCommand, "/vt opt set attackdistance 25");
+        Check.Eq(rig.S.MonsterRange, 25, "a value over 1 is yards already");
+
+        // An option written as a verb (DerethExploration: /vt navclosestoprange 0.005).
+        RunAction(rig, A.ChatCommand, "/vt navclosestoprange 0.005");
+        Check.Near(rig.S.FollowNavMin, 1.2, 1e-3, "/vt navclosestoprange 0.005 -> nav point reach 1.2 yd");
+        RunAction(rig, A.ChatCommand, "/vt opt set navclosetoprange .00625");
+        Check.Near(rig.S.FollowNavMin, 1.5, 1e-3, "the misspelt navclosetoprange too");
+
+        // Options whose value means something else in RynthAi.
+        RunAction(rig, A.ChatCommand, "/vt opt set defaultmeleeattackheight 3");
+        Check.Eq(rig.S.MeleeAttackHeight, 2, "VTank height 3 (high) -> RynthAi 2");
+        RunAction(rig, A.ChatCommand, "/vt opt set defaultmeleeattackheight 2");
+        Check.Eq(rig.S.MeleeAttackHeight, 1, "VTank height 2 (medium) -> RynthAi 1");
+        rig.S.LootOwnership = 0;
+        RunAction(rig, A.ChatCommand, "/vt opt set lootfellowcorpses true");
+        Check.Eq(rig.S.LootOwnership, 1, "lootfellowcorpses -> fellowship kills");
+        RunAction(rig, A.ChatCommand, "/vt opt set lootallcorpses true");
+        Check.Eq(rig.S.LootOwnership, 2, "lootallcorpses -> all corpses");
+        RunAction(rig, A.ChatCommand, "/vt opt set lootallcorpses false");
+        Check.Eq(rig.S.LootOwnership, 0, "lootallcorpses false -> my kills");
+        RunAction(rig, A.ChatCommand, "/vt opt set usearcs 3");
+        Check.True(rig.S.UseArcs, "usearcs 3 -> on");
+        RunAction(rig, A.ChatCommand, "/vt opt set usearcs 0");
+        Check.False(rig.S.UseArcs, "usearcs 0 -> off");
+        RunAction(rig, A.ChatCommand, "/vt opt set minimumhealkitsuccesschance 55");
+        Check.Eq(rig.S.KitMinSuccessPct, 55, "minimumhealkitsuccesschance 55 %");
+        RunAction(rig, A.ChatCommand, "/vt opt set minimumhealkitsuccesschance 0.8");
+        Check.Eq(rig.S.KitMinSuccessPct, 80, "a fraction is scaled to a percent");
+        RunAction(rig, A.ChatCommand, "/vt opt set defaultmeleeattackheight 3");
+        RunAction(rig, A.ChatCommand, "/vt opt get defaultmeleeattackheight");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("defaultmeleeattackheight = 3")), "read back in VTank's own 1-3");
     }
 
     private static void CallReturn()
@@ -816,6 +1102,150 @@ internal static class MetaTests
         RunAction(rig, A.EmbeddedNavRoute, "__rynthai_offline_test_no_such_route__");
         Check.Eq(rig.S.CurrentRoute.Points.Count, 0, "unknown route: nothing loaded");
         Check.True(FakeHost.Chat.Exists(c => c.Contains("Route missing")), "unknown route reported");
+
+        // "Patrol" (the Meta panel's first route choice): the dungeon patrol, as /ra dunnav-patrol.
+        rig.Ra.Clear();
+        RunAction(rig, A.EmbeddedNavRoute, "Patrol");
+        Check.Eq(string.Join("|", rig.Ra), "/ra dunnav-patrol", "Patrol starts the dungeon patrol");
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 0, "...and loads no route itself");
+        rig.Ra.Clear();
+        RunAction(rig, A.EmbeddedNavRoute, "patrol");
+        Check.Eq(rig.Ra.Count, 1, "any case");
+        // A meta's own route called Patrol wins.
+        rig.Ra.Clear();
+        rig.S.EmbeddedNavs["Patrol"] = once;
+        RunAction(rig, A.EmbeddedNavRoute, "Patrol");
+        Check.Eq(rig.Ra.Count, 0, "an embedded route named Patrol is used instead");
+        Check.Eq(rig.S.CurrentNavPath, "<embedded:Patrol>", "...and loaded");
+    }
+
+    // The CQ meta family on DreamWeave (C:\Games\metaf\CQHunt~0.af, decompiled by metaf): VTank's
+    // "[None]" routes become tags like nav9___None_ - a one-point hunt spot, and an empty one.
+    // "None]" is the broken spelling from the 10-13 player log ("EmbedNav: loaded 'None]' (1 pts)").
+    private const string CqNoneSnippet =
+        "STATE: {Hunt} ~~ {\n" +
+        "\tIF:\tAlways\n" +
+        "\t\tDO:\tDoAll\n" +
+        "\t\t\t\tChat {/vt opt set enablenav true}\n" +
+        "\t\t\t\tEmbedNav nav9___None_ {[none]}\n" +
+        "\t\t\t\tEmbedNav None] {[None]}\n" +
+        "\t\t\t\tEmbedNav [None] {[None]}\n" +
+        "\t\t\t\tEmbedNav nav42___None_ {[none]}\n" +
+        "~~ }\n" +
+        "NAV: nav9___None_ circular ~~ {\n" +
+        "\tpnt 12.7402540842692 64.8717851956685 1.15794169108073\n" +
+        "~~ }\n" +
+        "NAV: None] circular ~~ {\n" +
+        "\tpnt 12.7402540842692 64.8717851956685 1.15794169108073\n" +
+        "~~ }\n" +
+        "NAV: nav42___None_ circular ~~ {\n" +
+        "~~ }\n";
+
+    private static void EmbedNavStrayBrackets()
+    {
+        var m = AfFileParser.LoadFromText(CqNoneSnippet);
+        var all = m.Rules.Single();
+        var data = all.ActionChildren.Select(c => c.ActionData).ToList();
+        Check.Eq(string.Join("|", data), "/vt opt set enablenav true|nav9___None_|None|None|", "action names: the tag, 'None]' and '[None]' cleaned to None, the empty route's ref cleared");
+        Check.True(m.EmbeddedNavs.ContainsKey("None"), "the NAV block 'None]' is filed as 'None'");
+        Check.False(m.EmbeddedNavs.Keys.Any(k => k.Contains('[') || k.Contains(']')), "no key keeps a stray bracket");
+        Check.True(m.EmbeddedNavs.ContainsKey("nav9___None_"), "metaf's tag is kept as it is");
+        Check.False(m.EmbeddedNavs.ContainsKey("nav42___None_"), "the empty [None] route is dropped");
+
+        // Saved and read back: the same names (the Meta panel saves through AfFileWriter).
+        var back = AfFileParser.LoadFromText(AfFileWriter.SaveToString(m.Rules, m.EmbeddedNavs));
+        Check.Eq(string.Join("|", back.Rules.Single().ActionChildren.Select(c => c.ActionData)),
+            "/vt opt set enablenav true|nav9___None_|None|None|", "round trip keeps the names");
+        Check.True(back.EmbeddedNavs.ContainsKey("None") && back.EmbeddedNavs.ContainsKey("nav9___None_"), "round trip keeps the routes");
+
+        // The clean-up itself.
+        Check.Eq(EmbedNavName.Clean(" [None] "), "None", "wrapping brackets");
+        Check.Eq(EmbedNavName.Clean("None]"), "None", "a stray closing bracket");
+        Check.Eq(EmbedNavName.Clean("[None"), "None", "a stray opening bracket");
+        Check.Eq(EmbedNavName.Clean("Hive [East]"), "Hive [East]", "brackets inside a name are kept");
+        Check.Eq(EmbedNavName.Clean("[a] [b]"), "[a] [b]", "two bracketed parts are not unwrapped");
+        Check.True(EmbedNavName.IsNone("[none]") && EmbedNavName.IsNone("None]") && !EmbedNavName.IsNone("nav9___None_"), "IsNone");
+    }
+
+    private static void EmbedNavNoneKeepsRoute()
+    {
+        FakeHost.Reset();
+        FakeHost.PlayerPose = (0xA9B4001Cu, 96f, 96f, 0f);
+        var host = FakeHost.Create();
+        var rig = new Rig(host, Player);
+        rig.S.EmbeddedNavs["Hive Route"] = NavLines(1, (0, 30, 40, NoTrailer), (0, 33.65, 42.45, NoTrailer), (0, 36, 44, NoTrailer));
+        RunAction(rig, A.EmbeddedNavRoute, "Hive Route");
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 3, "a route is running");
+        foreach (string none in new[] { "[None]", "None]", "None", "[none]" })
+        {
+            FakeHost.Chat.Clear();
+            RunAction(rig, A.EmbeddedNavRoute, "Hive Route");
+            RunAction(rig, A.EmbeddedNavRoute, none);
+            Check.Eq(rig.S.CurrentRoute.Points.Count, 0, $"'{none}': an empty route");
+            Check.Eq(rig.S.CurrentNavPath, "", $"'{none}': no nav file");
+            Check.False(FakeHost.Chat.Exists(c => c.Contains("Route missing")), $"'{none}': no 'Route missing'");
+        }
+        // An empty [None] route is no route either.
+        rig.S.EmbeddedNavs["None"] = NavLines(1);
+        RunAction(rig, A.EmbeddedNavRoute, "Hive Route");
+        RunAction(rig, A.EmbeddedNavRoute, "[None]");
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 0, "an empty [None] route: an empty route");
+    }
+
+    private static void EmbedNavNoneWithPointsLoads()
+    {
+        FakeHost.Reset();
+        FakeHost.PlayerPose = (0xA9B4001Cu, 96f, 96f, 0f);
+        var host = FakeHost.Create();
+        var rig = new Rig(host, Player);
+        // A key from a settings file or meta saved before names were cleaned.
+        rig.S.EmbeddedNavs["None]"] = NavLines(1, (0, 33.65, 42.45, NoTrailer));
+        RunAction(rig, A.EmbeddedNavRoute, "[None]");
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 1, "the one-point [None] route (a hunt spot) loads");
+        Check.True(rig.S.EnableNavigation, "...and navigation runs");
+        RunAction(rig, A.EmbeddedNavRoute, "None]");
+        Check.Eq(rig.S.CurrentNavPath, "<embedded:None]>", "the old key is found from any spelling");
+    }
+
+    /// <summary>A VTank .met with two rules (Always / Never) whose action is an embedded nav named
+    /// "[None]": one with a one-point route, one with an empty route. The layout is VTank's (the
+    /// CQ metas, S_Tusks.met): name line, point count, then the .nav lines, byte-counted.</summary>
+    private static string MetWithNoneNavs()
+    {
+        static string Block(params string[] lines) => string.Join("\r\n", lines) + "\r\n";
+        string onePoint = Block("[None]", "1", "uTank2 NAV 1.2", "1", "1", "0", "33.65", "42.45", "0", "0");
+        string empty = Block("[None]", "0", "uTank2 NAV 1.2", "1", "0");
+        var met = new List<string> { "1", "CondAct", "5", "CType", "AType", "CData", "AData", "State", "n", "n", "n", "n", "n", "2" };
+        met.AddRange(new[] { "i", "1", "i", "4", "i", "0", "ba", System.Text.Encoding.UTF8.GetByteCount(onePoint).ToString() });
+        string head = string.Join("\r\n", met) + "\r\n" + onePoint;
+        var mid = new List<string> { "s", "Default", "i", "0", "i", "4", "i", "0", "ba", System.Text.Encoding.UTF8.GetByteCount(empty).ToString() };
+        return head + string.Join("\r\n", mid) + "\r\n" + empty + "s\r\nDefault\r\n";
+    }
+
+    private static void MetEmbedNavNone()
+    {
+        string path = System.IO.Path.Combine(Program.TempRoot, "embednav-none-test.met");
+        System.IO.File.WriteAllText(path, MetWithNoneNavs());
+        var m = MetFileParser.Load(path);
+        Check.Eq(m.Warnings.Count, 0, "parses cleanly");
+        Check.Eq(m.Rules.Count, 2, "two rules");
+        string first = m.Rules[0].ActionData;
+        Check.True(first.Length > 0 && m.EmbeddedNavs.ContainsKey(first), $"the one-point [None] route is a route ('{first}')");
+        Check.False(first.Contains('[') || first.Contains(']'), "its name has no bracket");
+        Check.Eq(NavRouteParser.LoadFromLines(m.EmbeddedNavs[first]).Points.Count, 1, "...with its point");
+        Check.Eq(m.Rules[1].ActionData, "", "the empty [None] route: no nav");
+
+        // Through the meta: the empty one keeps the running route, the one-point one replaces it.
+        FakeHost.Reset();
+        FakeHost.PlayerPose = (0xA9B4001Cu, 96f, 96f, 0f);
+        var rig = new Rig(FakeHost.Create(), Player);
+        foreach (var kv in m.EmbeddedNavs) rig.S.EmbeddedNavs[kv.Key] = kv.Value;
+        rig.S.EmbeddedNavs["Hive Route"] = NavLines(1, (0, 30, 40, NoTrailer), (0, 36, 44, NoTrailer));
+        RunAction(rig, A.EmbeddedNavRoute, "Hive Route");
+        RunAction(rig, A.EmbeddedNavRoute, m.Rules[1].ActionData);
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 2, "empty [None]: the running route is kept");
+        RunAction(rig, A.EmbeddedNavRoute, first);
+        Check.Eq(rig.S.CurrentRoute.Points.Count, 1, "one-point [None]: loaded");
     }
 
     private static void Watchdog()
@@ -982,6 +1412,78 @@ internal static class MetaTests
         rig.Tick();      //         Default re-entered
         rig.Tick(5);     // T0+26: 25 s in Default (26 s since first entering it)
         Check.Eq(rig.Var("p"), "1", "SecondsInStateP_GE 25 after 25 s spent in Default around a 1 s call");
+    }
+
+    private static void SecondsInStatePRules()
+    {
+        // Paused while Default has Called Sub: 25 s of wall time is only 15 s in Default.
+        var call = new Rig(rules: new[]
+        {
+            Mark("Default", C.SecondsInStateP_GE, "20", "p"),
+            Rule("Default", C.SecondsInState_GE, "10", A.CallMetaState, "Sub"),
+            Rule("Sub", C.SecondsInState_GE, "10", A.ReturnFromCall, ""),
+        });
+        call.Tick();          // T0: Default
+        call.Tick(10);        // T0+10: call Sub
+        call.Tick();
+        call.Tick(10);        // T0+20: return
+        call.Tick();
+        call.Tick(5);         // T0+25: 15 s in Default
+        Check.False(call.Has("p"), "15 s in Default (10 s in Sub not counted)");
+        call.Tick(5);         // T0+30: 20 s in Default
+        Check.Eq(call.Var("p"), "1", "20 s in Default");
+
+        // In the called state the P clock is that state's own, from its entry.
+        var inSub = new Rig(rules: new[]
+        {
+            Rule("Default", C.SecondsInState_GE, "30", A.CallMetaState, "Sub"),
+            Mark("Sub", C.SecondsInStateP_GE, "5", "sub"),
+        });
+        inSub.Tick();
+        inSub.Tick(30);       // call Sub after 30 s in Default
+        inSub.Tick();
+        inSub.Tick(4);
+        Check.False(inSub.Has("sub"), "4 s into Sub");
+        inSub.Tick(1);
+        Check.Eq(inSub.Var("sub"), "1", "5 s into Sub");
+
+        // SetState to the state it is already in: the plain clock restarts, the P clock does not.
+        var self = new Rig(rules: new[]
+        {
+            Mark("Default", C.SecondsInStateP_GE, "15", "p"),
+            Rule("Default", C.SecondsInState_GE, "10", A.SetMetaState, "Default"),
+        });
+        self.Tick();
+        self.Tick(10);        // SetState Default
+        self.Tick();
+        self.Tick(5);         // 15 s since Default was entered
+        Check.Eq(self.Var("p"), "1", "SetState to the same state keeps the P clock");
+
+        // A move to another state restarts it.
+        var move = new Rig(rules: new[]
+        {
+            Rule("Default", C.SecondsInState_GE, "10", A.SetMetaState, "Hunt"),
+            Mark("Hunt", C.SecondsInStateP_GE, "3", "h"),
+        });
+        move.Tick();
+        move.Tick(10);
+        move.Tick();
+        move.Tick(2.9);
+        Check.False(move.Has("h"), "2.9 s into Hunt (restarted on the move)");
+        move.Tick(0.1);
+        Check.Eq(move.Var("h"), "1", "3 s into Hunt");
+
+        // Loading a meta restarts it, even when the start state has the same name.
+        var load = new Rig(rules: Mark("Default", C.SecondsInStateP_GE, "15", "p"));
+        load.Tick();
+        load.Tick(10);
+        load.S.ForceStateReset = true;
+        load.S.MetaCallStackReset = true;   // what a meta load sets
+        load.Tick();
+        load.Tick(10);        // 20 s in Default, 10 s since the load
+        Check.False(load.Has("p"), "10 s since the meta load");
+        load.Tick(5);
+        Check.Eq(load.Var("p"), "1", "15 s since the meta load");
     }
 
     private static void PercentConditionsAreGE()

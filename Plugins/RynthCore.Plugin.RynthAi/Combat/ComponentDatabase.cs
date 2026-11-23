@@ -97,6 +97,18 @@ internal static class ComponentDatabase
         return false;
     }
 
+    // spellId → BaseMana from the same SpellTable pass: the most a cast can cost (ACE
+    // Creature.CalculateManaUsage starts from it; Mana Conversion only lowers it on a roll).
+    private static readonly Dictionary<int, int> _spellBaseMana = new();
+
+    /// <summary>A spell's base mana cost from the portal.dat SpellTable. False when the dat
+    /// couldn't be read or the spell isn't in it.</summary>
+    public static bool TryGetSpellBaseMana(int spellId, out int mana)
+    {
+        EnsureLoaded();
+        return _spellBaseMana.TryGetValue(spellId, out mana) && mana > 0;
+    }
+
     private static bool _loaded;
     private static readonly object _lock = new();
     private static Action<string>? _log;
@@ -339,15 +351,16 @@ internal static class ComponentDatabase
         {
             if (r.BaseStream.Position + 4 > raw.Length) break;
             uint spellId = r.ReadUInt32();
-            uint[] comps = ReadSpellBaseFormula(r, out uint school, out uint power);
+            uint[] comps = ReadSpellBaseFormula(r, out uint school, out uint power, out uint baseMana);
             _spellComps[(int)spellId] = comps;
             _spellMeta[(int)spellId] = ((int)school, (int)power);
+            _spellBaseMana[(int)spellId] = (int)baseMana;
             n++;
         }
         return n;
     }
 
-    private static uint[] ReadSpellBaseFormula(BinaryReader r, out uint school, out uint power)
+    private static uint[] ReadSpellBaseFormula(BinaryReader r, out uint school, out uint power, out uint baseMana)
     {
         byte[] nameB = ReadObf(r); Align(r);
         byte[] descB = ReadObf(r); Align(r);
@@ -356,7 +369,7 @@ internal static class ComponentDatabase
         r.ReadUInt32(); // Icon
         r.ReadUInt32(); // Category
         r.ReadUInt32(); // Bitfield
-        r.ReadUInt32(); // BaseMana
+        baseMana = r.ReadUInt32(); // BaseMana (the mana cost before Mana Conversion)
         r.ReadSingle(); // BaseRangeConstant
         r.ReadSingle(); // BaseRangeMod
         power = r.ReadUInt32(); // Power (the spell's difficulty; ACE's scroll rule reads it)

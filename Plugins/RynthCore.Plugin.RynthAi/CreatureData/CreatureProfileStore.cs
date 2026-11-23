@@ -11,24 +11,26 @@ namespace RynthCore.Plugin.RynthAi.CreatureData;
 /// Keyed by composite "name|wcid" so tier variants don't collide.
 ///
 /// Per server (2026-10-03): wcids are only unique within one server's world database, and
-/// custom content (Aelrynth's 3000001+, ConquestAC's own) reuses numbers, so each server keeps
-/// its own file:
+/// servers' custom content reuses numbers, so each server keeps its own file:
 ///   C:\Games\RynthSuite\RynthAi\CreatureData\&lt;server&gt;\creatures.json
-/// &lt;server&gt; is <see cref="AwakenedTier.ServerKey"/>: "Aelrynth" for every Aelrynth world name,
-/// else the world name the server announced, made safe for a folder (the SettingsProfiles rule).
+/// &lt;server&gt; is <see cref="DifficultyTier.ServerKey"/>: the folder that already holds this
+/// server's data (by RynthCore's server id, its name or the world name), else the server's id,
+/// else (no server known) the world name the server announced, made safe for a folder (the
+/// SettingsProfiles rule). Folders made before 2026-10-21 are read where they are; nothing moves.
 /// The shared file from before, CreatureData\creatures.json, is the legacy store: COPIED (not
 /// moved) into a server's folder the first time that server is played, so every server starts
 /// from exactly what it had - the same precedent as the per-server SettingsProfiles
 /// (MigrateToServerFolder). It is only read and written while no server is known (before the
 /// first tick of a login, or a server that announces no name), as before.
 ///
-/// Aelrynth difficulty tiers: appraised max health above tier 0 goes to
+/// Difficulty tiers (a server plugin's, DifficultyTier): appraised max health above tier 0 goes to
 /// <see cref="CreatureProfile.TierMaxHealth"/>; MaxHealth stays the tier-0 value. Everything
 /// else in a profile is the same at every tier.
 /// </summary>
 internal sealed class CreatureProfileStore
 {
-    internal const string Folder = @"C:\Games\RynthSuite\RynthAi\CreatureData";
+    /// <summary>Where creatures.json lives (the offline tests point it at a scratch folder).</summary>
+    internal static string Folder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "CreatureData");
     private const string FileName = "creatures.json";
 
     private readonly object _lock = new();
@@ -45,6 +47,27 @@ internal sealed class CreatureProfileStore
 
     /// <summary>The server whose file is loaded ("" = the legacy shared file).</summary>
     public string ServerKey { get { lock (_lock) return _serverKey; } }
+
+    /// <summary>
+    /// The name, as on disk, of the per-server folder matching <paramref name="serverKey"/> (any case)
+    /// that holds a creatures.json; null when there is none. Never throws.
+    /// </summary>
+    public static string? ExistingServerFolder(string serverKey)
+    {
+        if (string.IsNullOrWhiteSpace(serverKey)) return null;
+        try
+        {
+            if (!Directory.Exists(Folder)) return null;
+            foreach (string dir in Directory.EnumerateDirectories(Folder))
+            {
+                string name = Path.GetFileName(dir);
+                if (name.Equals(serverKey.Trim(), StringComparison.OrdinalIgnoreCase) && File.Exists(Path.Combine(dir, FileName)))
+                    return name;
+            }
+        }
+        catch { }
+        return null;
+    }
 
     /// <summary>
     /// Switch to <paramref name="serverKey"/>'s file (saving the current one first). The first
@@ -102,7 +125,12 @@ internal sealed class CreatureProfileStore
                 if (dict != null)
                 {
                     foreach (var kv in dict)
-                        _byKey[kv.Key] = kv.Value;
+                    {
+                        // Player characters appraised before e52ccc8 (wcid 1 / 4) are not
+                        // creatures: dropped, and the next save writes the file without them.
+                        if (kv.Value != null && PlayerWeenies.IsPlayerWcid(kv.Value.Wcid)) { _dirty = true; continue; }
+                        _byKey[kv.Key] = kv.Value!;
+                    }
                 }
                 _lastSavedJson = json;
             }
@@ -192,8 +220,8 @@ internal sealed class CreatureProfileStore
     }
 
     /// <summary>
-    /// A profile's appraised max health at an Aelrynth difficulty tier (0 = real Dereth, and
-    /// every tier on other servers); 0 when that tier hasn't been seen.
+    /// A profile's appraised max health at a difficulty tier (0 = the unscaled world, and every
+    /// tier on servers without tiers); 0 when that tier hasn't been seen.
     /// </summary>
     public uint MaxHealthAt(CreatureProfile? profile, int difficulty)
     {
@@ -206,12 +234,13 @@ internal sealed class CreatureProfileStore
     /// <summary>
     /// Merge a new observation into the store. Fields with value 0 / empty are
     /// ignored so partial samples don't clobber better data. <paramref name="difficulty"/>
-    /// above 0 (an Aelrynth awakened world or scaled copy) files the max health under that tier
+    /// above 0 (a server's scaled world or copy, DifficultyTier) files the max health under that tier
     /// and leaves the tier-0 vitals alone; the rest merges as always.
     /// </summary>
     public void Upsert(CreatureProfile sample, int difficulty = 0)
     {
         if (string.IsNullOrEmpty(sample.Name)) return;
+        if (PlayerWeenies.IsPlayerWcid(sample.Wcid)) return;   // a player character, never creature data
 
         lock (_lock)
         {

@@ -6,11 +6,17 @@ using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.Meta;
 using RynthCore.Install;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 internal sealed class LegacyMetaUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _rulesSpot = new("RynthAi.MacroRules");
+    private readonly SavedWindow _editorSpot = new("RynthAi.EditMetaRule");
+    private readonly SavedWindow _exprSpot = new("RynthAi.ExpressionEditor");
+
     private readonly LegacyUiSettings _settings;
     private readonly List<string> _navFiles;
 
@@ -47,7 +53,7 @@ internal sealed class LegacyMetaUi
     private string _statusMessage = "";
     private DateTime _statusTime = DateTime.MinValue;
 
-    private static readonly string MetaFolder = System.IO.Path.Combine(RynthInstallPaths.RynthAiDir, @"MetaFiles");
+    private static readonly string MetaFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "MetaFiles");
 
     /// <summary>Warnings from the most recent LoadMacroFile, so the Avalonia
     /// bridge can surface them too (it doesn't see the LoadedMeta).</summary>
@@ -62,7 +68,25 @@ internal sealed class LegacyMetaUi
     {
         _settings = settings;
         _navFiles = navFiles;
+        Saver = new MetaSaver(settings, null);
     }
+
+    /// <summary>Writes the meta file and keeps the result (the dashboard passes its own, which logs).</summary>
+    internal MetaSaver Saver { get; set; }
+
+    /// <summary>The plugin log (the dashboard sets it). Null: nothing is logged.</summary>
+    internal Action<string>? Log { get; set; }
+
+    // ── CallState rules without a target (CallStateRepair) ───────────────
+    // Chat lines wait here and go out on the plugin tick (DrainNotices), after the reply of the
+    // command that loaded the meta: two lines in a row off the main thread lose the second.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _pendingChat = new();
+    private int _pendingTries;
+    private const int MaxPendingChat = 8, MaxChatTries = 90;
+    // The .met found for the loaded .af (looked up on load, not every frame).
+    private string _callCheckPath = string.Empty;
+    private string? _callCheckMet;
+    private string? _repairFailText;   // the status line of a refused repair (shown in red)
 
     public void Render()
     {
@@ -76,11 +100,15 @@ internal sealed class LegacyMetaUi
         try
         {
             ImGui.SetNextWindowSize(new Vector2(600, 460), ImGuiCond.FirstUseEver);
+            _rulesSpot.Apply();
             bool windowOpen = ImGui.Begin("Macro Rules##RynthAiMacroRules", ref DashWindows.ShowMacroRules);
             try
             {
                 if (windowOpen)
+                {
+                    _rulesSpot.Track();
                     RenderContents();
+                }
             }
             catch (Exception ex)
             {
@@ -138,9 +166,9 @@ internal sealed class LegacyMetaUi
                 ImGuiInputTextFlags.AllowTabInput);
 
             if (!string.IsNullOrEmpty(_sourceApplyMessage) &&
-                (DateTime.Now - _sourceApplyTime).TotalSeconds < 4)
+                (RynthClock.Now - _sourceApplyTime).TotalSeconds < 4)
             {
-                ImGui.TextColored(new Vector4(0, 1, 0.4f, 1f), _sourceApplyMessage);
+                SafeImGui.TextColored(new Vector4(0, 1, 0.4f, 1f), _sourceApplyMessage);
                 ImGui.SameLine();
             }
 
@@ -173,7 +201,7 @@ internal sealed class LegacyMetaUi
                 {
                     _sourceApplyMessage = $"Error: {ex.Message}";
                 }
-                _sourceApplyTime = DateTime.Now;
+                _sourceApplyTime = RynthClock.Now;
             }
 
             ImGui.SameLine();
@@ -181,7 +209,7 @@ internal sealed class LegacyMetaUi
             {
                 _sourceText = AfFileWriter.SaveToString(_settings.MetaRules, _settings.EmbeddedNavs);
                 _sourceApplyMessage = "Reverted to current rules.";
-                _sourceApplyTime = DateTime.Now;
+                _sourceApplyTime = RynthClock.Now;
             }
 
             RenderMetaEditorPopup();
@@ -209,7 +237,7 @@ internal sealed class LegacyMetaUi
                 bool anyFired = false;
                 foreach (var r in stateRules)
                 {
-                    if ((DateTime.Now - r.LastFiredAt).TotalMilliseconds < 1500)
+                    if ((RynthClock.Now - r.LastFiredAt).TotalMilliseconds < 1500)
                     {
                         anyFired = true;
                         break;
@@ -244,7 +272,7 @@ internal sealed class LegacyMetaUi
 
                     ImGui.TableNextRow();
 
-                    double fadeMs = (DateTime.Now - rule.LastFiredAt).TotalMilliseconds;
+                    double fadeMs = (RynthClock.Now - rule.LastFiredAt).TotalMilliseconds;
                     bool isFlashing = fadeMs < 1500;
                     if (isFlashing)
                     {
@@ -327,6 +355,7 @@ internal sealed class LegacyMetaUi
                             ActionData = rule.ActionData,
                             CallReturnState = rule.CallReturnState,
                             ChatColors = rule.ChatColors,
+                            Name = rule.Name,
                             Children = CloneChildren(rule.Children),
                             ActionChildren = CloneChildren(rule.ActionChildren)
                         };
@@ -344,7 +373,7 @@ internal sealed class LegacyMetaUi
                             : rule.Children;
                         int childCount = actionList?.Count ?? 0;
                         bool expanded = _expandedRuleIndices.Contains(globalIdx);
-                        ImGui.TextColored(new Vector4(1, 1, 0, 1), $"All: [{childCount} actions] (right-click to expand)");
+                        SafeImGui.TextColored(new Vector4(1, 1, 0, 1), $"All: [{childCount} actions] (right-click to expand)");
                         if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                             ToggleExpand();
 
@@ -355,7 +384,7 @@ internal sealed class LegacyMetaUi
                                 var child = actionList[ai];
                                 string childText = child.Action.ToString() +
                                     (string.IsNullOrEmpty(child.ActionData) ? "" : $": {child.ActionData}");
-                                ImGui.TextDisabled($"   {ai + 1}. {childText}");
+                                SafeImGui.TextDisabled($"   {ai + 1}. {childText}");
                                 if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                                     ToggleExpand();
                             }
@@ -365,13 +394,13 @@ internal sealed class LegacyMetaUi
                              !string.IsNullOrEmpty(rule.ActionData) && rule.ActionData.Contains(';'))
                     {
                         var parts = rule.ActionData.Split(';');
-                        ImGui.Text($"EmbeddedNavRoute: {parts[0]} ({parts[1]} pts)");
+                        SafeImGui.Text($"EmbeddedNavRoute: {parts[0]} ({parts[1]} pts)");
                         if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                             ToggleExpand();
                     }
                     else
                     {
-                        ImGui.Text(rule.Action.ToString() +
+                        SafeImGui.Text(rule.Action.ToString() +
                             (string.IsNullOrEmpty(rule.ActionData) ? "" : $": {rule.ActionData}"));
                         if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                             ToggleExpand();
@@ -471,11 +500,13 @@ internal sealed class LegacyMetaUi
         // imgui.ini. ImGuiCond.Appearing was forcing the size every time the
         // popup re-opened, throwing away the user's resize.
         ImGui.SetNextWindowSize(new Vector2(650, 450), ImGuiCond.FirstUseEver);
+        _editorSpot.Apply();
         if (!ImGui.Begin("Edit Meta Rule##RynthAiEditor", ref _showMetaEditor, ImGuiWindowFlags.NoCollapse))
         {
             ImGui.End();
             return;
         }
+        _editorSpot.Track();
 
         float halfWidth = ImGui.GetContentRegionAvail().X / 2f - 4f;
 
@@ -556,7 +587,7 @@ internal sealed class LegacyMetaUi
                 ImGui.SameLine();
             }
 
-            ImGui.TextColored(new Vector4(1, 1, 0, 1), $"{rule.Condition} Sub-Conditions");
+            SafeImGui.TextColored(new Vector4(1, 1, 0, 1), $"{rule.Condition} Sub-Conditions");
             ImGui.Indent(15f);
 
             for (int i = 0; i < rule.Children.Count; i++)
@@ -640,7 +671,7 @@ internal sealed class LegacyMetaUi
                     if (!string.IsNullOrEmpty(sName))
                     {
                         ImGui.SameLine();
-                        ImGui.TextColored(new Vector4(0, 1, 1, 1), $"({sName})");
+                        SafeImGui.TextColored(new Vector4(0, 1, 1, 1), $"({sName})");
                     }
                 }
 
@@ -698,6 +729,9 @@ internal sealed class LegacyMetaUi
                         break;
                     case MetaConditionType.VitaePHE:
                         condHint = "Vitae penalty % (e.g. 5)";
+                        break;
+                    case MetaConditionType.NoKillsWithinMinutes:
+                        condHint = "Minutes without a kill (e.g. 5 or 2.5)";
                         break;
                 }
             }
@@ -949,8 +983,10 @@ internal sealed class LegacyMetaUi
         ImGui.SetNextWindowSize(new Vector2(720, 380), ImGuiCond.FirstUseEver);
         if (_exprPopupRequestFocus)
             ImGui.SetNextWindowFocus();
+        _exprSpot.Apply();
         if (ImGui.Begin($"Expression Editor - {_exprPopupTitle}##ExpressionPopup", ref _exprPopupOpen))
         {
+            _exprSpot.Track();
             ImGui.TextDisabled("Edit the expression here. Apply writes it back to the rule.");
             ImGui.Separator();
 
@@ -1023,6 +1059,7 @@ internal sealed class LegacyMetaUi
                 ActionData     = r.ActionData,
                 CallReturnState = r.CallReturnState,
                 ChatColors     = r.ChatColors,
+                Name           = r.Name,
                 Children       = CloneChildren(r.Children),
                 ActionChildren = CloneChildren(r.ActionChildren)
             });
@@ -1038,6 +1075,11 @@ internal sealed class LegacyMetaUi
         if (_macroFiles.Count == 0)
             RefreshMacroFileList();
 
+        // CallState rules that call nothing (an .af saved by an older RynthAi): a Repair button
+        // when the .met it came from is there, and a line saying so either way.
+        int emptyCalls = EmptyCallStatesNow(out string? repairMet);
+        bool showRepair = emptyCalls > 0 && repairMet != null;
+
         // Combo label: show selected file, or the currently loaded file if selection is stale
         string comboLabel = (_selectedFileIdx >= 0 && _selectedFileIdx < _macroFiles.Count)
             ? _macroFiles[_selectedFileIdx].Display
@@ -1045,7 +1087,7 @@ internal sealed class LegacyMetaUi
                 ? Path.GetFileName(_settings.CurrentMetaPath)
                 : "-- None --");
 
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - 210);
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - (showRepair ? 345 : 210));
         if (ImGui.BeginCombo("##MacroFileCombo", comboLabel))
         {
             for (int i = 0; i < _macroFiles.Count; i++)
@@ -1071,9 +1113,35 @@ internal sealed class LegacyMetaUi
         if (ImGui.Button("Save", new Vector2(55, 0)))
             _openSavePopup = true;
 
+        if (showRepair)
+        {
+            ImGui.SameLine();
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.55f, 0.35f, 0.05f, 1f));
+            if (ImGui.Button("Repair from .met", new Vector2(127, 0)))
+            {
+                bool repaired = RepairFromMet(out string reply);
+                _statusMessage = reply;
+                _repairFailText = repaired ? null : reply;
+                _statusTime = RynthClock.Now;
+            }
+            ImGui.PopStyleColor();
+            if (ImGui.IsItemHovered())
+                SafeImGui.SetTooltip($"Fills the {emptyCalls} CallState target(s) from {Path.GetFileName(repairMet)}, in order, state by state.\n" +
+                                 "A backup copy of the .af is kept next to it first. Refused if the two files don't match.");
+        }
+        if (emptyCalls > 0)
+            SafeImGui.TextColored(new Vector4(1f, 0.55f, 0.2f, 1f), repairMet != null
+                ? $"{emptyCalls} CallState rule(s) call no state (saved by an older RynthAi). Repair from .met fills them."
+                : $"{emptyCalls} CallState rule(s) call no state (saved by an older RynthAi). No .met of the same name to repair from.");
+
         // Status message
-        if (!string.IsNullOrEmpty(_statusMessage) && (DateTime.Now - _statusTime).TotalSeconds < 5)
-            ImGui.TextColored(new Vector4(0, 1, 0, 1), _statusMessage);
+        // A save that failed (or an edit that wasn't written) stays up, in red, until the next result.
+        bool unsaved = (!Saver.LastOk && Saver.Seq > 0 && ReferenceEquals(_statusMessage, Saver.LastText))
+                       || (_repairFailText != null && ReferenceEquals(_statusMessage, _repairFailText));   // a refused repair stays up too
+        if (unsaved)
+            SafeImGui.TextColored(new Vector4(1, 0.35f, 0.35f, 1), _statusMessage);
+        else if (!string.IsNullOrEmpty(_statusMessage) && (RynthClock.Now - _statusTime).TotalSeconds < 5)
+            SafeImGui.TextColored(new Vector4(0, 1, 0, 1), _statusMessage);
 
         // Save popup
         if (_openSavePopup)
@@ -1149,10 +1217,12 @@ internal sealed class LegacyMetaUi
                 _settings.EmbeddedNavs.Clear();
             }
             _settings.CurrentMetaPath = string.Empty;
+            _settings.MetaUnsaved = false;
+            Saver.Note("Macro cleared.", string.Empty);
             _settings.CurrentState = "Default";
             _settings.ForceStateReset = true;
             _statusMessage = "Macro cleared.";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
             return true;
         }
 
@@ -1168,17 +1238,19 @@ internal sealed class LegacyMetaUi
             else
             {
                 _statusMessage = "Unsupported file type";
-                _statusTime = DateTime.Now;
+                _statusTime = RynthClock.Now;
                 return false;
             }
 
             LastLoadWarnings = loaded.Warnings;
-            if (loaded.Rules.Count == 0)
+            // A blank meta (a state, no rules) loads: it clears the old rules. Anything else
+            // without rules (a profile, an empty file) is refused as before.
+            if (loaded.Rules.Count == 0 && !loaded.IsBlank)
             {
                 _statusMessage = loaded.Warnings.Count > 0
                     ? $"No rules parsed — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}"
                     : "No rules found (profile?)";
-                _statusTime = DateTime.Now;
+                _statusTime = RynthClock.Now;
                 return false;
             }
 
@@ -1193,19 +1265,22 @@ internal sealed class LegacyMetaUi
             _settings.ForceStateReset = true;
             _settings.MetaCallStackReset = true;
             _settings.CurrentMetaPath = filePath;
+            _settings.MetaUnsaved = false;   // the rules are the file's now
+            Saver.Note($"Loaded {Path.GetFileName(filePath)}", filePath);   // an old save failure isn't this meta's
 
             string name = Path.GetFileNameWithoutExtension(filePath);
             int stateCount = loaded.Rules.Select(r => r.State).Distinct(StringComparer.OrdinalIgnoreCase).Count();
             _statusMessage = loaded.Warnings.Count == 0
                 ? $"Loaded {loaded.Rules.Count} rules / {stateCount} states / {loaded.EmbeddedNavs.Count} navs from {name}"
                 : $"Loaded {loaded.Rules.Count} rules / {stateCount} states from {name} — {loaded.Warnings.Count} warning(s): {loaded.Warnings[0]}";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
+            NoteCallStates(filePath, loaded.Rules);
             return true;
         }
         catch (Exception ex)
         {
             _statusMessage = $"Load error: {ex.Message}";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
             return false;
         }
     }
@@ -1213,31 +1288,177 @@ internal sealed class LegacyMetaUi
     /// <summary>The status line of the last load (why it failed, or what it loaded).</summary>
     internal string LastLoadStatus => _statusMessage ?? string.Empty;
 
+    /// <summary>
+    /// Lists MetaFiles again once the panel has listed it (a meta /ra meta load just created shows
+    /// in the picker, selected). Before the panel's first draw it lists itself then.
+    /// </summary>
+    internal void RefreshFileListIfShown()
+    {
+        if (_macroFiles.Count > 0) RefreshMacroFileList();
+    }
 
+    // ── CallState rules without a target ─────────────────────────────────
+
+    /// <summary>
+    /// A meta just loaded (or read again at login): when it is an .af with CallState rules that
+    /// call nothing, one chat line says so (queued, see <see cref="DrainNotices"/>) and the log names
+    /// each state. Remembers the .met to repair from, for the Repair button.
+    /// </summary>
+    internal void NoteCallStates(string path, IReadOnlyList<MetaRule> rules)
+    {
+        _callCheckPath = path ?? string.Empty;
+        _callCheckMet = null;
+        if (!Path.GetExtension(_callCheckPath).Equals(".af", StringComparison.OrdinalIgnoreCase)) return;
+        var empty = CallStateRepair.EmptyTargets(rules);
+        if (empty.Count == 0) return;
+        _callCheckMet = CallStateRepair.FindSourceMet(_callCheckPath);
+        int count = 0;
+        foreach (var (_, n) in empty) count += n;
+        string name = Path.GetFileName(_callCheckPath);
+        string line = CallStateRepair.WarningLine(name, count, _callCheckMet);
+        if (_pendingChat.Count < MaxPendingChat) _pendingChat.Enqueue(line);
+        WriteLog(line);
+        foreach (var (state, n) in empty)
+            WriteLog($"[RynthAi] {name}: state '{state}' has {n} CallState rule{(n == 1 ? "" : "s")} with no state to call.");
+    }
+
+    /// <summary>
+    /// Posts the queued chat lines (plugin tick). <paramref name="write"/> is Host.WriteToChat: a line
+    /// it refuses waits for the next tick (about 1.5 s at most, then it is only in the log).
+    /// </summary>
+    internal void DrainNotices(Func<string, bool> write)
+    {
+        while (_pendingChat.TryPeek(out string? line))
+        {
+            bool ok;
+            try { ok = write(line); } catch { ok = false; }
+            if (!ok && ++_pendingTries < MaxChatTries) return;
+            _pendingChat.TryDequeue(out _);
+            _pendingTries = 0;
+        }
+    }
+
+    /// <summary>Chat lines waiting to be posted (tests).</summary>
+    internal int PendingNotices => _pendingChat.Count;
+
+    /// <summary>
+    /// The loaded meta's CallState rules without a target, now (edits included), and the .met to
+    /// repair from (null: none). 0 for a .met or no meta.
+    /// </summary>
+    internal int EmptyCallStatesNow(out string? repairMet)
+    {
+        repairMet = null;
+        string path = _settings.CurrentMetaPath ?? string.Empty;
+        if (!Path.GetExtension(path).Equals(".af", StringComparison.OrdinalIgnoreCase)) return 0;
+        int n;
+        lock (_settings.MetaRulesLock) n = CallStateRepair.CountEmpty(_settings.MetaRules);
+        if (n == 0) return 0;
+        if (!path.Equals(_callCheckPath, StringComparison.OrdinalIgnoreCase))
+        {
+            // The meta's file changed without a load here (a .met saved as its .af, a login): look once.
+            _callCheckPath = path;
+            _callCheckMet = CallStateRepair.FindSourceMet(path);
+        }
+        repairMet = _callCheckMet;
+        return n;
+    }
+
+    /// <summary>
+    /// Repair from .met (the Macro Rules button, /ra meta repair): fills the loaded .af's empty
+    /// CallState targets and return states from the .met of the same name, in order, state by state;
+    /// keeps a backup copy ("&lt;name&gt;.af.bak-yyyyMMdd-HHmmss"), writes the .af and loads it again.
+    /// Refused, with nothing changed, when the two files don't match. <paramref name="reply"/> is the
+    /// chat line either way.
+    /// </summary>
+    internal bool RepairFromMet(out string reply)
+    {
+        (bool ok, string text) = RepairFromMetCore();
+        reply = text;
+        return ok;
+    }
+
+    private (bool Ok, string Reply) RepairFromMetCore()
+    {
+        string path = _settings.CurrentMetaPath ?? string.Empty;
+        string name = Path.GetFileName(path);
+        (bool, string) Refuse(string why)
+        {
+            WriteLog($"[RynthAi] Meta repair of {(path.Length > 0 ? path : "(no meta)")} refused: {why}");
+            return (false, $"[RynthAi] Can't repair {(name.Length > 0 ? name : "the meta")}: {why}");
+        }
+
+        if (path.Length == 0) return Refuse("no meta is loaded. Load the .af first.");
+        if (!Path.GetExtension(path).Equals(".af", StringComparison.OrdinalIgnoreCase))
+            return Refuse("only an .af can be repaired (a .met already has its CallState targets).");
+        if (!File.Exists(path)) return Refuse("the file isn't there any more.");
+        if (_settings.MetaUnsaved)
+            return Refuse("your last change to it isn't saved to the file yet. Save it first, then repair.");
+
+        string? met = CallStateRepair.FindSourceMet(path);
+        if (met == null)
+            return Refuse($"there is no {Path.GetFileNameWithoutExtension(path)}.met next to it. Load the original .met if you have it, or set each CallState's target in the editor.");
+        string metName = Path.GetFileName(met);
+
+        LoadedMeta af;
+        LoadedMeta source;
+        try
+        {
+            af = AfFileParser.Load(path);
+            source = MetFileParser.Load(met);
+        }
+        catch (Exception ex) { return Refuse($"reading the files failed ({ex.Message})."); }
+        if (af.Rules.Count == 0)
+            return Refuse($"it didn't read ({(af.Warnings.Count > 0 ? af.Warnings[0] : "no rules")}).");
+        if (CallStateRepair.CountEmpty(af.Rules) == 0)
+        {
+            string none = $"[RynthAi] No CallState rule in {name} is missing its target; nothing to repair.";
+            WriteLog(none);
+            return (false, none);
+        }
+        if (source.Rules.Count == 0)
+            return Refuse($"{metName} didn't read ({(source.Warnings.Count > 0 ? source.Warnings[0] : "no rules")}).");
+
+        CallStateRepair.Result r = CallStateRepair.Repair(af.Rules, source.Rules);
+        if (!r.Ok) return Refuse($"{r.Why}.");
+
+        string backup = CallStateRepair.BackupPath(path, RynthClock.Now);
+        try { File.Copy(path, backup, overwrite: false); }
+        catch (Exception ex) { return Refuse($"couldn't keep a backup copy ({ex.Message}); nothing was changed."); }
+
+        if (!DataWriteGuard.TrySave("the meta", path,
+                () => AfFileWriter.Save(path, af.Rules, af.EmbeddedNavs), out string why, callerShows: true))
+            return Refuse($"couldn't write it: {why} The backup {Path.GetFileName(backup)} is kept.");
+
+        WriteLog($"[RynthAi] Meta repaired: {path} from {met}: {r.Filled} CallState rule(s) in {r.States} state(s); backup {backup}");
+        foreach (string d in r.Details) WriteLog($"[RynthAi]   {d}");
+
+        if (!LoadMacroFile(path))
+            return (false, $"[RynthAi] Couldn't load {name} again after repairing it ({LastLoadStatus}). The repaired file is written; the backup is {Path.GetFileName(backup)}.");
+        string done = $"[RynthAi] Repaired {name}: {r.Filled} CallState rule{(r.Filled == 1 ? "" : "s")} in {r.States} state{(r.States == 1 ? "" : "s")} filled from {metName}, and loaded it again (it starts over in {_settings.CurrentState}). Backup: {Path.GetFileName(backup)}.";
+        _statusMessage = done;
+        _statusTime = RynthClock.Now;
+        return (true, done);
+    }
+
+    private void WriteLog(string line)
+    {
+        try { Log?.Invoke(line); } catch { }
+    }
+
+
+    /// <summary>Writes the meta file after an edit here (MetaSaver: logged); the status line says
+    /// whether it was saved, or why not (used to say nothing either way).</summary>
     private void TryAutoSaveMeta()
     {
         _settings.MetaRulesStructuralVersion++;   // editor mutation → rebuild meta index
-        if (string.IsNullOrEmpty(_settings.CurrentMetaPath))
-            return;
-
-        try
-        {
-            string path = _settings.CurrentMetaPath;
-
-            // .met files can't be written — save as .af alongside
-            if (Path.GetExtension(path).Equals(".met", StringComparison.OrdinalIgnoreCase))
-            {
-                path = Path.ChangeExtension(path, ".af");
-                _settings.CurrentMetaPath = path;
-                _statusMessage = $"Converted .met → {Path.GetFileName(path)} for editing (original .met left untouched)";
-                _statusTime = DateTime.Now;
-            }
-
-            lock (_settings.MetaRulesLock)
-                AfFileWriter.Save(path, _settings.MetaRules, _settings.EmbeddedNavs);
-        }
-        catch { }
+        // .met files can't be written: SaveCurrent saves the .af alongside and switches to it.
+        Saver.SaveCurrent("Macro Rules edit");
+        _statusMessage = Saver.LastText;
+        _statusTime = RynthClock.Now;
     }
+
+    /// <summary>The status line's text now (the last load, save or refusal; empty after a few seconds).</summary>
+    internal string StatusLine => _statusMessage ?? string.Empty;
 
     private void SaveMacroFile()
     {
@@ -1246,23 +1467,26 @@ internal sealed class LegacyMetaUi
             if (string.IsNullOrWhiteSpace(_saveName))
             {
                 _statusMessage = "Enter a file name";
-                _statusTime = DateTime.Now;
+                _statusTime = RynthClock.Now;
                 return;
             }
 
-            Directory.CreateDirectory(MetaFolder);
             string filePath = Path.Combine(MetaFolder, _saveName + ".af");
-            lock (_settings.MetaRulesLock)
-                AfFileWriter.Save(filePath, _settings.MetaRules, _settings.EmbeddedNavs);
+            if (!Saver.SaveTo(filePath, "Macro Rules Save"))
+            {
+                _statusMessage = Saver.LastText;
+                _statusTime = RynthClock.Now;
+                return;
+            }
 
-            _statusMessage = $"Saved to {_saveName}.af";
-            _statusTime = DateTime.Now;
+            _statusMessage = Saver.LastText;
+            _statusTime = RynthClock.Now;
             RefreshMacroFileList();
         }
         catch (Exception ex)
         {
             _statusMessage = $"Save error: {ex.Message}";
-            _statusTime = DateTime.Now;
+            _statusTime = RynthClock.Now;
         }
     }
 }

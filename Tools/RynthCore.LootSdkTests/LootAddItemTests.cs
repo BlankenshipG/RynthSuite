@@ -177,7 +177,7 @@ internal static partial class Program
     {
         Console.WriteLine("\n-- LootAdd: preview and placement --");
         List<string> p = LootItemRules.PreviewLines(BuildOk(Opal(), new() { Match = LootItemMatch.Like }).Rule);
-        Eq(string.Join(" / ", p), "Rule: Keep like Black Opal / Action: Keep / If: Class is Gem / and MaterialType = Black Opal / and ItemWorkmanship >= 6",
+        Eq(string.Join(" / ", p), "Rule: Keep like Black Opal / Action: Keep / If: Class is Gem / and Material is Black Opal / and Workmanship at least 6",
             "preview lines (values by name)");
         List<string> k = LootItemRules.PreviewLines(BuildOk(Pea()).Rule);
         Eq(k[1], "Action: Keep # 100", "Keep # preview");
@@ -411,7 +411,7 @@ internal static partial class Program
         Eq(back.Rules[0].Name, "Keep gems", $"{label}: rule 1 kept");
         Check(!back.Rules[2].Enabled && back.Rules[2].Action == LootAction.Sell && back.Rules[2].Conditions[0].ToString() == orig.Rules[1].Conditions[0].ToString(),
             $"{label}: disabled rule kept as it was");
-        Eq(back.Rules[3].KeepCount, 1, $"{label}: (KeepCount 0 reads back as 1 in the native loader, before and after alike)");
+        Eq(back.Rules[3].KeepCount, 0, $"{label}: KeepCount 0 is written and reads back as 0, before and after alike");
         Eq(LootProfile.Load(path + ".bak").Rules[2].KeepCount, back.Rules[3].KeepCount, $"{label}: same as the original reads");
         Eq(string.Join(" ; ", back.Rules[3].Conditions), string.Join(" ; ", orig.Rules[2].Conditions), $"{label}: rule 3's conditions kept");
         Eq(back.SalvageCombine?.DefaultBands, "1-6, 7-10", $"{label}: salvage combine kept");

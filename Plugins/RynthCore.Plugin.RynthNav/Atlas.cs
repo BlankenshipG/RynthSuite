@@ -22,7 +22,7 @@ internal sealed class AtlasLocation
     // A portal's destination.
     public bool HasDest, DestOnMap;
     public double DestNs, DestEw;
-    public string DestName = "", DestPlace = "";
+    public string DestName = "", DestPlace = "", DestCell = "";
     public int MinLevel, MaxLevel;
     public bool Quest, Closed;
 }
@@ -34,6 +34,8 @@ internal sealed class AtlasRecall
     public string Name = "", In = "";
     public bool OnMap;
     public double Ns, Ew;
+    /// <summary>Where it lands (0 = not given): a dungeon landing's cell matches a learned dungeon's arrival.</summary>
+    public uint Cell;
 }
 
 internal sealed class Atlas
@@ -45,15 +47,54 @@ internal sealed class Atlas
     public string Generated { get; }
     public string Path { get; }
 
+    /// <summary>
+    /// The recalls' landing spots as places of type <see cref="RecallType"/> (2026-10-22), for
+    /// finding a place by name (<see cref="Search"/>, <see cref="FindBest"/>): the world database
+    /// names only the /telepoi towns, so "neft" found nothing while Lost City of Neftet Recall lands
+    /// there. Kept out of <see cref="Locations"/>, which the route planner reads. The engine's
+    /// Atlas panel lists the same places (RynthCore UI/Data/RynthNavAtlasRecalls.cs).
+    /// </summary>
+    public IReadOnlyList<AtlasLocation> RecallPlaces { get; }
+    public const string RecallType = "Recall";
+
     private readonly Dictionary<int, AtlasLocation> _byId = new();
 
     private Atlas(List<AtlasLocation> locations, List<AtlasRecall> recalls, string generated, string path)
     {
         Locations = locations;
         Recalls = recalls;
+        RecallPlaces = RecallPlacesOf(recalls);
         Generated = generated;
         Path = path;
         foreach (var l in locations) _byId[l.Id] = l;
+    }
+
+    private static List<AtlasLocation> RecallPlacesOf(List<AtlasRecall> recalls)
+    {
+        var places = new List<AtlasLocation>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in recalls)
+        {
+            string name = r.Name.Trim();
+            // A spell listed twice for one spot (Ulgrim's Recall) is one place.
+            string key = string.Create(CultureInfo.InvariantCulture, $"{name}|{r.OnMap}|{r.Ns:0.00}|{r.Ew:0.00}|{r.In}");
+            if (name.Length == 0 || !seen.Add(key)) continue;
+            places.Add(new AtlasLocation
+            {
+                Id = -r.SpellId,   // locations have positive ids
+                Name = name, Type = RecallType, OnMap = r.OnMap, Ns = r.Ns, Ew = r.Ew,
+                Place = r.OnMap ? "outdoor" : "dungeon",
+                Desc = r.In.Length > 0 ? "in " + r.In : "",
+            });
+        }
+        return places;
+    }
+
+    /// <summary>What a name search looks through: the locations, then the recall places.</summary>
+    private IEnumerable<AtlasLocation> Searchable()
+    {
+        foreach (var l in Locations) yield return l;
+        foreach (var l in RecallPlaces) yield return l;
     }
 
     public static Atlas Load(string path) => Parse(File.ReadAllText(path), path);
@@ -92,6 +133,7 @@ internal sealed class Atlas
                     l.DestOnMap = TryNum(d, "ns", out l.DestNs) & TryNum(d, "ew", out l.DestEw);
                     l.DestName = Str(d, "name");
                     l.DestPlace = Str(d, "place");
+                    l.DestCell = Str(d, "cell");
                 }
                 locs.Add(l);
             }
@@ -101,6 +143,7 @@ internal sealed class Atlas
             foreach (JsonElement e in arr.EnumerateArray())
             {
                 var r = new AtlasRecall { SpellId = Int(e, "spell"), Name = Str(e, "name"), In = Str(e, "in") };
+                uint.TryParse(Str(e, "cell"), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out r.Cell);
                 r.OnMap = TryNum(e, "ns", out r.Ns) & TryNum(e, "ew", out r.Ew);
                 recalls.Add(r);
             }
@@ -110,7 +153,86 @@ internal sealed class Atlas
 
     public AtlasLocation? ById(int id) => _byId.TryGetValue(id, out var l) ? l : null;
 
+    /// <summary>
+    /// Landblocks that are dungeons: places (and portal destinations) the Atlas has in "dungeon"
+    /// cells, less any landblock with places on the map. A dungeon's nav_XXXX.tile holds only that
+    /// landblock's surface (a flat sheet; RynthNav.Baker leaves dungeon cells out), so it isn't
+    /// a navmesh for walking inside the dungeon.
+    /// </summary>
+    public HashSet<uint> DungeonLandblocks()
+    {
+        var dungeon = new HashSet<uint>();
+        var map = new HashSet<uint>();
+        foreach (AtlasLocation l in Locations)
+        {
+            if (TryLandblock(l.Cell, out uint lb))
+            {
+                if (l.OnMap) map.Add(lb);
+                else if (l.Place.Equals("dungeon", StringComparison.Ordinal)) dungeon.Add(lb);
+            }
+            if (l.HasDest && !l.DestOnMap && l.DestPlace.Equals("dungeon", StringComparison.Ordinal) && TryLandblock(l.DestCell, out uint dlb))
+                dungeon.Add(dlb);
+        }
+        dungeon.ExceptWith(map);
+        return dungeon;
+    }
+
+    private static bool TryLandblock(string cell, out uint lb)
+    {
+        lb = 0;
+        return cell.Length == 8 && uint.TryParse(cell.AsSpan(0, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out lb);
+    }
+
     // ── Search ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// "a || b || c": the first candidate that is coordinates, or that names a place on the map as a
+    /// whole word or more (<see cref="MatchScore"/> 60+: "Mite Maze" yes, "Bur" inside "Burun" no),
+    /// so a loose candidate never picks an unrelated place. Null when none does.
+    /// </summary>
+    public string? FirstOnMap(string alternatives, bool hasPos, double ns, double ew)
+    {
+        foreach (string raw in alternatives.Split("||", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (NavCoords.TrySplitCoordsAndName(raw, out _, out _, out _)) return raw;
+            AtlasLocation? best = FindBest(raw, hasPos, ns, ew);
+            if (best != null && MatchScore(best.Name, raw) >= 60) return raw;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The best place INSIDE a dungeon (no map position, a dungeon cell) for a name: a person, a vendor or a
+    /// landmark whose name is the query or starts with it as whole words ("Drogur", "Torgluuk" for "Torgluuk,
+    /// High Shaman of Kor-Gursha"); never a portal. Ties: one in <paramref name="hereLb"/> (the landblock you
+    /// are in), then the exact name. Null when none answers (2026-11-11: quest people inside dungeons and the Bur).
+    /// </summary>
+    public AtlasLocation? FindInside(string query, uint hereLb = 0)
+    {
+        string q = query.Trim();
+        if (q.Length < 3) return null;
+        AtlasLocation? best = null;
+        int bestScore = 0;
+        foreach (AtlasLocation l in Locations)
+        {
+            if (l.OnMap || l.Type.Equals("Portal", StringComparison.Ordinal) || l.Type.Equals("Dungeon", StringComparison.Ordinal)) continue;
+            if (!l.Place.Equals("dungeon", StringComparison.Ordinal) || !TryCell(l.Cell, out uint cell)) continue;
+            int s = l.Name.Equals(q, StringComparison.OrdinalIgnoreCase) ? 2
+                : l.Name.Length > q.Length && l.Name.StartsWith(q, StringComparison.OrdinalIgnoreCase) && !char.IsLetterOrDigit(l.Name[q.Length]) ? 1 : 0;
+            if (s == 0) continue;
+            if (hereLb != 0 && cell >> 16 == hereLb) s += 10;
+            if (s <= bestScore) continue;
+            best = l; bestScore = s;
+        }
+        return best;
+    }
+
+    /// <summary>An 8-digit hex cell ("009C0270").</summary>
+    public static bool TryCell(string text, out uint cell)
+    {
+        cell = 0;
+        return text.Length == 8 && uint.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out cell);
+    }
 
     /// <summary>How well <paramref name="name"/> matches <paramref name="q"/> (lower case): 0 = not at all.</summary>
     public static int MatchScore(string name, string q)
@@ -138,6 +260,7 @@ internal sealed class Atlas
         "Town" => 0,
         "Dungeon" => 1,
         "Landmark" => 2,
+        RecallType => 2,
         "Lifestone" => 3,
         "Bindstone" => 4,
         "Portal" => 5,
@@ -158,7 +281,7 @@ internal sealed class Atlas
         AtlasLocation? best = null;
         int bestScore = 0, bestRank = int.MaxValue;
         double bestDist = double.MaxValue;
-        foreach (var l in Locations)
+        foreach (var l in Searchable())
         {
             if (!l.OnMap) continue;
             int s = MatchScore(l.Name, q);
@@ -182,7 +305,7 @@ internal sealed class Atlas
     {
         string q = query.Trim();
         var hits = new List<(AtlasLocation L, int S)>();
-        foreach (var l in Locations)
+        foreach (var l in Searchable())
         {
             if (!string.IsNullOrEmpty(type) && !l.Type.Equals(type, StringComparison.OrdinalIgnoreCase)) continue;
             int s = MatchScore(l.Name, q);

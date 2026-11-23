@@ -442,6 +442,10 @@ function Capabilities.Get() end
 
 ---A chat command owned by this script. A typed line starting with it is eaten and
 ---`fn(args)` runs on the next tick with the rest of the line.
+---In a Decal (bridge-mode) client the engine only passes a few commands to plugins
+---(/rc /ra /rv /rn /rnav /lua), so a bare "/name" never reaches this script there:
+---players type `/lua name ...` instead (same handler, same args). Built-in /lua verbs
+---(list, start, stop, ...) win over a script command of the same name.
 ---@param command string   "/name" (the slash is added when missing)
 ---@param fn fun(args: string)
 function Game.RegisterCommand(command, fn) end
@@ -843,6 +847,15 @@ function SpellBook.KnownSpellIds() end
 ---@return string?
 function SpellBook.Name(spellId) end
 
+---The last server yes/no prompt (game.Character.LastPrompt).
+---@class RynthLua.Prompt
+---@field Seq integer
+---@field Type ClientConfirmationType|integer
+---@field ContextId integer
+---@field Percent integer      -1 when its text has no "N percent chance".
+---@field Outcome "Shown"|"Accepted"|"Declined"|"SendFailed"|"AcceptedSticky"
+---@field AgeMs integer
+
 ---@class RynthLua.Character
 ---@field Id integer
 ---@field Name string
@@ -853,6 +866,7 @@ function SpellBook.Name(spellId) end
 ---@field InPortalSpace boolean
 ---@field Vitae number                     1.0 = no penalty, 0.95 = 5% vitae.
 ---@field Busy boolean                     Busy with a use or cast.
+---@field LastPrompt? RynthLua.Prompt       The last server yes/no prompt this session (nil: none).
 ---@field Health integer
 ---@field Stamina integer
 ---@field Mana integer
@@ -954,6 +968,17 @@ function Character.KnowsSpell(spellId) end
 ---Same as the Busy field.
 ---@return boolean
 function Character.IsBusy() end
+
+---The server's next yes/no prompt of `type` (default ClientConfirmationType.YESNO) that comes
+---within `timeoutMs` (default 5000, at most 30000; 0 disarms) is answered for the script without
+---the client's dialog: Yes when its "N percent chance" is at least `minPercent` (default 0:
+---always), else No. One-shot, one slot per client: arm it right before the action that brings the
+---prompt. False on an engine before API v85 or an unknown type.
+---@param type? ClientConfirmationType|integer
+---@param timeoutMs? integer
+---@param minPercent? integer
+---@return boolean armed
+function Character.AnswerNextPrompt(type, timeoutMs, minPercent) end
 
 ---How many you have, counting stack sizes.
 ---@param filter RynthLua.Filter
@@ -1410,6 +1435,7 @@ function FileSystemModule.GetCustom() end
 ---@field Available boolean       RynthAi is loaded.
 ---@field IsLoaded boolean        Same as Available.
 ---@field MacroRunning boolean    Read, or assign true/false to start/stop the macro.
+---@field CombatHook RynthLua.CombatHookInfo   The combat hook's state (read-only; a fresh table each read).
 local RynthAiModule = {}
 ---A meta expression; numbers come back as numbers.
 ---@param expression string
@@ -1453,6 +1479,102 @@ function RynthAiModule.Command(text) end
 ---Same as Command.
 ---@param text string
 function RynthAiModule.SubmitCommand(text) end
+---This script chooses RynthAi's attack spells. RynthAi still picks the target, keeps the stance,
+---the pacing and its debuffs, and casts what the handler answers. The handler runs as a script
+---thread when RynthAi is about to cast (after its debuffs) and may yield, but RynthAi waits only
+---until `ctx.deadline` (1 s by default) and then casts its own choice. It must not cast itself.
+---Return `spellId, targetId [, flags]`, or nil to let RynthAi choose this time. targetId nil =
+---ctx.targetId; it may also be another of `ctx.monsters` or the player. flags is "area" (or true),
+---"nojudge", or a table `{ area = true, nojudge = true }`; anything else is an error. "area" marks
+---a ring/wall/chain cast: no miss counting on the fight target, filed with the rings. "nojudge"
+---marks a cast not meant to damage (a debuff, a drain): no miss counting (so no blacklist) and
+---nothing on the Damage tab (no tier, element or fight cast count), but it still counts in the
+---session attack-cast and casts-per-kill counters like any cast. A damaging cast at the fight
+---target is tagged like RynthAi's own (wielded wand, element and level from the spell), and a
+---single-target one takes part in RynthAi's kill-shot swap: a predicted kill moves RynthAi to
+---another target while the projectile flies, and the next request names the new target. An
+---unknown spell, a target that isn't the fight target, a scanned monster or the player, or a spell
+---the server refused outright right after the script cast it (no components) is rejected and
+---RynthAi casts its own; a rejected request is not a cast and appears in neither ctx.last nor ctx.pending. A refused spell stays parked
+---for 600 s (as RynthAi parks a vital level); restocking components does not unpark it sooner.
+---One script per kind: the first to register owns it; the same script registering again replaces
+---its handler; nil clears it. An error declines that request; a handler still running 1 s past
+---ctx.deadline is stopped and counts as an error; 3 errors in a row remove the handler.
+---Stopping the script releases it. Keeps the script running while set. The deadlines (1 s attack,
+---750 ms heal) and the lease are fixed: the RynthAi.Combat Claim's timeout parameters are reserved.
+---While a script holds the attack kind, RynthAi treats the character as able to attack with magic
+---even with War and Void untrained: a listed caster counts as the combat weapon when no usable
+---listed melee/missile weapon exists.
+---@param handler fun(ctx: RynthLua.CombatContext): (integer?, (integer|RynthLua.ObjectRef)?, ("area"|"nojudge"|boolean|{area: boolean?, nojudge: boolean?})?)|nil
+---@return boolean ok
+---@return string? why   "RynthAi has no combat hook", or "the attack handler is already set by <script>".
+function RynthAiModule.SetAttackHandler(handler) end
+---This script chooses the vitals heal: asked when health is under Heal At (in combat) or Top Off HP
+---(idle), before kits, Heal Self and potions (the emergency kit / Stamina to Health step stays
+---RynthAi's). Same contract as SetAttackHandler; ctx.healLine is the line, and ctx.targetId /
+---ctx.targetHealth are informational: RynthAi's current fight target (0 when none) and its health.
+---Return a heal and target 0/nil for YOURSELF (never the fight target), or e.g. a drain spell and
+---a monster from `ctx.monsters` or ctx.targetId. A level the server had no components for is
+---rejected for 600 s (RynthAi's own heal skips it as long; restocking does not unpark it sooner).
+---The deadline is 750 ms; nil or no
+---answer = kit, Heal Self, potion.
+---@param handler fun(ctx: RynthLua.CombatContext): (integer?, (integer|RynthLua.ObjectRef)?, ("area"|"nojudge"|boolean|{area: boolean?, nojudge: boolean?})?)|nil
+---@return boolean ok
+---@return string? why
+function RynthAiModule.SetHealHandler(handler) end
+---Drops this script's attack and heal handlers (RynthAi chooses again at once).
+function RynthAiModule.ClearCombatHandlers() end
+
+---What a combat handler gets (one table per request).
+---@class RynthLua.CombatContext
+---@field seq integer            The request's id.
+---@field kind "attack"|"heal"
+---@field targetId integer       Attack: RynthAi's locked target. Heal: RynthAi's current fight target (informational; 0 when none).
+---@field targetHealth number    That target's health 0..1; -1 unknown or no target.
+---@field healthPct integer      Your health %, -1 unknown.
+---@field staminaPct integer     Your stamina %, -1 unknown.
+---@field manaPct integer        Your mana %, -1 unknown.
+---@field healLine integer       Heal: the health line you are under (Heal At / Top Off HP). Attack: 0.
+---@field inCombat boolean       A monster is engaged or within Monster Range.
+---@field combatMode integer     1 NonCombat, 2 Melee, 4 Missile, 8 Magic.
+---@field issuedAt number        clock() when RynthAi asked.
+---@field deadline number        clock() after which RynthAi casts its own choice.
+---@field monsters RynthLua.CombatMonster[]   RynthAi's targets in range (attackable, in sight), nearest first.
+---@field last RynthLua.CombatLast             The most recent RESOLVED cast of this kind (its answer is in).
+---@field pending RynthLua.CombatPending?      The cast of this kind still in flight (sent, no answer yet); nil = none.
+
+---@class RynthLua.CombatMonster
+---@field id integer
+---@field distance number   Metres.
+
+---A cast of this kind is in flight from its send until its answer: the UseDones answer the casts in flight of both kinds in send order (an attack sent first takes the first one, a heal sent after it the next),
+---then resolved. ctx.last never changes after the fact: a cast moves from ctx.pending to ctx.last once,
+---with its final err. Declines and rejects are not casts and appear in neither.
+---With an older RynthAi (one that does not write these fields): ctx.last is the last decision RynthAi used (spell 0 =
+---declined or rejected), with no err, and ctx.pending is always nil.
+---@class RynthLua.CombatLast
+---@field seq integer      The request seq of that cast; 0 before the first resolved cast.
+---@field spell integer    The spell cast; 0 before the first resolved cast.
+---@field target integer
+---@field at number        clock() when it was sent.
+---@field err integer?     Its answer, final: the UseDone error. 0 = done (it went off), 29 (0x1D) =
+---                        refused 'too busy' (it never went off: not a miss), 1025 (0x401) = not enough
+---                        mana, 1026 (0x402) = fizzled. nil only when no answer could be read: no UseDone
+---                        within 7 s of the send, or another answer came first; also nil before the
+---                        first resolved cast.
+
+---@class RynthLua.CombatPending
+---@field seq integer      The request seq of the cast in flight.
+---@field spell integer
+---@field target integer
+---@field at number        clock() when it was sent.
+
+---ai.CombatHook
+---@class RynthLua.CombatHookInfo
+---@field Supported boolean      RynthAi serves the combat hook now.
+---@field AttackOwner string?    The script holding the attack kind.
+---@field HealOwner string?      The script holding the heal kind.
+---@field Claimed boolean        RynthAi granted RynthLua's last claim (false while another owner holds it).
 
 ---require("rynthlua")
 ---@class RynthLua.InfoModule
@@ -2455,6 +2577,7 @@ Vector4 = {}
 ---@field Title string                  The header text (default, and nil: the name).
 ---@field Visible boolean               Starts as the player's last choice for this hud on this character, else false. Set by the script, it isn't remembered.
 ---@field ShowInBar boolean             Listed in the bar's Scripts menu (default true).
+---@field NoPopOut boolean              No ↗: the window can't pop out of the game window (default false; bare windows never do).
 ---@field WindowSettings ImGuiWindowFlags|integer  The whole flag set (0 to 4294967295; nil = 0). Honoured: NoTitleBar, NoInputs/NoMouseInputs, NoBackground, NoScrollbar, NoScrollWithMouse.
 ---@field Chrome RynthLua.HudChrome     "standard" (the RynthCore frame) or "none" (no header or grip).
 ---@field DefaultSize Vector2           Size while nothing is saved for the window; nil = the engine default. Also takes {x, y}.
@@ -2798,6 +2921,15 @@ function ImGui.GetStyle() end
 ---@param wrapWidth? number   Ignored.
 ---@return Vector2
 function ImGui.CalcTextSize(text, hideTextAfterDoubleHash, wrapWidth) end
+
+---Any time. Puts text on the Windows clipboard; false when another program kept it busy.
+---@param text any
+---@return boolean ok
+function ImGui.SetClipboardText(text) end
+
+---Any time. The clipboard's text, "" when it holds none.
+---@return string
+function ImGui.GetClipboardText() end
 
 ------------------------------------------------------------------------------
 -- ImGui enums (globals). Plain two-way tables like the other enums:

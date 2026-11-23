@@ -21,6 +21,54 @@ internal static class CombatStallWatchdogTests
         r.Add("stall: a swing after a step is a recovery", Recovery);
         r.Add("stall: a tick gap starts the count over", TickGapResets);
         r.Add("stall: ineligible never acts", Ineligible);
+        r.Add("stall: Unfire takes a step back - the same step is due again next tick, not 3 s later", UnfireRetries);
+        r.Add("stall: a missile target at point blank starts the ladder at 3.5 s", PointBlank);
+        r.Add("point blank facing: one snap only for a close target behind, after a full shot cycle", PointBlankFacingRules);
+    }
+
+    /// <summary>
+    /// PointBlankFacing (Kelpie 2026-10-14/15: crossbow at 1.7 m, target 177 degrees behind, no
+    /// shots until the target was dropped): snap only within 3 m, more than 90 degrees off, after
+    /// 2.5 s with no shot, once per 3 s per target, then hold 300 ms.
+    /// </summary>
+    private static void PointBlankFacingRules()
+    {
+        var f = new PointBlankFacing();
+        DateTime shot = T0;
+        DateTime now = T0.AddMilliseconds(2600);
+        Check.True(f.ShouldSnap(now, 7, 1.7, 177, shot), "1.7 m, 177 degrees off, 2.6 s since a shot: snap");
+        Check.False(f.ShouldSnap(T0.AddMilliseconds(2000), 7, 1.7, 177, shot), "a shot 2 s ago may still be in flight: wait");
+        Check.False(f.ShouldSnap(now, 7, 3.5, 177, shot), "beyond 3 m the server turns the character itself");
+        Check.False(f.ShouldSnap(now, 7, 1.7, 80, shot), "80 degrees off: left to the server");
+        Check.False(f.ShouldSnap(now, 0, 1.7, 177, shot), "no target");
+        Check.True(f.ShouldSnap(now, 7, 1.7, 177, NoEvidence), "no shot ever: snap");
+
+        f.Snapped(now, 7);
+        Check.True(f.Settling(now.AddMilliseconds(200), 7), "the attack waits 300 ms after the snap");
+        Check.False(f.Settling(now.AddMilliseconds(350), 7), "then goes");
+        Check.False(f.Settling(now.AddMilliseconds(200), 8), "another target isn't held");
+        Check.False(f.ShouldSnap(now.AddMilliseconds(2000), 7, 1.7, 177, shot), "no second snap for the same target within 3 s");
+        Check.True(f.ShouldSnap(now.AddMilliseconds(3100), 7, 1.7, 177, shot), "after 3 s it may snap again");
+        Check.True(f.ShouldSnap(now.AddMilliseconds(500), 8, 1.7, 177, shot), "a new target may snap at once");
+        Check.Eq(f.Snaps, 1, "one snap counted");
+    }
+
+    /// <summary>The caller passes PointBlankStallMs for a missile target within 3 m (Kelpie 2026-10-14).</summary>
+    private static void PointBlank()
+    {
+        var w = new CombatStallWatchdog();
+        Act first = Act.None;
+        int at = -1;
+        for (int t = 0; t <= 10_000 && first == Act.None; t += TickMs)
+        {
+            first = w.Tick(T0.AddMilliseconds(t), eligible: true, NoEvidence, out _,
+                           stallAfterMs: CombatStallWatchdog.PointBlankStallMs);
+            if (first != Act.None) at = t;
+        }
+        Check.Eq((first, at), (Act.Reissue, 3500), "step 1 after 3.5 s at point blank");
+
+        var normal = new CombatStallWatchdog();
+        Check.Eq(RunUntilAction(normal, 0, 10_000, NoEvidence), (Act.Reissue, 6000), "the default is still 6 s");
     }
 
     /// <summary>Ticks every 500 ms from <paramref name="fromMs"/> to <paramref name="toMs"/>
@@ -94,5 +142,28 @@ internal static class CombatStallWatchdogTests
             if (w.Tick(T0.AddMilliseconds(t), eligible: false, NoEvidence, out _) != Act.None) acted++;
         Check.Eq(acted, 0, "no action in a minute of ineligible ticks");
         Check.Eq(w.Episodes, 0, "no episodes");
+    }
+
+    private static void UnfireRetries()
+    {
+        var w = new CombatStallWatchdog();
+        Check.Eq(RunUntilAction(w, 0, 20_000, NoEvidence), (Act.Reissue, 6000), "step 1");
+        Check.Eq(RunUntilAction(w, 6500, 20_000, NoEvidence), (Act.Reselect, 9000), "step 2");
+        Check.Eq(RunUntilAction(w, 9500, 20_000, NoEvidence), (Act.ToggleMode, 12000), "step 3 fires");
+
+        w.Unfire();   // the engine refused the toggle
+        Check.Eq(w.CurrentStep, 2, "Unfire: back at step 2");
+        Check.Eq(RunUntilAction(w, 12_500, 20_000, NoEvidence), (Act.ToggleMode, 12_500), "the toggle is due again on the very next tick");
+        Check.Eq(RunUntilAction(w, 13_000, 20_000, NoEvidence), (Act.Rewield, 15_500), "an accepted toggle then spaces step 4 a full 3 s after it");
+
+        // Unfire at step 1 gives the episode back too.
+        var v = new CombatStallWatchdog();
+        Check.Eq(RunUntilAction(v, 0, 10_000, NoEvidence), (Act.Reissue, 6000), "step 1");
+        Check.Eq(v.Episodes, 1, "one episode");
+        v.Unfire();
+        Check.Eq(v.CurrentStep, 0, "back to no step");
+        Check.Eq(v.Episodes, 0, "and the episode is not counted until a step really goes out");
+        Check.Eq(RunUntilAction(v, 6500, 10_000, NoEvidence), (Act.Reissue, 6500), "step 1 again next tick");
+        Check.Eq(v.Episodes, 1, "one episode");
     }
 }

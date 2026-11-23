@@ -42,20 +42,8 @@ internal enum LogCat
     Remote,
     Chat,
     Huds,
-
-    // ── ILT Hub (IltHub/) ──────────────────────────────────────────────────
-    IltHub,
-    IltOptions,
-    IltChat,
-    IltStore,
-    IltBanking,
-    IltPets,
-    IltQuests,
-    IltProgression,
-    IltRates,
-    IltGear,
-    IltGames,
-    IltBounties,
+    // The ILT Hub's categories (IltHub, IltOptions, ...) went with it to the RynthILT plugin
+    // (2026-10-13), which keeps its own log ("/ilt trace").
 }
 
 /// <summary>
@@ -118,7 +106,7 @@ internal enum LogEventLevel
 /// </summary>
 internal sealed class LogEventSetting
 {
-    /// <summary>Stable event id, e.g. "IltHub.Login".</summary>
+    /// <summary>Stable event id, e.g. "Area.Event".</summary>
     public string Key = string.Empty;
 
     /// <summary>"Info", "Trace" or "Off" (case-insensitive; anything else falls back to the default).</summary>
@@ -159,16 +147,8 @@ internal sealed class LogCategorySetting
 /// </summary>
 internal static class LogEvents
 {
-    // ── ILT Hub ────────────────────────────────────────────────────────────
-    public const string IltLogin = "IltHub.Login";
-    public const string IltWorldCheck = "IltHub.WorldCheck";
-    public const string IltOptionsRefreshStart = "IltHub.OptionsRefreshStart";
-    public const string IltOptionsRefreshed = "IltHub.OptionsRefreshed";
-    public const string IltWindowShown = "IltHub.WindowShown";
-    public const string IltWindowHidden = "IltHub.WindowHidden";
-    public const string IltCommand = "IltHub.Command";
-    public const string IltConfirmation = "IltHub.Confirmation";
-    public const string IltLogout = "IltHub.Logout";
+    // The ILT Hub's events (IltHub.Login, ...) went with it to the RynthILT plugin (2026-10-13);
+    // none of RynthAi's own are cataloged yet.
 
     /// <summary>Catalog entry: key, owning category, default level, launcher description.</summary>
     internal readonly record struct Definition(string Key, LogCat Category, LogEventLevel Default, string Description);
@@ -176,15 +156,6 @@ internal static class LogEvents
     /// <summary>Every known event, in launcher display order.</summary>
     internal static readonly Definition[] Catalog =
     {
-        new(IltLogin,               LogCat.IltHub,     LogEventLevel.Info,  "ILT Hub: character logged in (character and world)."),
-        new(IltWorldCheck,          LogCat.IltOptions, LogEventLevel.Info,  "ILT Hub: login world check (ILT-like world or skipped)."),
-        new(IltOptionsRefreshStart, LogCat.IltOptions, LogEventLevel.Trace, "ILT Hub: server options refresh started."),
-        new(IltOptionsRefreshed,    LogCat.IltOptions, LogEventLevel.Info,  "ILT Hub: server options refreshed (source and on/off counts)."),
-        new(IltWindowShown,         LogCat.IltHub,     LogEventLevel.Info,  "ILT Hub: Hub window shown."),
-        new(IltWindowHidden,        LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: Hub window hidden."),
-        new(IltCommand,             LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: /ra hub and /ra quests commands."),
-        new(IltConfirmation,        LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: chat confirmations requested, confirmed or expired."),
-        new(IltLogout,              LogCat.IltHub,     LogEventLevel.Trace, "ILT Hub: logout (features stopped)."),
     };
 
     /// <summary>Launcher description for each trace category.</summary>
@@ -207,25 +178,13 @@ internal static class LogEvents
         LogCat.Meta => "Meta (VTank-style) state machine and actions.",
         LogCat.Expressions => "Meta expression evaluation.",
         LogCat.Quests => "Quest tracking.",
-        LogCat.Crafting => "Missile ammo crafting.",
+        LogCat.Crafting => "Missile ammo crafting and the Mini Remote's Crafting tab.",
         LogCat.Raycast => "Line-of-sight raycasts and geometry loading.",
         LogCat.Radar => "Radar window.",
         LogCat.UI => "RynthAi UI windows and panels.",
         LogCat.Remote => "Remote control (launcher/Avalonia commands).",
         LogCat.Chat => "Chat parsing and chat diagnostics.",
         LogCat.Huds => "Floating HUDs: item counts, Mini Remote, icons.",
-        LogCat.IltHub => "ILT Hub: window, login/logout, commands.",
-        LogCat.IltOptions => "ILT Hub: server options.",
-        LogCat.IltChat => "ILT Hub: chat parsing.",
-        LogCat.IltStore => "ILT Hub: store.",
-        LogCat.IltBanking => "ILT Hub: banking.",
-        LogCat.IltPets => "ILT Hub: pets.",
-        LogCat.IltQuests => "ILT Hub: quests.",
-        LogCat.IltProgression => "ILT Hub: progression.",
-        LogCat.IltRates => "ILT Hub: rates.",
-        LogCat.IltGear => "ILT Hub: gear.",
-        LogCat.IltGames => "ILT Hub: games.",
-        LogCat.IltBounties => "ILT Hub: bounty tracker (/bounty list reads and bounty chat).",
         _ => cat.ToString(),
     };
 }
@@ -286,7 +245,11 @@ internal static class RynthLog
     private static string _directory = DefaultDirectory;
     private static string _openDay = string.Empty;
     private static int _exceptionsToday;
-    private static bool _handlersRegistered;
+    // The process-wide exception hooks. Kept so Shutdown can take them off again: AppDomain and
+    // TaskScheduler live in the default context, so a handler left there holds this plugin's
+    // collectible context, and through it the engine generation, after a hot reload.
+    private static UnhandledExceptionEventHandler? _unhandledHandler;
+    private static EventHandler<UnobservedTaskExceptionEventArgs>? _unobservedHandler;
     private static bool _dirty;
 
     /// <summary>Folder holding <c>rynthai_*.txt</c>, <c>exceptions_*.txt</c> and <c>diagnostics.json</c>.</summary>
@@ -622,6 +585,7 @@ internal static class RynthLog
     /// <summary>Flushes and closes every log file (plugin unload / logout).</summary>
     public static void Shutdown()
     {
+        UnregisterGlobalHandlers();
         lock (FileLock)
         {
             foreach (var w in Writers.Values)
@@ -683,7 +647,6 @@ internal static class RynthLog
         if (Starts(message, "[ChatDiag") || Starts(message, "[RynthChat")) return LogCat.Chat;
         if (Starts(message, "[Reclassify") || Starts(message, "[Classify")) return LogCat.WorldCache;
         if (Starts(message, "[RynthAi navstate") || Starts(message, "[Nav")) return LogCat.Navigation;
-        if (Starts(message, "[IltHub")) return LogCat.IltHub;
         return LogCat.General;
     }
 
@@ -798,7 +761,7 @@ internal static class RynthLog
 
             string topFrame = ex.StackTrace?.Split('\n')[0].Trim() ?? string.Empty;
             string signature = $"{where}|{ex.GetType().FullName}|{topFrame}";
-            DateTime now = DateTime.Now;
+            DateTime now = RynthClock.Now;   // an interval (the burst window), not the time of day
 
             if (ExceptionSignatures.TryGetValue(signature, out var seen))
             {
@@ -821,19 +784,32 @@ internal static class RynthLog
     /// <summary>Hooks AppDomain / TaskScheduler so faults outside our try/catch blocks are still recorded.</summary>
     private static void RegisterGlobalHandlers()
     {
-        if (_handlersRegistered) return;
-        _handlersRegistered = true;
+        if (_unhandledHandler != null) return;
 
-        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        _unhandledHandler = (_, e) =>
         {
             if (e.ExceptionObject is Exception ex) Exception(LogCat.General, ex, "UnhandledException");
             Flush();
         };
-        TaskScheduler.UnobservedTaskException += (_, e) =>
+        _unobservedHandler = (_, e) =>
         {
             Exception(LogCat.General, e.Exception, "UnobservedTaskException");
             e.SetObserved();
         };
+        AppDomain.CurrentDomain.UnhandledException += _unhandledHandler;
+        TaskScheduler.UnobservedTaskException += _unobservedHandler;
+    }
+
+    /// <summary>
+    /// Takes the hooks off again (plugin shutdown). Without this every hot reload leaked the
+    /// whole engine generation: the shim logged "Engine gen N NOT unloaded" (2026-10-12).
+    /// </summary>
+    private static void UnregisterGlobalHandlers()
+    {
+        if (_unhandledHandler != null) AppDomain.CurrentDomain.UnhandledException -= _unhandledHandler;
+        if (_unobservedHandler != null) TaskScheduler.UnobservedTaskException -= _unobservedHandler;
+        _unhandledHandler = null;
+        _unobservedHandler = null;
     }
 
     /// <summary>Queues a chat echo line for the pump thread (WriteToChat is not render-thread safe).</summary>

@@ -22,7 +22,7 @@ public sealed partial class RynthNavPlugin
         _settleJumpMs = NowMs;
         _settleQuietSince = 0;
         _settleSawPortal = Host.HasIsPortaling && Host.IsPortaling();
-        Host.SetAutoRun(false);
+        AutoRun.Run(false);
         lock (_gate) _status = "arriving…";
     }
 
@@ -30,7 +30,7 @@ public sealed partial class RynthNavPlugin
     {
         long now = NowMs;
         bool portaling = Host.HasIsPortaling && Host.IsPortaling();
-        Host.SetAutoRun(false);
+        AutoRun.Run(false);
         if (portaling)
         {
             _settleSawPortal = true;

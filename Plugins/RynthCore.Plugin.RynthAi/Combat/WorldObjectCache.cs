@@ -43,6 +43,17 @@ public class WorldObjectCache
     private readonly HashSet<int> _landscape = new();   // has physics position
     private readonly HashSet<int> _inventory = new();   // no physics position
     private readonly Dictionary<int, float> _healthRatios = new(); // last known health ratio per object (0-1)
+    // Ids whose ratio is an estimate from our own damage lines (a ring, wall or chain spell's other
+    // targets: the server sends health only for the selected target). A real health update replaces
+    // the estimate and takes the id out of this set.
+    private readonly HashSet<int> _estimatedHealth = new();
+    // When the server's health for an id last arrived here (Clock), for ranking only: CombatManager's
+    // Lowest health compares it with the age of the engine plates' reading (API v93, 2026-11-07).
+    private readonly Dictionary<int, DateTime> _serverHealthAt = new();
+    /// <summary>The clock <see cref="TryGetServerHealthTime"/> stamps with (host tests set their own).</summary>
+    internal Func<DateTime> Clock { get; set; } = () => RynthClock.Now;
+    /// <summary>The lowest an estimate goes: 0 means dead to every reader, and only the server says that.</summary>
+    internal const float EstimatedHealthFloor = 0.01f;
 
     // OnCreateObject IDs pending classification
     private readonly Queue<uint> _pending = new();
@@ -163,7 +174,7 @@ public class WorldObjectCache
         lock (_gate)
         {
             _playerId = playerId;
-            _loginTime = DateTime.Now;
+            _loginTime = RynthClock.Now;
             _deletedWhilePending.Clear();
             // Remove self if mistakenly added as creature before login completed
             if (playerId == 0) return;
@@ -199,6 +210,8 @@ public class WorldObjectCache
         _creatures.Remove(sid);
         _landscape.Remove(sid);
         _healthRatios.Remove(sid);
+        _estimatedHealth.Remove(sid);
+        _serverHealthAt.Remove(sid);
         _classifyRetry.Remove(id);
         _slowRetry.Remove(id);
         _reclassifySkipState.Remove(id);
@@ -234,6 +247,45 @@ public class WorldObjectCache
             return _healthRatios.TryGetValue(id, out float v) ? v : -1f;
     }
 
+    /// <summary>
+    /// Lowers a creature's health by our own hit when the server sends it no health of its own: the
+    /// other targets of a ring, wall or chain spell (ACE pushes health only for the selected target).
+    /// <paramref name="fraction"/> is damage / max health, or 0 when the max is unknown, which only
+    /// marks the creature as hurt (0.99). Never goes to 0 (dead is the server's call: the kill
+    /// notice, a health update or the corpse) and never raises a known value. A real health update
+    /// overwrites the estimate.
+    /// </summary>
+    public void ApplyDamageEstimate(int id, double fraction)
+    {
+        lock (_gate)
+        {
+            if (_playerId != 0 && unchecked((uint)id) == _playerId) return;
+            float cur = _healthRatios.TryGetValue(id, out float v) ? v : 1f;
+            if (cur <= 0f) return;
+            float next = fraction > 0
+                ? (float)Math.Max(EstimatedHealthFloor, cur - fraction)
+                : Math.Min(cur, 0.99f);
+            if (next >= cur && _healthRatios.ContainsKey(id)) return;
+            _healthRatios[id] = next;
+            _estimatedHealth.Add(id);
+        }
+    }
+
+    /// <summary>True when <paramref name="id"/>'s health ratio is our estimate rather than the server's.</summary>
+    public bool IsHealthEstimated(int id)
+    {
+        lock (_gate)
+            return _estimatedHealth.Contains(id);
+    }
+
+    /// <summary>When the server's health for <paramref name="id"/> last arrived (OnUpdateHealth, on
+    /// <see cref="Clock"/>); false when it never did. An estimate doesn't move it.</summary>
+    public bool TryGetServerHealthTime(int id, out DateTime at)
+    {
+        lock (_gate)
+            return _serverHealthAt.TryGetValue(id, out at);
+    }
+
     public void OnUpdateHealth(uint id, float healthRatio)
     {
         lock (_gate)
@@ -243,6 +295,8 @@ public class WorldObjectCache
 
         int sid = (int)id;
         _healthRatios[sid] = Math.Clamp(healthRatio, 0f, 1f);
+        _estimatedHealth.Remove(sid);   // the server's number replaces any estimate
+        _serverHealthAt[sid] = Clock();
 
         if (!_creatures.Add(sid))
             return; // creature already known — ratio updated above, nothing more to do
@@ -304,9 +358,20 @@ public class WorldObjectCache
     private const int MaxInitialScanRetries = 15;
     private readonly List<WorldObject> _directInventory = new();
     private readonly HashSet<int> _directInventoryIds = new();
+    // The ids the last container walk found inside a pack: a side pack, or the main pack when the
+    // item's container field is set. The player's own contents also hold what the player wields.
+    private readonly HashSet<int> _packWalkIds = new();
+
+    /// <summary>True when the last container walk (GetDirectInventory) found <paramref name="id"/> inside a pack.</summary>
+    public bool InPackWalk(int id)
+    {
+        lock (_gate) return _packWalkIds.Contains(id);
+    }
     private readonly Dictionary<int, int> _directInventoryIndex = new();
     private DateTime _lastDirectInventoryScan = DateTime.MinValue;
     private const int DirectInventoryCooldownMs = 1000;
+    /// <summary>The clock GetDirectInventory's reuse runs on (tests freeze it; RynthClock otherwise).</summary>
+    internal Func<DateTime> WalkClock { get; set; } = static () => RynthClock.Now;
     private const int DirectInventoryForceRefreshMinMs = 250;
 
     /// <summary>Mark inventory as changed — triggers a full container scan on next Tick.</summary>
@@ -354,9 +419,9 @@ public class WorldObjectCache
         // Same cadence also re-queues uids parked in _slowRetry (their fast-retry burst
         // exhausted in <10 ms before AC could populate their weenie), giving them a
         // fresh 8-tick attempt each pass.
-        if ((DateTime.Now - _lastReclassifyTime).TotalSeconds >= ReclassifyIntervalSec)
+        if ((RynthClock.Now - _lastReclassifyTime).TotalSeconds >= ReclassifyIntervalSec)
         {
-            _lastReclassifyTime = DateTime.Now;
+            _lastReclassifyTime = RynthClock.Now;
             FlushSlowRetry();
             ReclassifyUnknownDynamics();
             lock (_gate) _diag.Flush("2 s");
@@ -365,10 +430,10 @@ public class WorldObjectCache
         // Full container scan disabled — causes delayed crash when 160+ items in cache
         // trigger bulk property queries. MissileCraftingManager does its own lightweight scan.
         if (false && _inventoryDirty && _playerId != 0 && _host.HasGetContainerContents
-            && (DateTime.Now - _loginTime).TotalMilliseconds >= 5000
-            && (DateTime.Now - _lastScanAttempt).TotalMilliseconds >= ScanCooldownMs)
+            && (RynthClock.Now - _loginTime).TotalMilliseconds >= 5000
+            && (RynthClock.Now - _lastScanAttempt).TotalMilliseconds >= ScanCooldownMs)
         {
-            _lastScanAttempt = DateTime.Now;
+            _lastScanAttempt = RynthClock.Now;
             int found = ScanFullInventory();
             // Only clear dirty once scan actually discovers items (hooks ready)
             if (found > 0 || _initialScanDone)
@@ -568,6 +633,19 @@ public class WorldObjectCache
                 _inventory.Remove(id);
                 _landscape.Add(id);
             }
+            else if (uid < 0x80000000u)
+            {
+                // A static id is a world object (a door, a sign, a lever), never something carried.
+                // One created before its position was readable - a dungeon's objects arrive while the
+                // character is still in portal space - was filed as inventory here for good, so the
+                // door scans (which walk the landscape) never saw the door: "Open Doors" on, a closed
+                // door in the way, no door use at all (Dargoth Hera, Infested Mine, 2026-10-19). It is
+                // Unknown landscape, as when its position is known; the scans read the position then.
+                _creatures.Remove(id);
+                _inventory.Remove(id);
+                _landscape.Add(id);
+                cls = AcObjectClass.Unknown;
+            }
             else
             {
                 _inventory.Add(id);
@@ -601,13 +679,16 @@ public class WorldObjectCache
                     return;
                 }
 
-                // Non-creature with a known type: classify it by its ItemType flags and place it
-                // by ownership. Only weapons/armor/casters/containers were accepted here before,
-                // so keys, gems, spell components, food and misc fell through to Unknown
-                // landscape (never inventory) and ReclassifyUnknownDynamics re-probed them
-                // every 2 s forever.
+                // Non-creature with a position and a known item type: equipped gear, a ground
+                // drop, a chest. It gets the class its type gives and is filed by who has it
+                // (FileTypedObject). Only weapons, armor, casters and containers were taken
+                // here before, all into the inventory: keys, gems, comps, food and the like
+                // stayed Unknown landscape and were re-probed every 2 s for good, and other
+                // players' wielded gear and ground-dropped weapons counted as ours
+                // (2026-10-05). A static object that isn't a chest or a lifestone returns
+                // false and stays Unknown scenery below, hazard check included.
                 AcObjectClass typedCls = ClassifyItem(uid, typeFlags);
-                if (typedCls != AcObjectClass.Unknown && PlaceTypedObject(uid, id, name, typedCls, typeFlags))
+                if (typedCls != AcObjectClass.Unknown && FileTypedObject(uid, id, name, typedCls, typeFlags))
                     return;
             }
             else if (uid >= 0x80000000u)
@@ -657,81 +738,90 @@ public class WorldObjectCache
         }
     }
 
-    /// <summary>
-    /// Places a positioned, non-creature object whose ItemType resolved to a real class.
-    /// Must be called under <see cref="_gate"/>.
-    /// <list type="bullet">
-    /// <item>Portals / lifestones → landscape with their real class.</item>
-    /// <item>Dynamic objects owned by the player (wielded, in the main pack, or in a side pack) → inventory.</item>
-    /// <item>Other dynamic objects (ground drops, corpse / chest contents) → landscape with the item class.</item>
-    /// <item>Ownership unreadable → gear-like types go to inventory, the rest to landscape.</item>
-    /// <item>Static non-fixture, non-container objects (doors, signs) → returns false; the caller keeps them Unknown scenery.</item>
-    /// </list>
-    /// Returns true when the object was placed and recorded in <see cref="_byId"/>.
-    /// </summary>
-    private bool PlaceTypedObject(uint uid, int id, string name, AcObjectClass cls, uint typeFlags)
-    {
-        bool isFixture = cls is AcObjectClass.Portal or AcObjectClass.Lifestone;
-        bool isDynamic = uid >= 0x80000000u;
+    private const uint ItemTypeGear = ItemTypeMeleeWeapon | ItemTypeMissileWeapon | ItemTypeCaster | ItemTypeArmor | ItemTypeContainer;
 
-        bool toInventory;
-        if (isFixture)
+    private enum Holder { Unknown, Player, OtherWielder, OtherContainer, Nobody }
+
+    /// <summary>
+    /// The player has <paramref name="id"/> (wielded, main pack or a side pack): true; someone or
+    /// something else has it, or it lies on the ground: false; null when the engine can't say yet.
+    /// A sold, dropped or traded item stays known to the client for a while (2026-10-14: a sold
+    /// Flaming Greataxe was still tried three times as the listed weapon). Any thread.
+    /// </summary>
+    public bool? PlayerHas(int id)
+    {
+        lock (_gate)
         {
-            toInventory = false;
+            Holder h = WhoHas(id);
+            return h == Holder.Unknown ? null : h == Holder.Player;
         }
-        else if (!isDynamic)
+    }
+
+    /// <summary>
+    /// Who has the object: the player (wielded, in the main pack, or in a side pack), another
+    /// wielder (other players' and NPCs' gear), another container (a corpse, a chest), or
+    /// nobody (it lies on the ground). Unknown when the player isn't known yet or the engine
+    /// can't read the object's ownership. Caller holds _gate.
+    /// </summary>
+    private Holder WhoHas(int id)
+    {
+        if (_playerId == 0 || !TryGetOwnership(id, out int containerId, out int wielderId, out _))
+            return Holder.Unknown;
+        uint container = unchecked((uint)containerId), wielder = unchecked((uint)wielderId);
+        if (wielder == _playerId || container == _playerId) return Holder.Player;
+        if (wielder != 0) return Holder.OtherWielder;
+        if (container == 0) return Holder.Nobody;
+        // Side packs sit in the main pack (AC has no deeper nesting).
+        return TryGetOwnership(containerId, out int outer, out _, out _) && unchecked((uint)outer) == _playerId
+            ? Holder.Player : Holder.OtherContainer;
+    }
+
+    /// <summary>
+    /// Files a positioned non-creature whose item type gave it a real class. Caller holds _gate.
+    /// <list type="bullet">
+    /// <item>A lifestone: landscape.</item>
+    /// <item>Another static object: a chest goes on the landscape; anything else returns false
+    /// and the caller keeps it Unknown scenery (doors, signs, static hotspots).</item>
+    /// <item>A dynamic object the player has: inventory. One another player or an NPC wields:
+    /// neither list (known by id only), so it is not ours, not a ground item on the radar and
+    /// not something a meta can pick up. In another container or loose on the ground: landscape.</item>
+    /// <item>Ownership unreadable: gear goes to the inventory as before, the rest to the landscape.</item>
+    /// </list>
+    /// A non-gear object that lands on the landscape gets the hazard check it had as Unknown
+    /// (a hotspot spawned with a dynamic id and a Misc type is still a hazard).
+    /// </summary>
+    private bool FileTypedObject(uint uid, int id, string name, AcObjectClass cls, uint typeFlags)
+    {
+        bool gear = (typeFlags & ItemTypeGear) != 0;
+        bool toInventory, toLandscape;
+        if (cls == AcObjectClass.Lifestone)
         {
-            // Chests are static containers; other static objects stay Unknown scenery.
-            if ((typeFlags & ItemTypeContainer) == 0)
-                return false;
             toInventory = false;
+            toLandscape = true;
+        }
+        else if (uid < 0x80000000u)
+        {
+            if ((typeFlags & ItemTypeContainer) == 0) return false;
+            toInventory = false;
+            toLandscape = true;
         }
         else
         {
-            bool owned = IsOwnedByPlayer(id, out bool ownershipKnown);
-            toInventory = ownershipKnown
-                ? owned
-                : (typeFlags & (ItemTypeMeleeWeapon | ItemTypeMissileWeapon | ItemTypeCaster | ItemTypeArmor | ItemTypeContainer)) != 0;
+            Holder holder = WhoHas(id);
+            toInventory = holder == Holder.Player || (holder == Holder.Unknown && gear);
+            toLandscape = !toInventory && holder != Holder.OtherWielder;
         }
 
         _classifyRetry.Remove(uid);
         _reclassifySkipState.Remove(uid);
-        if (toInventory)
-        {
-            if (_inventory.Add(id)) _inventoryDirty = true;
-            _landscape.Remove(id);
-        }
-        else
-        {
-            if (_inventory.Remove(id)) _inventoryDirty = true;
-            _landscape.Add(id);
-        }
+        if (toInventory) { if (_inventory.Add(id)) _inventoryDirty = true; }
+        else if (_inventory.Remove(id)) _inventoryDirty = true;
+        if (toLandscape) _landscape.Add(id);
+        else _landscape.Remove(id);
         _byId[id] = Make(id, name, cls);
-        TraceClassify(uid, name.Length > 0, true, true, typeFlags, toInventory ? $"typed->{cls}(inv)" : $"typed->{cls}(land)");
+        if (toLandscape && !gear)
+            MaybeRegisterHazard(uid, name);
         return true;
-    }
-
-    /// <summary>
-    /// True when the object is wielded by the player, sits in the player's main pack, or sits in
-    /// a side pack whose container is the player. <paramref name="known"/> is false when the
-    /// player id isn't set yet or the ownership read failed.
-    /// </summary>
-    private bool IsOwnedByPlayer(int id, out bool known)
-    {
-        known = false;
-        if (_playerId == 0 || !TryGetOwnership(id, out int containerId, out int wielderId, out _))
-            return false;
-
-        known = true;
-        uint container = unchecked((uint)containerId);
-        uint wielder = unchecked((uint)wielderId);
-        if (wielder == _playerId || container == _playerId)
-            return true;
-
-        // One level of nesting covers side packs (AC doesn't allow packs inside packs).
-        return container != 0
-            && TryGetOwnership(containerId, out int outer, out _, out _)
-            && unchecked((uint)outer) == _playerId;
     }
 
     // PublicWeenieDesc._bitfield BF_CORPSE (ObjectDescriptionFlag.Corpse).
@@ -799,7 +889,7 @@ public class WorldObjectCache
         List<int>? toPromote = null;
         List<int>? toCorpse  = null;
         List<(int id, string name, AcObjectClass cls)>? statics = null;
-        List<(int Id, uint Flags)>? toType = null; // Unknowns whose ItemType is now a real item class
+        List<(int Id, uint Flags)>? typed = null;   // Unknowns whose item type now gives a class
         foreach (int id in _landscape)
         {
             uint uid = unchecked((uint)id);
@@ -829,7 +919,11 @@ public class WorldObjectCache
             // Bounded to Monster/Unknown so we don't name-query every ground
             // item each pass; IsCorpseName is specific ("X corpse"/"Corpse of X")
             // so a live mob cannot be misread as a corpse.
-            if ((wo.ObjectClass == AcObjectClass.Monster || wo.ObjectClass == AcObjectClass.Unknown)
+            // Container too: a corpse typed before its name or flag was readable is filed as a
+            // landscape Container by FileTypedObject (it used to go to the inventory, which the
+            // inventory pass below re-checks).
+            if ((wo.ObjectClass == AcObjectClass.Monster || wo.ObjectClass == AcObjectClass.Unknown
+                 || wo.ObjectClass == AcObjectClass.Container)
                 && ((_host.TryGetObjectName(uid, out string maybeCorpse) && IsCorpseName(maybeCorpse))
                     || HasCorpseFlag(uid)))
             {
@@ -854,11 +948,11 @@ public class WorldObjectCache
                 isCreature = true;
             if (!isCreature)
             {
-                // Type known now (or arrived late): place it as a real item instead of
-                // re-probing it every pass. Applied after the loop: placing mutates _landscape.
+                // Its type arrived after it was classified: file it as the item it is instead
+                // of probing it again every pass. Done after the loop (filing edits _landscape).
                 if (gotType && typeFlags != 0 && ClassifyByItemType(typeFlags) != AcObjectClass.Unknown)
                 {
-                    (toType ??= new()).Add((id, typeFlags));
+                    (typed ??= new()).Add((id, typeFlags));
                     continue;
                 }
                 DiagLogReclassifySkip(uid, wo.Name);
@@ -875,6 +969,7 @@ public class WorldObjectCache
         // an object filed before its name or flag was readable still can, so the bags in the
         // inventory list (a handful) are re-checked here. Packs we carry aren't corpses.
         List<(int id, AcObjectClass was)>? invCorpses = null;
+        List<(int Id, uint Flags)>? invLoose = null;   // filed as carried, but lying in the world
         foreach (int id in _inventory)
         {
             uint uid = unchecked((uint)id);
@@ -884,7 +979,19 @@ public class WorldObjectCache
             if (IsCorpseName(wo.Name)
                 || (_host.TryGetObjectName(uid, out string invName) && IsCorpseName(invName))
                 || HasCorpseFlag(uid))
+            {
                 (invCorpses ??= new()).Add((id, wo.ObjectClass));
+                continue;
+            }
+
+            // A chest that appeared before its position was known (the Dreamweave dig's Unearthed Cache)
+            // is filed here as something carried; the server says nobody holds it and it now has a
+            // position: it lies in the world. Without this it was never on the landscape, so no
+            // "use <name>" search, Loot by name or chest scan could find it (2026-11-02).
+            if (WhoHas(id) == Holder.Nobody
+                && _host.TryGetObjectPosition(uid, out _, out _, out _, out _)
+                && _host.TryGetItemType(uid, out uint looseFlags))
+                (invLoose ??= new()).Add((id, looseFlags));
         }
         if (invCorpses != null)
         {
@@ -895,6 +1002,21 @@ public class WorldObjectCache
                 FileAsCorpse(id, uid, n);
                 LogCorpseRescue(uid, n, was, "inventory, no position when classified");
             }
+        }
+
+        if (invLoose != null)
+        {
+            int moved = 0;
+            foreach (var (id, flags) in invLoose)
+            {
+                if (!_byId.TryGetValue(id, out var lw)) continue;
+                uint uid = unchecked((uint)id);
+                AcObjectClass lc = ClassifyItem(uid, flags);
+                if (lc == AcObjectClass.Unknown || !FileTypedObject(uid, id, lw.Name ?? string.Empty, lc, flags)) continue;
+                moved++;
+            }
+            if (moved > 0)
+                _host.Log($"[RynthAi] ReclassifyUnknownDynamics: {moved} object(s) filed as carried lie loose in the world -> landscape");
         }
 
         if (statics != null)
@@ -914,27 +1036,27 @@ public class WorldObjectCache
             _host.Log($"[RynthAi] ReclassifyUnknownDynamics: rescued {toCorpse.Count} stale corpse(s) → Corpse");
         }
 
-        if (toType != null)
+        if (typed != null)
         {
-            int placed = 0, toInv = 0;
-            foreach (var (id, flags) in toType)
+            int filed = 0, intoInventory = 0;
+            foreach (var (id, flags) in typed)
             {
                 if (!_byId.TryGetValue(id, out var wo)) continue;
                 uint uid = unchecked((uint)id);
-                // An Unknown result would be re-queued every pass, so leave it to the skip diag.
                 AcObjectClass cls = ClassifyItem(uid, flags);
-                if (cls == AcObjectClass.Unknown || !PlaceTypedObject(uid, id, wo.Name ?? string.Empty, cls, flags)) continue;
-                placed++;
-                if (_inventory.Contains(id)) toInv++;
+                if (cls == AcObjectClass.Unknown || !FileTypedObject(uid, id, wo.Name ?? string.Empty, cls, flags)) continue;
+                filed++;
+                if (_inventory.Contains(id)) intoInventory++;
             }
-            _host.Log($"[RynthAi] ReclassifyUnknownDynamics: typed {placed} Unknown object(s) as items ({toInv} into inventory)");
+            if (filed > 0)
+                _host.Log($"[RynthAi] ReclassifyUnknownDynamics: typed {filed} Unknown object(s) as items ({intoInventory} into the inventory)");
         }
 
         // DIAG: heartbeat — Unknown landscape candidates checked but nothing promoted
         // this pass. Confirms ReclassifyUnknownDynamics is running and engine signals
         // keep failing for the stuck uids (vs. them never reaching _landscape at all).
         if (toPromote == null
-            && toType == null
+            && typed == null
             && _reclassifySkipState.Count > 0
             && _reclassifyDiagSummaryCount < MaxReclassifyDiagSummaries)
         {
@@ -1096,8 +1218,62 @@ public class WorldObjectCache
         uint uid = unchecked((uint)id);
         if (stype == DecalTypeKey)
             return _host.HasGetObjectWcid && _host.TryGetObjectWcid(uid, out uint wcid) ? unchecked((int)wcid) : defaultValue;
+        if ((stype & 0xFFFFFF00u) == DecalTypeKey)
+            return GetDecalLongKey(uid, stype, defaultValue);
         if (!_host.HasGetObjectIntProperty) return defaultValue;
         return _host.TryGetObjectIntProperty(uid, stype, out int v) ? v : defaultValue;
+    }
+
+    /// <summary>
+    /// Decal's other synthetic LongValueKeys (0x0D000001-0x0D00002A, Decal.Adapter's numbering),
+    /// read as the game property each one is. VTank profiles use them: LootSnobV4 has 336 rules on
+    /// MaxDamage and 109 on Coverage. They were read as STypeInt ids, which no object has, so
+    /// they were always 0 and those rules never matched (until 2026-10-07). Icons are the
+    /// portal.dat index without its 0x06000000 base, as Decal gives them. Keys with no property
+    /// here (landblock, monarch, physics flags, spell counts) answer the default.
+    /// </summary>
+    private int GetDecalLongKey(uint uid, uint key, int defaultValue)
+    {
+        switch (key)
+        {
+            case 0x0D000001: return DecalIcon(uid, 8, defaultValue);    // Icon
+            case 0x0D000008: { uint s = GetDataIdProperty(unchecked((int)uid), 28); return s != 0 ? unchecked((int)s) : defaultValue; } // AssociatedSpell
+            case 0x0D000029: return DecalIcon(uid, 50, defaultValue);   // IconOverlay
+            case 0x0D00002A: return DecalIcon(uid, 52, defaultValue);   // IconUnderlay
+        }
+        uint stype = DecalIntStype(key);
+        if (stype == 0 || !_host.HasGetObjectIntProperty) return defaultValue;
+        return _host.TryGetObjectIntProperty(uid, stype, out int v) ? v : defaultValue;
+    }
+
+    /// <summary>The STypeInt a Decal synthetic long key is, or 0 (not an int property).</summary>
+    public static uint DecalIntStype(uint key) => key switch
+    {
+        0x0D000004 => 6,     // ItemSlots      -> ItemsCapacity
+        0x0D000005 => 7,     // PackSlots      -> ContainersCapacity
+        0x0D000006 => 12,    // StackCount     -> StackSize
+        0x0D000007 => 11,    // StackMax       -> MaxStackSize
+        0x0D00000B => 10,    // WieldingSlot   -> CurrentWieldedLocation
+        0x0D00000D => 4,     // Coverage       -> ClothingPriority
+        0x0D00000E => 9,     // EquipableSlots -> ValidLocations
+        0x0D00000F => 51,    // EquipType      -> CombatUse
+        0x0D000010 => 18,    // IconOutline    -> UiEffects
+        0x0D000011 => 50,    // MissileType    -> AmmoType
+        0x0D000012 => 16,    // UsageMask      -> ItemUseable
+        0x0D000014 => 152,   // HookMask       -> HookItemType
+        0x0D000015 => 151,   // HookType
+        0x0D00001A => 1,     // Category       -> ItemType
+        0x0D00001F => 49,    // WeapSpeed      -> WeaponTime
+        0x0D000020 => 48,    // EquipSkill     -> WeaponSkill
+        0x0D000021 => 45,    // DamageType
+        0x0D000022 => 44,    // MaxDamage      -> Damage (the appraisal's weapon profile)
+        _ => 0,
+    };
+
+    private int DecalIcon(uint uid, uint did, int defaultValue)
+    {
+        uint v = GetDataIdProperty(unchecked((int)uid), did);
+        return v != 0 ? unchecked((int)(v & 0x00FFFFFFu)) : defaultValue;
     }
 
     /// <summary>
@@ -1203,8 +1379,12 @@ public class WorldObjectCache
     /// position as read (landblock-local) so the caller needn't read it again.
     /// </summary>
     public double DistanceFrom(uint cell1, float x1, float y1, float z1, int id2, out bool hasPos, out float x2, out float y2)
+        => DistanceFrom(cell1, x1, y1, z1, id2, out hasPos, out x2, out y2, out _);
+
+    /// <summary>The same, with the object's height (<paramref name="z2"/>) as read.</summary>
+    public double DistanceFrom(uint cell1, float x1, float y1, float z1, int id2, out bool hasPos, out float x2, out float y2, out float z2)
     {
-        hasPos = _host.TryGetObjectPosition(unchecked((uint)id2), out uint cell2, out x2, out y2, out float z2);
+        hasPos = _host.TryGetObjectPosition(unchecked((uint)id2), out uint cell2, out x2, out y2, out z2);
         if (!hasPos)
             return double.MaxValue;
 
@@ -1259,7 +1439,7 @@ public class WorldObjectCache
         // snapshot copy so the caller never iterates the live list a later call will clear.
         lock (_gate)
         {
-        DateTime now = DateTime.Now;
+        DateTime now = WalkClock();
 
         if (!_host.HasGetContainerContents)
         {
@@ -1286,6 +1466,7 @@ public class WorldObjectCache
         _directInventory.Clear();
         _directInventoryIds.Clear();
         _directInventoryIndex.Clear();
+        _packWalkIds.Clear();
 
         uint playerId = _host.GetPlayerId();
         if (playerId == 0)
@@ -1319,6 +1500,16 @@ public class WorldObjectCache
                 // parent/slot for the remote inventory view (stashed onto the WorldObject).
                 if (!TryAddDirectInventoryItem(itemId, playerId, containerId, i, out bool isContainer))
                     continue;
+                // The player's own contents can list what the player wields (the 07:27 export had the
+                // wielded Sceptre in it, 2026-10-18), and reading a wielded caster as "in the pack" made
+                // buffing ignore it and try every other one. So only a side pack, or the main pack with
+                // the item's own container field set and no wielder, means "in a pack". Buffing's wand
+                // swap puts the weapons into a side pack (the stale-record case of 2026-10-17/18).
+                if (containerId != playerId) _packWalkIds.Add(unchecked((int)itemId));
+                else if (_host.HasGetObjectOwnershipInfo
+                         && _host.TryGetObjectOwnershipInfo(itemId, out uint inContainer, out uint byWielder, out _)
+                         && inContainer != 0 && byWielder == 0)
+                    _packWalkIds.Add(unchecked((int)itemId));
 
                 if (isContainer && seenContainers.Add(itemId))
                     pendingContainers.Enqueue(itemId);
@@ -1333,6 +1524,7 @@ public class WorldObjectCache
                 UpsertDirectInventoryItem(cachedItem);
         }
 
+        if (_directInventory.Count > 0) DropVanishedInventory();
         return _directInventory.ToList();
         }
     }
@@ -1381,6 +1573,13 @@ public class WorldObjectCache
     /// </summary>
     public static bool IsWieldedByPlayer(RynthCoreHost host, WorldObject wo)
     {
+        // The server's word (the engine's EquipmentTracker, API v87) when the engine has it.
+        if (EquippedState.IsWielded(host, wo.Id) is bool tracked) return tracked;
+        // Found inside a pack by the client's container walk: not wielded, whatever the weenie's
+        // wielder record still says. It kept the player after buffing put both Hand Wraps into the
+        // pack for the wand (2026-10-17), so combat took Drakkon as armed, never wielded anything,
+        // and he fought bare-handed for 19 s until he died.
+        if (wo.Cache != null && wo.Cache.InPackWalk(wo.Id)) return false;
         if (wo.Values(LongValueKey.CurrentWieldedLocation, 0) > 0) return true;
         if (wo.Values(LongValueKey.EquippedSlots, 0) != 0) return true;
         if (!host.HasGetObjectWielderInfo) return false;
@@ -1452,8 +1651,8 @@ public class WorldObjectCache
     /// <summary>A chat warning that a full pack blocks something, at most once every 5 minutes.</summary>
     public static void WarnPackFull(RynthCoreHost host, string what)
     {
-        if ((DateTime.Now - _packFullWarnedAt).TotalMinutes < 5) return;
-        _packFullWarnedAt = DateTime.Now;
+        if ((RynthClock.Now - _packFullWarnedAt).TotalMinutes < 5) return;
+        _packFullWarnedAt = RynthClock.Now;
         host.WriteToChat($"[RynthAi] Pack full: {what}. Free a slot (salvage, sell or drop); looting keeps {LootReserveFreeSlots} slots free.", 2);
     }
 
@@ -1463,7 +1662,8 @@ public class WorldObjectCache
     // Snapshot overload — caller supplies an already-built inventory list (AutoCram
     // reuses its single per-tick GetDirectInventory snapshot here; do NOT re-refresh).
     public static int FindPackFor(IReadOnlyList<WorldObject> inv, int playerId,
-                                  bool includeMainPack, int requireFree, RynthCoreHost? host = null)
+                                  bool includeMainPack, int requireFree, RynthCoreHost? host = null,
+                                  Func<int, bool>? skip = null)
     {
         if (inv == null || playerId == 0) return 0;
         if (requireFree < 1) requireFree = 1;
@@ -1484,6 +1684,7 @@ public class WorldObjectCache
             // Skip foci — technically containers but reserved for spell components.
             if (!string.IsNullOrEmpty(p.Name)
                 && p.Name.IndexOf("Foci", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+            if (skip != null && skip(p.Id)) continue; // the server refused it lately (PackRefusals)
             int capacity = p.Values(LongValueKey.ItemsCapacity, 0);
             if (capacity <= 0) continue; // capacity unknown — don't risk the move
             int used = 0;
@@ -1503,20 +1704,41 @@ public class WorldObjectCache
         // Dequip fallback: the bow needs ONE free main-pack slot; a dequip into a
         // non-full main pack is AV-safe (the AV is only on a genuinely FULL target).
         int mainFree = 102 - mainUsed;
-        return mainFree > 0 ? playerId : 0;
+        return mainFree > 0 && !(skip != null && skip(playerId)) ? playerId : 0;
     }
 
     /// <summary>
-    /// Where a looted item goes: the main pack while it has a free slot, else the side pack
-    /// with the most room, 0 when nothing has room. The pickup used to be a UseObject, which
-    /// let the client pick the spot, but a use on a wearable item lying in a corpse is a
-    /// get-and-wield: jewellery for an empty slot went straight onto the character
-    /// (2026-10-02). A move needs an explicit target, and the engine refuses a move into a
-    /// full pack of ours, so this finds one with room.
+    /// Where a looted item goes: the main pack (the player) or 0. The pickup used to be a
+    /// UseObject, which let the client pick the spot, but a use on a wearable item lying in a
+    /// corpse is a get-and-wield: jewellery for an empty slot went straight onto the character
+    /// (2026-10-02). So it is a move, and a move from a corpse or chest can only go to the main
+    /// pack: the client refuses one straight into a side pack ("You must first pick up the X",
+    /// and nothing is sent), so the side-pack fallback this used to return when the main pack
+    /// was full never worked (2026-11-12: 75 such pickups in a week of logs, none landed; the
+    /// looter waited out 3 + 3 tries on each and left them).
+    /// <list type="bullet">
+    /// <item>The main pack has a free slot: the main pack.</item>
+    /// <item>It is full, and <paramref name="item"/> joins a stack you carry: the main pack anyway.
+    /// The client puts a stack onto a same-name stack with room wherever that is (the pea stacks
+    /// live in a side pack), so no slot is needed.</item>
+    /// <item>Otherwise 0: nothing can take it from the corpse (<see cref="SidePackHasRoom"/> tells
+    /// a full main pack from no room at all).</item>
+    /// </list>
     /// </summary>
-    public static int FindLootDestination(IReadOnlyList<WorldObject> inv, int playerId, RynthCoreHost? host = null)
+    /// <remarks><paramref name="skip"/>: packs (or the player id, for the main pack) the server refused lately;
+    /// a stack join needs no slot, so it goes whatever the main pack's mark.</remarks>
+    public static int FindLootDestination(IReadOnlyList<WorldObject> inv, int playerId, RynthCoreHost? host = null,
+                                          Func<int, bool>? skip = null, WorldObject? item = null)
     {
         if (inv == null || playerId == 0) return 0;
+        if (item != null && JoinsCarriedStack(inv, playerId, item)) return playerId;
+        if (MainPackFreeSlots(inv, playerId, host) > 0 && !(skip != null && skip(playerId))) return playerId;
+        return 0;
+    }
+
+    /// <summary>The main pack's free item slots (102 less the loose items in it; packs, foci and worn items don't count).</summary>
+    public static int MainPackFreeSlots(IReadOnlyList<WorldObject> inv, int playerId, RynthCoreHost? host = null)
+    {
         int mainUsed = 0; // same tally as FindPackFor
         foreach (var p in inv)
         {
@@ -1526,8 +1748,35 @@ public class WorldObjectCache
             if (host.HasValue && IsWieldable(p) && IsWieldedByPlayer(host.Value, p)) continue;
             mainUsed++;
         }
-        if (102 - mainUsed > 0) return playerId;
-        return FindPackFor(inv, playerId, includeMainPack: false, requireFree: 1, host);
+        return 102 - mainUsed;
+    }
+
+    /// <summary>A side pack has a free slot (so a loot pickup that found no destination met a full main pack, not full packs).</summary>
+    public static bool SidePackHasRoom(IReadOnlyList<WorldObject> inv, int playerId, RynthCoreHost? host = null)
+        => inv != null && playerId != 0 && FindPackFor(inv, playerId, includeMainPack: false, requireFree: 1, host) != 0;
+
+    /// <summary>
+    /// <paramref name="item"/> stacks and a stack of the same kind you carry (main pack or a side
+    /// pack) still has room for one more: a pickup aimed at the main pack joins it.
+    /// </summary>
+    internal static bool JoinsCarriedStack(IReadOnlyList<WorldObject> inv, int playerId, WorldObject item)
+    {
+        int max = RynthCore.Plugin.RynthAi.Loot.InventoryManager.GetMaxStackSize(item);
+        if (max <= 1 || string.IsNullOrEmpty(item.Name)) return false;
+        int wcid = item.Values(unchecked((int)DecalTypeKey), 0);
+        var packs = new HashSet<int>();
+        foreach (var p in inv)
+            if (p.Container == playerId && p.ObjectClass == AcObjectClass.Container) packs.Add(p.Id);
+        foreach (var s in inv)
+        {
+            if (s.Id == item.Id || s.ObjectClass == AcObjectClass.Container) continue;
+            if (s.Container != playerId && !packs.Contains(s.Container)) continue;
+            int sw = s.Values(unchecked((int)DecalTypeKey), 0);
+            bool same = wcid != 0 && sw != 0 ? sw == wcid : string.Equals(s.Name, item.Name, StringComparison.Ordinal);
+            if (!same) continue;
+            if (Math.Max(1, s.Values(LongValueKey.StackCount, 1)) < max) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -1693,6 +1942,47 @@ public class WorldObjectCache
         return result;
     }
 
+    /// <summary>
+    /// Items the client lists inside <paramref name="containerId"/> that the cache never
+    /// classified, looked up now (the indexer's lazy lookup files them) and returned.
+    /// <paramref name="known"/> is what <see cref="GetContainedItems"/> already found.
+    /// An item whose create the cache never processed is otherwise invisible to corpse
+    /// looting: it isn't in the inventory or landscape sets, so it is never a candidate
+    /// and the corpse is finished without it (2026-10-11, Silentkelpie: a Necrolytic
+    /// Extract on a corpse with a Keep rule, left behind with no log line; the cache
+    /// reported it DELETE-BEFORE-CLASSIFY when the corpse went away).
+    /// </summary>
+    public List<WorldObject> RescueContainedItems(int containerId, IReadOnlyCollection<WorldObject> known)
+        => RescueContainedItems(containerId, known, out _);
+
+    /// <summary>As above; <paramref name="unread"/> counts the listed items that can't be looked up yet (no name or position).</summary>
+    public List<WorldObject> RescueContainedItems(int containerId, IReadOnlyCollection<WorldObject> known, out int unread)
+    {
+        unread = 0;
+        var rescued = new List<WorldObject>();
+        if (containerId == 0 || !_host.HasGetContainerContents) return rescued;
+
+        uint[] buf = new uint[256];
+        int count;
+        try { count = _host.GetContainerContents(unchecked((uint)containerId), buf); }
+        catch { return rescued; }
+        if (count <= 0) return rescued;
+
+        var have = new HashSet<int>();
+        foreach (var wo in known) have.Add(wo.Id);
+
+        for (int i = 0; i < Math.Min(count, buf.Length); i++)
+        {
+            int id = unchecked((int)buf[i]);
+            if (id == 0 || have.Contains(id)) continue;
+            WorldObject? wo = this[id];
+            if (wo == null) { unread++; continue; }
+            if (wo.ObjectClass == AcObjectClass.Corpse || wo.ObjectClass == AcObjectClass.Monster) continue;
+            rescued.Add(wo);
+        }
+        return rescued;
+    }
+
     /// <summary>Enumerate landscape creatures (received health updates or TYPE_CREATURE).</summary>
     public IEnumerable<WorldObject> GetLandscape()
     {
@@ -1751,6 +2041,24 @@ public class WorldObjectCache
     public int HazardVersion
     {
         get { lock (_gate) return _hazardVersion; }
+    }
+
+    /// <summary>
+    /// A dungeon cell the character took hotspot damage in ("You suffer 32 damage from acid!"):
+    /// registered and persisted like a sighted hazard, so the patrol reroutes around it now and
+    /// on every later visit. Outdoor cells (a 24 m land cell) are never registered. True when new.
+    /// </summary>
+    public bool RegisterDamageHazardCell(uint cellId, string source)
+    {
+        if (cellId == 0 || (cellId & 0xFFFF) < 0x0100) return false;
+        lock (_gate)
+        {
+            if (!_hazardCells.Add(cellId)) return false;
+            _hazardVersion++;
+        }
+        DungeonHazardStore.Append(cellId >> 16, cellId);
+        _host.Log($"[Hazard] took {source} damage in cell 0x{cellId:X8} (persisted)");
+        return true;
     }
 
     public bool IsHazardCell(uint cellId)
@@ -2045,6 +2353,42 @@ public class WorldObjectCache
         wo.Cache = this;
         UpsertDirectInventoryItem(wo);
         return true;
+    }
+
+    /// <summary>Inventory entries dropped by <see cref="DropVanishedInventory"/> (for the log and the tests).</summary>
+    internal int VanishedDropped { get; private set; }
+
+    /// <summary>
+    /// After a live walk: an inventory entry the walk didn't find and the client can't even name any
+    /// more is gone (its removal was missed), so it leaves the inventory set. Wielded gear (never in
+    /// the walk) and anything the client still knows stay: a partial walk can't empty the pack.
+    /// A used-up Treated Healing Kit stayed in the set and was "used" 70 times after a respawn, the
+    /// server answering at once with no heal (2026-11-03); every reader of GetInventory (kits,
+    /// potions, tinctures, mana stones, component counts, meta item counts, /mt use) saw it. Under _gate.
+    /// </summary>
+    private void DropVanishedInventory()
+    {
+        List<int>? gone = null;
+        foreach (int id in _inventory)
+        {
+            if (_directInventoryIds.Contains(id)) continue;
+            uint uid = unchecked((uint)id);
+            if (_host.TryGetObjectName(uid, out string name) && !string.IsNullOrWhiteSpace(name)) continue;
+            (gone ??= new List<int>()).Add(id);
+        }
+        if (gone == null) return;
+        foreach (int id in gone)
+        {
+            string name = _byId.TryGetValue(id, out var wo) ? wo.Name : string.Empty;
+            _inventory.Remove(id);
+            _byId.Remove(id);
+            _classifyRetry.Remove(unchecked((uint)id));
+            _slowRetry.Remove(unchecked((uint)id));
+            _reclassifySkipState.Remove(unchecked((uint)id));
+            VanishedDropped++;
+            _host.Log($"[RynthAi] Inventory: 0x{unchecked((uint)id):X8} '{name}' is gone from the client (used up, given or dropped; its removal was missed): dropped from the cache.");
+        }
+        _inventoryDirty = true;
     }
 
     private void UpsertDirectInventoryItem(WorldObject item)

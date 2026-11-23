@@ -40,6 +40,10 @@ public partial class CombatManager
 
     // The off hand that was in the slot when the current swap was decided (for no flip-flop).
     private int _offSwapFrom;
+    // The last item RynthAi wielded into the off hand (0 = none, or it has since gone to the main
+    // hand or the pack). The slot reads can miss it (2026-10-17): with two weapons wielded, this one
+    // is the off hand's.
+    private int _offhandSentId;
     // An off hand RynthAi took off itself (for a main weapon, or buffing's wand): put back later.
     private int _stowedOffhandId;
     // The off-hand mode for the target combat is equipping for (the wand path reads it).
@@ -50,6 +54,7 @@ public partial class CombatManager
     private (int Id, string Source) _lastOffPlan = (-1, "");
     private DateTime _lastOffHoldLogAt = DateTime.MinValue;
     private readonly HashSet<string> _offNoted = new();
+    private const string DefaultOffhandSource = "Default offhand";
 
     private void ResetOffhandState()
     {
@@ -57,6 +62,7 @@ public partial class CombatManager
         _offDequipPendingId = _offDequipTries = 0;
         _offDequipAt = _offDequipRestUntil = DateTime.MinValue;
         _offSwapFrom = _stowedOffhandId = 0;
+        _offhandSentId = 0;
         _offSlotId = 0;
         _offSlotReadAt = DateTime.MinValue;
         _lastOffPlan = (-1, "");
@@ -109,12 +115,20 @@ public partial class CombatManager
     /// <see cref="OffhandReadMs"/>, always live while an off-hand action is in flight.</summary>
     internal int OffhandInSlot(bool fresh = false)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (!fresh && OffhandTracker.PendingId == 0 && _offDequipPendingId == 0
             && (now - _offSlotReadAt).TotalMilliseconds < OffhandReadMs)
             return _offSlotId;
         _offSlotReadAt = now;
         int found = 0;
+        // The server's word when the engine has it: what is in the Shield slot.
+        if (EquippedState.TryGet(_host, out var eqOff))
+        {
+            foreach (var kv in eqOff)
+                if ((kv.Value & OffhandRules.ShieldSlot) != 0) { found = kv.Key; break; }
+            _offSlotId = found;
+            return found;
+        }
         try
         {
             foreach (var wo in _worldFilter.GetDirectInventory(forceRefresh: true))
@@ -128,7 +142,23 @@ public partial class CombatManager
                 {
                     if (r.Id == 0 || pid == 0) continue;
                     if (_host.TryGetObjectWielderInfo(unchecked((uint)r.Id), out uint wielder, out uint loc)
-                        && wielder == pid && (loc & OffhandRules.ShieldSlot) != 0) { found = r.Id; break; }
+                        && wielder == pid && (loc & OffhandRules.ShieldSlot) != 0 && !InPackNow(r.Id)) { found = r.Id; break; }
+                }
+            }
+            // Nothing reads as in the Shield slot: what RynthAi put there, while it is still wielded
+            // beside another weapon (alone it may have become the main hand's).
+            if (found == 0 && _offhandSentId != 0)
+            {
+                var sentWo = _worldFilter[_offhandSentId];
+                if (sentWo == null || !WorldObjectCache.IsWieldedByPlayer(_host, sentWo)) _offhandSentId = 0;
+                else
+                {
+                    foreach (var wo in _worldFilter.GetDirectInventory(forceRefresh: false))
+                    {
+                        if (wo.Id == _offhandSentId || WorldObjectCache.IsAmmo(wo)) continue;
+                        bool weapon = wo.ObjectClass == AcObjectClass.MeleeWeapon || wo.ObjectClass == AcObjectClass.MissileWeapon || IsWandObject(wo);
+                        if (weapon && WorldObjectCache.IsWieldedByPlayer(_host, wo)) { found = _offhandSentId; break; }
+                    }
                 }
             }
         }
@@ -164,7 +194,7 @@ public partial class CombatManager
         }
         if (pick == 0 && OffhandRules.IsRuleItem(ruleVal)) { pick = ruleVal; source = $"Monsters rule '{rule!.Name}' offhand"; }
         if (pick == 0 && ruleVal == 0 && defaultRow != null && OffhandRules.IsRuleItem(defaultRow.OffhandId))
-        { pick = defaultRow.OffhandId; source = "Default offhand"; }
+        { pick = defaultRow.OffhandId; source = DefaultOffhandSource; }
         if (pick != 0 && !_settings.ItemRules.Exists(r => r.Id == pick))
         {
             NoteUnlisted(pick, source);
@@ -185,9 +215,18 @@ public partial class CombatManager
             var wo = _worldFilter[r.Id];
             if (wo == null) continue;
             if (IsShieldItem(wo)) list.Add(new OffhandCandidate(r.Id, wo.Name, true, r.Id == offInSlot));
-            else if (IsOffhandWeaponItem(wo)) list.Add(new OffhandCandidate(r.Id, wo.Name, false, r.Id == offInSlot));
+            else if (IsOffhandWeaponItem(wo)) list.Add(new OffhandCandidate(r.Id, wo.Name, false, r.Id == offInSlot, ListedElementOf(r.Id)));
         }
         return list;
+    }
+
+    /// <summary>A weapon's element as the weapon choice reads it: the one set in the Items list, else its properties.</summary>
+    internal string ListedElementOf(int id)
+    {
+        var r = _settings.ItemRules.Find(x => x.Id == id);
+        string elem = WeaponElements.Normalize(r?.Element);
+        if (elem.Length == 0 && id != 0) elem = ElementTracker.Read(id, _worldFilter[id]?.Name).Element;
+        return elem;
     }
 
     /// <summary>The off hand to go with <paramref name="mainId"/> against <paramref name="target"/>.</summary>
@@ -196,8 +235,10 @@ public partial class CombatManager
         var (mode, pick, source) = OffhandChoiceFor(target, rule);
         int off = OffhandInSlot();
         var kind = MainKindOf(_worldFilter[mainId]);
+        // A dual-wield pair goes on together: the off-hand weapon of the main weapon's element.
+        string mainElement = kind == MainHandKind.OneHandedMelee ? ListedElementOf(mainId) : "";
         var plan = OffhandPlanner.Choose(mode, kind, mainId, ListedOffhand(off), DualWieldTrained, _settings.PreferDualWield,
-            _host.HasWieldItem, pick, source);
+            _host.HasWieldItem, pick, source, mainElement, explicitIsDefault: source == DefaultOffhandSource);
 
         // Nothing listed planned: put back what RynthAi took off itself, when the hands allow it.
         if (plan.Id == 0 && mode != OffhandMode.None && _stowedOffhandId != 0 && _stowedOffhandId != mainId)
@@ -210,6 +251,26 @@ public partial class CombatManager
                 plan = new OffhandPlan(_stowedOffhandId, "putting back what was taken off");
         }
         return plan;
+    }
+
+    /// <summary>
+    /// Dual wield: <paramref name="wantedId"/> (the weapon choice) already swings in the off hand
+    /// beside <paramref name="inHand"/>, of another element. Its partner: another listed one-handed
+    /// weapon of the wanted element the character can wield now, for the main hand (null = none,
+    /// or the hands already hold the wanted element).
+    /// </summary>
+    private WorldObject? DualWieldPartnerFor(int wantedId, int inHand)
+    {
+        string elem = ListedElementOf(wantedId);
+        if (elem.Length == 0 || elem.Equals(ListedElementOf(inHand), StringComparison.OrdinalIgnoreCase)) return null;
+        foreach (var c in ListedCandidates())
+        {
+            if (c.Id == wantedId || c.Id == inHand || c.Kind != CombatMode.Melee
+                || !c.Element.Equals(elem, StringComparison.OrdinalIgnoreCase)) continue;
+            if (_worldFilter[c.Id] is WorldObject wo && MainKindOf(wo) == MainHandKind.OneHandedMelee && IsOffhandWeaponItem(wo))
+                return wo;
+        }
+        return null;
     }
 
     // ── Before a main wield ──────────────────────────────────────────────────
@@ -230,11 +291,11 @@ public partial class CombatManager
         if (OffhandRules.OffhandAllowed(kind, offWo != null && IsShieldItem(offWo))) return false;
         string why;
         if (mode == OffhandMode.None) why = "Offhand is None, so it stays";
-        else if (DateTime.Now < _offDequipRestUntil) why = "it didn't come off; resting";
+        else if (RynthClock.Now < _offDequipRestUntil) why = "it didn't come off; resting";
         else return false;
-        if ((DateTime.Now - _lastOffHoldLogAt).TotalSeconds > 10)
+        if ((RynthClock.Now - _lastOffHoldLogAt).TotalSeconds > 10)
         {
-            _lastOffHoldLogAt = DateTime.Now;
+            _lastOffHoldLogAt = RynthClock.Now;
             _host.Log($"[EquipDiag] not wielding 0x{(uint)mainId:X8} '{WeaponName(mainId)}' ({OffhandRules.KindLabel(kind)}): 0x{(uint)off:X8} '{offWo?.Name ?? "?"}' is in the off hand and {why} — the server refuses it otherwise");
         }
         return true;
@@ -262,7 +323,7 @@ public partial class CombatManager
     /// <summary>Put <paramref name="offId"/> (in the off hand) into an open pack: one move in flight, capped.</summary>
     private OffPrep DequipOffhand(int offId, string why, bool gateHeld = false)
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         if (_offDequipPendingId != offId) _offDequipTries = 0;
         if (_offDequipPendingId == offId && (now - _offDequipAt).TotalMilliseconds < OffDequipResolveMs)
             return OffPrep.Busy;
@@ -285,6 +346,8 @@ public partial class CombatManager
         if (!gateHeld && _weaponSwapGate != null && !_weaponSwapGate.TryBeginSwap("combat-offhand-dequip")) return OffPrep.Busy;
 
         _host.MoveItemInternal(unchecked((uint)offId), unchecked((uint)packId), 0, 1);
+        if (offId == _offhandSentId) _offhandSentId = 0;
+        _weaponSwapGate?.NoteMove(offId, wieldedNow: true);
         _offDequipPendingId = offId;
         _offDequipAt = now;
         _offDequipTries++;
@@ -301,8 +364,8 @@ public partial class CombatManager
     /// </summary>
     private bool OffhandFollowUp(WorldObject target, MonsterRule? rule, int mainId)
     {
-        DateTime now = DateTime.Now;
-        if (OffhandTracker.PendingId != 0 && ServerRefusedSinceSend()) OffhandTracker.Refused(now, WeaponName);
+        DateTime now = RynthClock.Now;
+        FoldServerAnswer(OffhandTracker, now);
         var plan = OffhandPlanFor(target, rule, mainId);
         int off = OffhandInSlot();
 
@@ -379,6 +442,8 @@ public partial class CombatManager
         if (_host.HasGetLastUseDone && _host.TryGetLastUseDone(out int uSeq, out _)) _swapUseDoneSeq = uSeq;
         if (_host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int wSeq, out _, out _, out _)) _swapWeenieSeq = wSeq;
         OffhandTracker.Sent(plan.Id, _offSwapFrom, now);
+        _offhandSentId = plan.Id;
+        _weaponSwapGate?.NoteMove(plan.Id, wieldedNow: false);
         _offSwapFrom = 0;
         _lastEquipTime = now;
         if (plan.Id != _stowedOffhandId) _stowedOffhandId = 0;   // a listed one replaces what was taken off

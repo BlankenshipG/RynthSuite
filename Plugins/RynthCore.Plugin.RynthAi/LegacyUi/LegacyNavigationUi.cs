@@ -9,10 +9,16 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 internal sealed class LegacyNavigationUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.Navigation");
+
     private readonly LegacyUiSettings _settings;
     private readonly RynthCoreHost _host;
 
     public Action? OnSettingsChanged;
+
+    /// <summary>Starts the Dungeon Patrol here (set by the plugin; run on the plugin tick).</summary>
+    public Action? StartPatrol;
 
     private readonly string[] _routeTypes = { "Once", "Circular", "Linear", "Follow" };
     private readonly string[] _addModes = { "End", "Above", "Below" };
@@ -28,21 +34,32 @@ internal sealed class LegacyNavigationUi
     public void Render()
     {
         ImGui.SetNextWindowSize(new Vector2(400, 480), ImGuiCond.FirstUseEver);
+        _spot.Apply();
         if (!ImGui.Begin("Navigation##RynthAiNav", ref DashWindows.ShowNavigation))
         {
             ImGui.End();
             return;
         }
+        _spot.Track();
 
         string activeNavName = string.IsNullOrEmpty(_settings.CurrentNavPath) ? "None (Unsaved)" : Path.GetFileName(_settings.CurrentNavPath);
-        ImGui.TextColored(new Vector4(1, 1, 0, 1), $"Active Nav: {activeNavName}");
+        SafeImGui.TextColored(new Vector4(1, 1, 0, 1), $"Active Nav: {activeNavName}");
 
         if (!string.IsNullOrEmpty(_settings.NavStatusLine))
         {
             var statusColor = _settings.NavIsStuck
                 ? new Vector4(0.91f, 0.70f, 0.20f, 1.00f)   // amber
                 : new Vector4(0.25f, 0.85f, 0.45f, 1.00f);  // green
-            ImGui.TextColored(statusColor, _settings.NavStatusLine);
+            SafeImGui.TextColored(statusColor, _settings.NavStatusLine);
+        }
+
+        // Held in a dungeon by a route with nothing here (a landscape route, another dungeon's):
+        // the way to run here is the Dungeon Patrol, offered right under the status (2026-11-01).
+        if (_settings.NavAreaHoldOffersPatrol && StartPatrol != null)
+        {
+            if (ImGui.Button("Patrol this dungeon##navAreaPatrol", new Vector2(-1, 24)))
+                StartPatrol();
+            SafeImGui.SetItemTooltip("The loaded route has no waypoint in this dungeon. Builds the Dungeon Patrol here and runs it (the same as the Patrol button).");
         }
 
         ImGui.Spacing();
@@ -63,6 +80,7 @@ internal sealed class LegacyNavigationUi
             ImGui.PushStyleColor(ImGuiCol.ButtonActive,  new Vector4(0.08f, 0.28f, 0.08f, 1f));
             if (ImGui.Button("Start Navigation", new Vector2(-1, 28)))
             {
+                _settings.RearmFinishedNavRoute();   // a finished Once route runs again
                 _settings.IsMacroRunning  = true;
                 _settings.EnableNavigation = true;
                 if (_settings.BotAction != "Navigating")
@@ -143,7 +161,7 @@ internal sealed class LegacyNavigationUi
 
             for (int ri = 0; ri < ids.Length; ri++)
             {
-                string name = $"Spell {ids[ri]}";
+                string name = NavPoint.RecallName(ids[ri]);
                 if (ImGui.Selectable($"{name} ({ids[ri]})"))
                 {
                     if (_host.HasGetPlayerPose && _host.TryGetPlayerPose(out _, out float x, out float y, out float z, out _, out _, out _, out _))
@@ -263,7 +281,9 @@ internal sealed class LegacyNavigationUi
         return Math.Clamp(active, 0, newCount - 1);
     }
 
-    public const string NavFolder = @"C:\Games\RynthSuite\RynthAi\NavProfiles";
+    /// <summary>NavProfiles in the resolved RynthSuite folder. It was hard-coded to C:\Games, so with a
+    /// moved install /ra nav save &lt;name&gt; wrote where the nav picker never looks (2026-10-13).</summary>
+    public static string NavFolder => Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "NavProfiles");
 
     public void TryAutoSaveNav()
     {
@@ -274,7 +294,10 @@ internal sealed class LegacyNavigationUi
             if (TryGetEmbeddedKey(path, out string key))
                 _settings.EmbeddedNavs[key] = _settings.CurrentRoute.ToLines();
             else
-                _settings.CurrentRoute.Save(path);
+            {
+                NavRouteParser route = _settings.CurrentRoute;
+                RynthCore.Plugin.Shared.DataWriteGuard.TrySave("the nav", path, () => route.Save(path));
+            }
         }
         catch (Exception ex) { _host.Log($"[RynthAi] Nav auto-save to {path} failed: {ex.Message}"); }
     }
@@ -313,7 +336,9 @@ internal sealed class LegacyNavigationUi
                 do path = Path.Combine(NavFolder, $"Route {n++}.nav"); while (File.Exists(path));
             }
 
-            route.Save(path);
+            string target = path;
+            if (!RynthCore.Plugin.Shared.DataWriteGuard.TrySave("the nav", target, () => route.Save(target), out string why, callerShows: true))
+                return $"[RynthAi] Nav NOT saved to {target}: {why}";
             _settings.CurrentNavPath = path;
             return $"[RynthAi] Saved {route.Points.Count} waypoints to {Path.GetFileName(path)}.";
         }

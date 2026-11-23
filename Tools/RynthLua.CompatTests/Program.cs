@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Threading;
 using RynthCore.Plugin.RynthLua;
 using RynthCore.PluginCore;
@@ -37,6 +39,8 @@ internal static unsafe class Program
         Console.WriteLine($"=== RynthLua UtilityBelt compatibility tests ({scripts.Count} scripts) ===");
         int passed = 0, checks = 0;
         var failed = new List<string>();
+        if (filter.Length == 0 && !CheckBuiltInVerbsMatchSwitch()) failed.Add("built-in /lua verbs");
+        if ((filter.Length == 0 || "memoryguard".Contains(filter, StringComparison.OrdinalIgnoreCase)) && !CheckMemoryGuard()) failed.Add("memory guard");
         try
         {
             foreach (string file in scripts)
@@ -125,11 +129,89 @@ internal static unsafe class Program
         return (ok, Harness.Checks);
     }
 
+    /// <summary>
+    /// RynthLuaPlugin.BuiltInLuaVerbs is kept in step with the switch in HandleLuaChatCommand by hand: a verb in
+    /// the switch but not the set would be shadowed by a script command of the same name (and listed as a script
+    /// command in the usage); a verb in the set but not the switch would be unreachable from both. This compares
+    /// the set with the case labels of that switch, read from the source file.
+    /// </summary>
+    private static bool CheckBuiltInVerbsMatchSwitch([System.Runtime.CompilerServices.CallerFilePath] string source = "")
+    {
+        string path = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(source) ?? string.Empty, "..", "..", "Plugins", "RynthCore.Plugin.RynthLua", "ScriptManager.cs"));
+        if (!File.Exists(path)) { Console.WriteLine("SKIP built-in /lua verbs: ScriptManager.cs not found beside the project."); return true; }
+        var field = typeof(RynthLuaPlugin).GetField("BuiltInLuaVerbs", BindingFlags.NonPublic | BindingFlags.Static);
+        if (field?.GetValue(null) is not HashSet<string> verbs) { Console.WriteLine("FAIL built-in /lua verbs: RynthLuaPlugin.BuiltInLuaVerbs not found."); return false; }
+
+        string text = File.ReadAllText(path);
+        int start = text.IndexOf("switch (sub)", StringComparison.Ordinal);
+        int end = start < 0 ? -1 : text.IndexOf("default:", start, StringComparison.Ordinal);
+        if (start < 0 || end < 0) { Console.WriteLine("FAIL built-in /lua verbs: the 'switch (sub)' in HandleLuaChatCommand was not found."); return false; }
+        var cases = Regex.Matches(text.Substring(start, end - start), @"case\s+""([^""]+)""\s*:")
+            .Select(m => m.Groups[1].Value).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var missingFromSet = cases.Except(verbs, StringComparer.OrdinalIgnoreCase).ToList();
+        var missingFromSwitch = verbs.Except(cases, StringComparer.OrdinalIgnoreCase).ToList();
+        bool ok = cases.Count > 0 && missingFromSet.Count == 0 && missingFromSwitch.Count == 0;
+        Console.WriteLine($"{(ok ? "PASS" : "FAIL")} built-in /lua verbs match the dispatch switch ({cases.Count} verbs)");
+        if (missingFromSet.Count > 0) Console.WriteLine("    in the switch but not in BuiltInLuaVerbs: " + string.Join(", ", missingFromSet));
+        if (missingFromSwitch.Count > 0) Console.WriteLine("    in BuiltInLuaVerbs but not in the switch: " + string.Join(", ", missingFromSwitch));
+        if (cases.Count == 0) Console.WriteLine("    no case labels found (did the switch change shape?)");
+        return ok;
+    }
+
     /// <summary>The project's own Scripts folder (so a deleted script can't linger in bin), else the copy in bin.</summary>
     private static string ScriptFolder([System.Runtime.CompilerServices.CallerFilePath] string source = "")
     {
         string beside = Path.Combine(Path.GetDirectoryName(source) ?? string.Empty, "Scripts");
         return Directory.Exists(beside) ? beside : Path.Combine(AppContext.BaseDirectory, "Scripts");
+    }
+
+    /// <summary>
+    /// The memory guard (LuaScriptHost.ChargeAllocation): a script that allocates fast is stopped
+    /// with a message, and a quiet one keeps running. Three scripts, each in a fresh plugin: one
+    /// that makes a 400 MB string in one go (the one-run limit), one that keeps 2 MB strings
+    /// (the 5-second limit), and one that sleeps (must still be running after 3 s).
+    /// </summary>
+    private static bool CheckMemoryGuard()
+    {
+        var cases = new (string Name, string Code, bool MustStop, string Said)[]
+        {
+            // One string.rep can't be stopped part-way, so it has a size cap: a plain Lua error.
+            ("memhog_rep", "local s = string.rep('x', 200000000) print(#s)", true, "string.rep: the result would be"),
+            ("memhog_window", "local t = {} while true do t[#t + 1] = string.rep('y', 1000000) .. #t end", true, "was stopped: it used"),
+            ("memhog_table", "local t = {} local i = 0 while true do i = i + 1 t[i] = { i, i, i } end", true, "was stopped: it used"),
+            ("memquiet", "while true do local s = string.rep('z', 1000) sleep(50) end", false, "was stopped: it used"),
+        };
+        bool allOk = true;
+        foreach (var c in cases)
+        {
+            FakeWorld.W = new FakeWorld();
+            Harness.Reset();
+            RynthCoreApiNative api = FakeHost.Build();
+            var runtime = new RynthPluginRuntime<RynthLuaPlugin>();
+            if (runtime.Init(&api) != 0 || runtime.Plugin == null) { Console.WriteLine($"FAIL memory guard {c.Name}: no plugin"); allOk = false; continue; }
+            RynthLuaPlugin plugin = runtime.Plugin;
+            plugin.OnLoginComplete();
+            for (int i = 0; i < 3; i++) Tick(plugin);
+            Directory.CreateDirectory(RynthLuaPaths.Scripts);
+            File.WriteAllText(Path.Combine(RynthLuaPaths.Scripts, c.Name + ".lua"), c.Code);
+            string? err = plugin.StartScript(c.Name);
+            var sw = Stopwatch.StartNew();
+            long limitMs = c.MustStop ? 20_000 : 3_000;
+            while (err == null && plugin.ScriptIsLoaded(c.Name) && sw.ElapsedMilliseconds < limitMs) { Tick(plugin); Thread.Sleep(1); }
+            bool loaded = plugin.ScriptIsLoaded(c.Name);
+            string console = plugin.ScriptConsoleText(c.Name);
+            bool said = console.Contains(c.Said, StringComparison.Ordinal);
+            bool ok = err == null && (c.MustStop ? (!loaded && said) : (loaded && !said));
+            string lastLine = console.Trim().Split('\n').LastOrDefault() ?? string.Empty;
+            Console.WriteLine($"{(ok ? "PASS" : "FAIL")} memory guard {c.Name} ({sw.ElapsedMilliseconds} ms, {(loaded ? "running" : "stopped")}){(ok ? "" : ": " + (err ?? lastLine))}");
+            if (ok && c.MustStop) Console.WriteLine("     " + console.Split('\n').First(l => l.Contains(c.Said, StringComparison.Ordinal)).Trim());
+            try { plugin.StopScript(c.Name); } catch { }
+            runtime.Shutdown();
+            GC.Collect();
+            allOk &= ok;
+        }
+        return allOk;
     }
 
     private static void Tick(RynthLuaPlugin plugin)

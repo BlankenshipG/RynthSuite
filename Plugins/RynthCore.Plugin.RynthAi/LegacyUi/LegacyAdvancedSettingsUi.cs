@@ -1,21 +1,68 @@
 using System;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
 internal sealed class LegacyAdvancedSettingsUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.AdvancedSettings");
+
     private readonly LegacyUiSettings _settings;
     private MissileCraftingManager? _missileCraftingManager;
 
     // Scratch buffer for the "never attack" name entry box.
     private string _newBlacklistName = "";
     // Server Features list being edited (committed on Enter / focus loss); null = show the saved list.
-    private string? _serverNamesEdit;
 
     private static readonly string[] AttackHeights = { "Low", "Medium", "High" };
+
+    /// <summary>Loot Nearby Chests' tooltip (the engine's Settings row says the same).</summary>
+    internal const string NearbyChestsTooltip =
+        "While the macro runs with Looting on and you're not fighting, walks to a chest within loot range\n" +
+        "(Corpse Max range), opens it and loots it by your loot profile, then leaves it alone until it resets\n" +
+        "(it locks again, or the chest relock wait passes). A locked chest: a key you carry that fits is used;\n" +
+        "else a lockpick, if your Lockpick skill gives you at least 50% against its lock; else it's skipped\n" +
+        "and tried again in 10 minutes. Corpses come first. Off by default. Status: /ra chests.";
+
+    /// <summary>
+    /// The environment-impact throttle's shared numbers (one set for missiles and magic), drawn
+    /// under each response combo. <paramref name="id"/> keeps the two copies' ImGui ids apart.
+    /// </summary>
+    private void DrawEnvironmentThrottleKnobs(string id)
+    {
+        ImGui.Indent();
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Hits to trip##envlimit{id}", ref _settings.EnvironmentImpactLimit, 1, 10);
+        if (ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("Environment hits on one target, within the window, before combat reacts.\nShared by missiles and magic.");
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Window (s)##envwin{id}", ref _settings.EnvironmentImpactWindowSec, 5, 120);
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Move closer by (m)##envstep{id}", ref _settings.EnvironmentApproachMeters, 1, 30);
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Closest (m)##envmin{id}", ref _settings.EnvironmentMinDistance, 1, 30);
+        if (ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("Never moves nearer than this. Already this close, a new target is picked instead.");
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderInt($"Skip target (s)##envskip{id}", ref _settings.EnvironmentSkipSec, 5, 300);
+        ImGui.Unindent();
+    }
+    private static readonly string[] NavLabelModeNames = { "Off", "Numbers", "Numbers and names" };
+    private const string NavResumeNearestTip =
+        "On: starting the macro, loading a Circular or Linear route, and carrying on after a fight, loot, buff or door\n" +
+        "that moved you 10 yd or more all head for the closest waypoint on the route. A waypoint you have already\n" +
+        "walked past is skipped for the one after it, so nav doesn't turn back. Once routes only look ahead.\n" +
+        "Off: nav carries on to the waypoint it was heading for, and a loaded route starts at its first point.";
+    private static readonly string[] TargetSelectionNames = { "Lowest health", "Closest", "Farthest", "Least turning" };
     private static readonly string[] LootOwnershipModes = { "My Kills Only", "Fellowship Kills", "All Corpses" };
+    private const string OpenFellowOnCreateTip =
+        "A fellowship RynthAi creates (/mt fellow create, or a meta's /fellowship create) is opened\n" +
+        "as soon as you lead it, so every member can recruit, not just the leader. AC makes a new\n" +
+        "fellowship closed.\n" +
+        "Only right after RynthAi creates it: one you made or closed by hand is left alone.";
 
     public LegacyAdvancedSettingsUi(LegacyUiSettings settings)
     {
@@ -24,13 +71,30 @@ internal sealed class LegacyAdvancedSettingsUi
 
     public void SetMissileCraftingManager(MissileCraftingManager mgr) => _missileCraftingManager = mgr;
 
+    /// <summary>The loot profile files ("None" first) and picking one: Settings > Looting's Loot Profile.</summary>
+    public Func<string[]>? LootProfiles { get; init; }
+    public Action<int>? SelectLootProfile { get; init; }
+
     private Func<string>? _autoVendorStatus;
     public void SetAutoVendorStatusProvider(Func<string> status) => _autoVendorStatus = status;
+
+    // Buffing page: the Force Buff button's actions and the list of buffs the unusable-buff
+    // filter is leaving out (wired by RynthAiPlugin once the BuffManager exists).
+    private Action? _forceBuff, _cancelBuff;
+    private Func<string>? _buffSkips;
+    public void SetBuffActions(Action? force, Action? cancel, Func<string>? skips)
+    {
+        _forceBuff = force; _cancelBuff = cancel; _buffSkips = skips;
+    }
 
     private Func<string>? _autoTradeStatus;
     public void SetAutoTradeStatusProvider(Func<string> status) => _autoTradeStatus = status;
     private string _newAutoAcceptPattern = "";
 
+    private Func<string>? _tradeShopStatus;
+    private Func<bool>? _tradeShopBanking;
+    public void SetTradeShopStatusProvider(Func<string> status) => _tradeShopStatus = status;
+    public void SetTradeShopBankingProvider(Func<bool> banking) => _tradeShopBanking = banking;
     public string MissileCraftingState  => _missileCraftingManager?.State.ToString() ?? string.Empty;
     public bool   MissileCraftingActive => _missileCraftingManager?.IsCrafting ?? false;
     public string MissileCraftingStatus => _missileCraftingManager?.StatusMessage ?? string.Empty;
@@ -42,8 +106,10 @@ internal sealed class LegacyAdvancedSettingsUi
 
         ImGui.SetNextWindowSize(new Vector2(600, 400), ImGuiCond.FirstUseEver);
 
+        _spot.Apply();
         if (ImGui.Begin("RynthAi Advanced Settings", ref _settings.ShowAdvancedWindow))
         {
+            _spot.Track();
             ImGui.BeginChild("AdvancedSidebar", new Vector2(150, 0), ImGuiChildFlags.Borders);
             for (int i = 0; i < _settings.AdvancedTabs.Length; i++)
             {
@@ -68,35 +134,6 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.End();
     }
 
-    /// <summary>Settings > Misc "Server Features": the world list and the manual override (ServerFeatureGate).</summary>
-    private void RenderServerFeatures()
-    {
-        ImGui.Text("Server Features (ILT / infinite attributes)");
-        ImGui.TextDisabled(IltHub.ServerFeatureGate.Describe(_settings));
-
-        string text = _serverNamesEdit ?? IltHub.ServerFeatureGate.FormatList(_settings.FeatureServerNames);
-        ImGui.SetNextItemWidth(320);
-        bool enter = ImGui.InputTextWithHint("Servers##featureServers", "InfiniteLeaftide, *Leaftide*", ref text, 512,
-            ImGuiInputTextFlags.EnterReturnsTrue);
-        if (ImGui.IsItemActive() || enter) _serverNamesEdit = text;
-        if ((enter || ImGui.IsItemDeactivatedAfterEdit()) && _serverNamesEdit != null)
-        {
-            _settings.FeatureServerNames = IltHub.ServerFeatureGate.ParseList(_serverNamesEdit);
-            _serverNamesEdit = null;
-        }
-        else if (!ImGui.IsItemActive()) _serverNamesEdit = null;
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Comma-separated world names that turn on the ILT Hub, the Progression\n" +
-                             "planners and the attribute raiser. * is a wildcard (*Leaftide* matches any\n" +
-                             "name containing Leaftide). Case does not matter.");
-
-        ImGui.Checkbox("Force enable on this server (manual override)", ref _settings.ForceServerFeatures);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Turn the features on for whatever world you are on, even if it is not in the list.\n" +
-                             "Each feature still follows what the server reports (for example /xp off keeps\n" +
-                             "the attribute raiser off).");
-    }
-
     private void RenderVendoring()
     {
         ImGui.Text("AutoVendor (UtilityBelt)");
@@ -104,12 +141,12 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.Spacing();
 
         string status = _autoVendorStatus?.Invoke() ?? "Not logged in";
-        ImGui.TextDisabled($"Status: {status}");
+        SafeImGui.TextDisabled($"Status: {status}");
         ImGui.Spacing();
 
         ImGui.Checkbox("Enabled##AV", ref _settings.AutoVendorEnabled);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Buy and sell by a loot profile when a vendor opens (and allow /ub autovendor).\n" +
+            SafeImGui.SetTooltip("Buy and sell by a loot profile when a vendor opens (and allow /ub autovendor).\n" +
                              "Profiles: <Vendor Name>.utl or default.utl in your character's AutoVendor\n" +
                              "folder, the server folder, or " + Vendor.AutoVendorManager.MainProfileDir + ".");
         ImGui.Checkbox("Test Mode (only print what it would do)##AV", ref _settings.AutoVendorTestMode);
@@ -142,6 +179,7 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.TextDisabled("inscribed, rare, zero value, packs, or anything a Keep rule could match.");
 
         RenderAutoTrade();
+        RenderTradeShop();
     }
 
     private void RenderAutoTrade()
@@ -153,12 +191,12 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.Spacing();
 
         string status = _autoTradeStatus?.Invoke() ?? "Not logged in";
-        ImGui.TextDisabled($"Status: {status}");
+        SafeImGui.TextDisabled($"Status: {status}");
         ImGui.Spacing();
 
         ImGui.Checkbox("Enabled##AT", ref _settings.AutoTradeEnabled);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("When a trade window opens, add the items that match Keep / Keep # rules in\n" +
+            SafeImGui.SetTooltip("When a trade window opens, add the items that match Keep / Keep # rules in\n" +
                              "<Partner Name>.utl or default.utl (your character's AutoTrade folder, the\n" +
                              "server folder, or " + Trade.AutoTradeManager.MainProfileDir + ").");
         ImGui.Checkbox("Test Mode (only print what it would add)##AT", ref _settings.AutoTradeTestMode);
@@ -208,10 +246,72 @@ internal sealed class LegacyAdvancedSettingsUi
         ImGui.TextDisabled("packs, unidentified items, or items on RynthAi's weapon/consumable lists.");
     }
 
+    /// <summary>
+    /// Trade Shop catalog (ungated). Conversion rates from UB-IT. Banking hook row only when
+    /// the server hub reports this world supports banking payments.
+    /// </summary>
+    private void RenderTradeShop()
+    {
+        ImGui.Spacing();
+        ImGui.Spacing();
+        ImGui.Text("Trade Shop (priced catalog)");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        string status = _tradeShopStatus?.Invoke() ?? "Not logged in";
+        SafeImGui.TextDisabled($"Status: {status}");
+        ImGui.Spacing();
+
+        ImGui.Checkbox("Enabled##TS", ref _settings.TradeShopEnabled);
+        ImGui.SameLine();
+        ImGui.Checkbox("Test Mode##TS", ref _settings.TradeShopTestMode);
+        if (ImGui.Button(_settings.ShowTradeShopWindow ? "Focus Trade Shop window##TS" : "Open Trade Shop window##TS"))
+            _settings.ShowTradeShopWindow = true;
+        if (ImGui.IsItemHovered())
+            SafeImGui.SetTooltip("Opens the Trade Shop editor: item prices and bank/payment conversion rates.\n" +
+                                 "Also: Inventory panel Storefront button, or /ra tradeshop ui.");
+
+        SafeImGui.TextDisabled("Edit prices and conversion rates in the Trade Shop window.");
+        SafeImGui.TextDisabled("Inventory → Storefront icon, or /ra tradeshop ui.");
+        var rates = _settings.TradeShopRates ??= new Trade.TradeShopRates();
+        SafeImGui.TextDisabled(rates.RatesHelpLine());
+        int n = _settings.TradeShopListings?.Count ?? 0;
+        SafeImGui.TextDisabled($"{n} catalog listing(s).");
+    }
+
     private static bool IsValidRegex(string pattern)
     {
         try { _ = System.Text.RegularExpressions.Regex.Match(string.Empty, pattern); return true; }
         catch { return false; }
+    }
+
+    /// <summary>
+    /// One loot timer: the input, then "baseline" when it matches LootBaseline, or "baseline N" when
+    /// it doesn't (hover for what the timer does).
+    /// </summary>
+    private static void LootTimerInput(string label, ref int value, int baseline, string tip)
+    {
+        ImGui.SetNextItemWidth(120);
+        ImGui.InputInt(label, ref value);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(tip);
+        ImGui.SameLine();
+        if (value == baseline)
+            ImGui.TextDisabled("baseline");
+        else
+            ImGui.TextColored(new Vector4(0.9f, 0.7f, 0.2f, 1.0f), $"baseline {baseline}");
+    }
+
+    /// <summary>Writes the six loot timers' baseline values (LootBaseline.cs) into the settings.</summary>
+    private void ApplyLootBaseline()
+    {
+        LootBaseline.Timers b = LootBaseline.Values;
+        _settings.LootContentSettleMs = b.ContentSettleMs;
+        _settings.LootEmptyCorpseMs   = b.EmptyCorpseMs;
+        _settings.LootAssessWindowMs  = b.AssessWindowMs;
+        _settings.LootRetryTimeoutMs  = b.RetryTimeoutMs;
+        _settings.LootOpenRetryMs     = b.OpenRetryMs;
+        _settings.LootCorpseTimeoutMs = b.CorpseTimeoutMs;
     }
 
     private void RenderTabContent(int tabIndex)
@@ -220,7 +320,7 @@ internal sealed class LegacyAdvancedSettingsUi
             return;
 
         string tabName = _settings.AdvancedTabs[tabIndex];
-        ImGui.TextColored(new Vector4(0.4f, 0.7f, 1.0f, 1.0f), $"Advanced Settings > {tabName}");
+        SafeImGui.TextColored(new Vector4(0.4f, 0.7f, 1.0f, 1.0f), $"Advanced Settings > {tabName}");
         ImGui.Separator();
         ImGui.Spacing();
 
@@ -281,25 +381,47 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Separator();
                 ImGui.Spacing();
 
-                ImGui.Checkbox("Auto Cram", ref _settings.EnableAutocram);
-                if (ImGui.IsItemHovered())
+                ImGui.BeginDisabled(_settings.AutoSortOn);
+                bool cramShown = _settings.EnableAutocram && !_settings.AutoSortOn;
+                if (ImGui.Checkbox("Auto Cram", ref cramShown)) _settings.EnableAutocram = cramShown;
+                ImGui.EndDisabled();
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 {
-                    ImGui.SetTooltip("Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack.");
+                    ImGui.SetTooltip(_settings.AutoSortOn
+                        ? "Off while RynthSort's auto-sort is on: RynthSort keeps your packs sorted, and the two fight."
+                        : "Automatically moves items from your main pack into side packs.\nNote: recently used weapons stay in the main pack.");
                 }
 
                 ImGui.Spacing();
                 ImGui.Checkbox("Peace Mode When Idle", ref _settings.PeaceModeWhenIdle);
+                ImGui.Checkbox("Weapons Back After Heals", ref _settings.RearmAfterVitals);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("After a heal, restam or remana spell with nothing to fight, put the last fight's weapons (main hand and off hand) back on.");
+                ImGui.Checkbox("Fast Weapon Swap", ref _settings.FastWeaponSwap);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Switch weapons through peace mode, every step the moment the server allows:\nthe wand is in hand about 0.2 s after the switch begins (4-7 s without),\nand the weapons go back as fast, also when a monster comes while the wand\nis out (swinging again in about 1 s). On by default. Peace mode costs your weapon's defense\nfor about half a second; the slow way goes without a weapon for about 3 s.");
                 ImGui.Checkbox("Start Macro On Login", ref _settings.StartMacroOnLogin);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Automatically starts the macro when RynthAi loads.");
-                ImGui.Checkbox("Patrol On Login", ref _settings.PatrolOnLogin);
+                if (ImGui.Checkbox("Patrol On Login", ref _settings.PatrolOnLogin) && _settings.PatrolOnLogin)
+                    _settings.HuntOnLogin = false;   // one or the other (LoginAutoStart)
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Automatically starts dungeon patrol when RynthAi loads.");
+                if (ImGui.Checkbox("Hunt On Login", ref _settings.HuntOnLogin) && _settings.HuntOnLogin)
+                    _settings.PatrolOnLogin = false;
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(LoginAutoStart.HuntOnLoginTip);
+                ImGui.Checkbox("Keep Hunting After Death", ref _settings.KeepHuntingAfterDeath);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(AfterDeath.Tip);
+                ImGui.Checkbox("Resume Meta After Reload", ref _settings.ResumeMetaOnReload);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("After a hot reload the meta carries on in the same state, with its variables,\nfired rules and route. A real login still starts in Default.");
+                ImGui.Checkbox("Escape Acid and Lava", ref _settings.EscapeHazards);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("When acid or lava hurts you, stop everything (combat, buffs, healing, looting)\nand walk back out the way you came. The spot is remembered so the patrol avoids it.\nTurn off for a character that walks through acid on purpose.");
                 ImGui.Checkbox("Enable Raycasting", ref _settings.EnableRaycasting);
 
-                ImGui.Separator();
-                ImGui.Spacing();
-                RenderServerFeatures();
 
                 ImGui.Separator();
                 ImGui.Spacing();
@@ -409,31 +531,45 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Text("Give Queue");
                 ImGui.SetNextItemWidth(150);
-                ImGui.SliderInt("Give Interval (ms)", ref _settings.GiveQueueIntervalMs, 50, 2000);
+                ImGui.SliderInt("Give Interval (ms)", ref _settings.GiveQueueIntervalMs, 0, 2000);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Minimum delay between each item sent by /ra givea commands.\nLower = faster but may drop items if the server can't keep up.");
+                    ImGui.SetTooltip("Minimum gap between two gives sent by /ra givea commands.\n0 = send the next give the moment the server answers the last (fastest).\nThe queue always waits for the server's answer first.");
+
+                ImGui.Separator();
+                ImGui.Spacing();
+                ImGui.Text("Meta Compatibility");
+                ImGui.Checkbox("Allow metas to send keystrokes (/mt send)", ref _settings.AllowMetaKeystrokes);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Mag-Tools metas press keys and click inside the game window with /mt send, /mt click,\n" +
+                                     "/mt movement, /mt strafe, /mt client minimize|restore and the key form of /mt jump.\n" +
+                                     "Off (the default): those verbs log once and do nothing. Turn it on only for a meta you trust:\n" +
+                                     "the keys go to the game window as if you pressed them. /mt send /command (a chat command)\n" +
+                                     "is not a key press and works either way.");
                 break;
 
             case "Recharge":
-                ImGui.Text("Self Vitals (%)");
+                SafeImGui.Text("Self Vitals (%)");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Heal At", ref _settings.HealAt, 0, 100);
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Emergency Heal At", ref _settings.EmergencyHealAt, 0, 100);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("At or under this health %, a healing kit goes first out of Magic mode,\nand a kit or potion is used while a cast is pending. 0 = off.");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("At or under this health %, a healing kit goes first out of Magic mode,\nand a kit or potion is used while a cast is pending. 0 = off.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Stamina To Health At", ref _settings.StaminaToHealthAt, 0, 100);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("At or under this health %, cast Stamina to Health Self ahead of Heal At\n(after a kit out of Magic mode). 0 = never cast it.");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("At or under this health %, cast Stamina to Health Self ahead of Heal At\n(after a kit out of Magic mode). 0 = never cast it.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Stamina To Health Min Stamina", ref _settings.StaminaToHealthMinStamina, 0, 100);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Don't cast Stamina to Health unless stamina is over this %.");
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Don't cast Stamina to Health unless stamina is over this %.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Re-stam At", ref _settings.RestamAt, 0, 100);
+                ImGui.SetNextItemWidth(120);
+                ImGui.SliderInt("Re-stam To", ref _settings.RestamTo, 0, 100);
+                if (ImGui.IsItemHovered()) SafeImGui.SetTooltip("Once a recharge starts under Re-stam At, keep recharging until stamina reaches this %.\n0 = one recharge, as before.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Get Mana At", ref _settings.GetManaAt, 0, 100);
 
                 ImGui.Spacing();
-                ImGui.Text("Top-Off Vitals (%)");
+                SafeImGui.Text("Top-Off Vitals (%)");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Top HP", ref _settings.TopOffHP, 0, 100);
                 ImGui.SetNextItemWidth(120);
@@ -442,7 +578,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SliderInt("Top Mana", ref _settings.TopOffMana, 0, 100);
 
                 ImGui.Spacing();
-                ImGui.Text("Helper Settings (%)");
+                SafeImGui.Text("Helper Settings (%)");
                 ImGui.SetNextItemWidth(120);
                 ImGui.SliderInt("Heal Others", ref _settings.HealOthersAt, 0, 100);
                 ImGui.SetNextItemWidth(120);
@@ -456,7 +592,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Separator();
                 ImGui.Checkbox("Use Recklessness", ref _settings.UseRecklessness);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("When enabled and Recklessness is trained, auto power uses 80% instead of 100%.");
+                    SafeImGui.SetTooltip("When enabled and Recklessness is trained, auto power uses 80% instead of 100%.");
 
                 ImGui.Spacing();
                 bool meleeAuto = _settings.MeleeAttackPower < 0;
@@ -502,6 +638,65 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.SetNextItemWidth(120);
                 ImGui.Combo("Missile Attack Height", ref _settings.MissileAttackHeight, AttackHeights, AttackHeights.Length);
 
+                ImGui.Spacing();
+                ImGui.Text("Variable Power (monster rules)");
+                if (ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip("A monster rule's Power column picks per monster: Default (these settings),\n" +
+                                     "High (100%), Reckless (80%, needs Recklessness trained), Variable (a new\n" +
+                                     "random power each attack in this range), or Reckless + Variable (random,\n" +
+                                     "kept inside the Recklessness band 20-80%).");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Variable Min %", ref _settings.VariablePowerMin, 0, 100);
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Variable Max %", ref _settings.VariablePowerMax, 0, 100);
+
+                ImGui.Spacing();
+                ImGui.Text("Missiles Hitting the Environment");
+                ImGui.SetNextItemWidth(220);
+                ImGui.Combo("Missile Response", ref _settings.MissileEnvironmentResponse,
+                    EnvironmentImpactPlanner.ResponseNames, EnvironmentImpactPlanner.ResponseNames.Length);
+                if (ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip("When arrows or bolts keep hitting walls or objects instead of the target\n" +
+                                     "(\"Your missile attack hit the environment.\"), stop shooting and:\n" +
+                                     "  Move closer - run toward the target for a clearer shot\n" +
+                                     "  New target - skip this one for a while and fight another\n" +
+                                     "  Move closer, then new target - one approach, then switch\n" +
+                                     "The only monster in reach is never skipped.");
+                DrawEnvironmentThrottleKnobs("missile");
+
+                ImGui.Spacing();
+                ImGui.Text("Pull Away (Kite)");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Pull Distance (m)", ref _settings.KitePullMeters, 3, 100);
+                if (ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip("When a monster rule's Kite is Pull away (or Default follows the\n" +
+                                     "DEFAULT row set to Pull away), tag the mob then run until it has\n" +
+                                     "been dragged this many metres from where it stood, then kill it.\n" +
+                                     "Set per mob on the Monsters / Damage panels.");
+                ImGui.Checkbox("Tag Before Fleeing", ref _settings.KiteTagFirst);
+                if (ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip("Land a hit before running so aggro sticks. Off = flee as soon as locked.");
+
+                ImGui.Spacing();
+                ImGui.Text("Weapon Swaps");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Wait After Target Switch (ms)", ref _settings.WeaponSwapSettleMs, 0, 3000);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("After switching from one live target to another, wait this long before a weapon\n" +
+                                     "swap starts, so a target that changes again doesn't cost a wasted swap.\n" +
+                                     "A new target after a kill swaps at once. 0 = never wait.");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("No Swap Under Target Health %", ref _settings.WeaponSwapMinHealthPct, 0, 100);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("A target at or under this health is finished with the weapon in hand\n" +
+                                     "(same kind of weapon only). A swap under way always completes. 0 = off.");
+                ImGui.SetNextItemWidth(150);
+                ImGui.SliderInt("Weakness Swap Min Gain %", ref _settings.WeaponSwapMinGainPct, 0, 200);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Auto (weakness) picks only: swap to another element only when it does at least this\n" +
+                                     "much more damage than the weapon in hand. A launcher swap with other ammo costs about 4 s.\n" +
+                                     "Damage tab, slayer and Monsters rule picks always swap. 0 = off.");
+
                 ImGui.Separator();
                 ImGui.Spacing();
                 ImGui.Checkbox("Use Native Attack", ref _settings.UseNativeAttack);
@@ -527,16 +722,56 @@ internal sealed class LegacyAdvancedSettingsUi
                         "Below 200ms may cause fizzles or dropped casts on laggy servers.");
 
                 ImGui.SetNextItemWidth(180);
-                ImGui.SliderInt("Attack Spell Delay (ms)", ref _settings.AttackSpellIntervalMs, 250, 5000);
+                ImGui.SliderInt("Stuck Cast Break (ms)", ref _settings.StuckCastBreakMs, 0, 20000);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip(
-                        "Delay between offensive (war/void) COMBAT casts only.\n" +
-                        "Spacing casts ~1-2s (1500ms default) stops back-to-back\n" +
-                        "\"You're too busy!\" refusals that drop casts and cost kills.\n" +
+                        "The longest a cast may stay unanswered before it is broken\n" +
+                        "with a jump (the server then fails the cast). It fires sooner,\n" +
+                        "about 2 s past the spell's normal cycle, when that is shorter.\n" +
+                        "After a 'too busy' answer nothing is cast until the server answers.\n" +
+                        "0 = never break.");
+
+                ImGui.SetNextItemWidth(180);
+                ImGui.SliderInt("Recovery Retry (ms)", ref _settings.RecoveryRetryMs, 200, 5000);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Heal Self, Stamina to Health, Revitalize and Stamina to Mana refused\n" +
+                        "for 'not enough mana' are tried again after this long: each try\n" +
+                        "rolls Mana Conversion again, and a refusal costs nothing.\n" +
+                        "At most 5 tries a second, 20 in a row.");
+
+                ImGui.Checkbox("HP Failsafe Recall", ref _settings.HpFailsafeRecall);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "At or under Emergency Heal At with no heal landing for 5 s:\n" +
+                        "break the stuck cast with a jump and cast Lifestone Recall at\n" +
+                        "once (the spell, not /ls). The macro waits while it casts and\n" +
+                        "comes back on if the recall can't go. Needs the spell and its\n" +
+                        "mana; only a character that can heal (a heal spell, kit or\n" +
+                        "potion) is ever recalled. Off: the jump only, after 7.5 s.");
+
+                ImGui.SetNextItemWidth(180);
+                ImGui.SliderInt("Attack Spell Delay (ms)", ref _settings.AttackSpellIntervalMs, 0, 5000);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Least time between offensive (war/void) COMBAT casts at one target.\n" +
+                        "The next cast also waits until the last one is finished (the server's\n" +
+                        "answer and the casting animation), so 0 = cast again as soon as it is.\n" +
                         "Does NOT affect buffing speed.");
 
                 ImGui.Spacing();
                 ImGui.Checkbox("Cast Dispel Self", ref _settings.CastDispelSelf);
+                ImGui.Checkbox("Auto Fellowship Management", ref _settings.AutoFellowMgmt);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("VTank's Auto Fellow Mgmt., saved with the profile. Metas read it (AutoFellowMgmt).");
+                if (_settings.AutoFellowMgmt)
+                {
+                    ImGui.Indent();
+                    ImGui.Checkbox("Open fellowship on create", ref _settings.OpenFellowOnCreate);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(OpenFellowOnCreateTip);
+                    ImGui.Unindent();
+                }
 
                 ImGui.Spacing();
                 ImGui.Text("Ring Spell Override");
@@ -546,6 +781,26 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.InputInt("Min Blast Targets", ref _settings.MinBlastTargets);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("If this many monsters are within ring range, ring spells are used instead of arc/bolt/streak.");
+                ImGui.InputInt("Wall Range (0 = off)", ref _settings.WallRange);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Monster rules with Wall on cast their element's wall spell when enough monsters\n" +
+                                     "are within this many yards in the wall's path toward the target.\n" +
+                                     "The character turns to face the target first. 0 = no walls.");
+                ImGui.InputInt("Min Wall Targets", ref _settings.MinWallTargets);
+
+                ImGui.Spacing();
+                ImGui.Text("Spells Hitting the Environment");
+                ImGui.SetNextItemWidth(220);
+                ImGui.Combo("Magic Response", ref _settings.MagicEnvironmentResponse,
+                    EnvironmentImpactPlanner.ResponseNames, EnvironmentImpactPlanner.ResponseNames.Length);
+                if (ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip("When bolts, streaks, arcs or blasts keep stopping short of the target\n" +
+                                     "(a wall, a pillar, the ceiling) with no hit or resist, stop casting and:\n" +
+                                     "  Move closer - run toward the target for a clearer line\n" +
+                                     "  New target - skip this one for a while and fight another\n" +
+                                     "  Move closer, then new target - one approach, then switch\n" +
+                                     "Rings and walls aren't judged. The only monster in reach is never skipped.");
+                DrawEnvironmentThrottleKnobs("magic");
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -585,6 +840,23 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.InputInt("Approach Range", ref _settings.ApproachRange);
 
                 ImGui.Spacing();
+                ImGui.Text("Combat Targeting");
+                ImGui.Separator();
+                ImGui.SetNextItemWidth(160);
+                ImGui.Combo("Targeting", ref _settings.TargetSelection, TargetSelectionNames, TargetSelectionNames.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Which monster to attack, among those of the highest priority inside Monster Range.\nLeast turning: the one needing the smallest turn to face. Unknown health counts as full.");
+                ImGui.Checkbox("Target Lock", ref _settings.TargetLock);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("On: keeps the target it picked until it dies or leaves Monster Range, even when a higher-priority monster shows up.\nOff: a higher-priority monster in range takes over at once, and it switches whenever another monster is clearly better by the Targeting rule.");
+                ImGui.Checkbox("Fight the monster I select", ref _settings.FightSelectedTarget);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(LegacyUiSettings.FightSelectedTargetTip);
+                ImGui.Checkbox("Melee through walls", ref _settings.MeleeThroughWalls);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(LegacyUiSettings.MeleeThroughWallsTip);
+
+                ImGui.Spacing();
                 ImGui.Text("Corpse Acquisition (Yards)");
                 ImGui.Separator();
                 ImGui.SetNextItemWidth(180);
@@ -595,11 +867,13 @@ internal sealed class LegacyAdvancedSettingsUi
 
             case "Navigation":
                 ImGui.Checkbox("Boost Nav Priority", ref _settings.BoostNavPriority);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("While a nav route runs (a loaded route or a follow), RynthAi only follows it: no hunting, no looting, no fighting back. With no route, at the end of a Once route, or during Outdoor Hunt it hunts and loots as usual. Buffing and healing always run.");
                 ImGui.SetNextItemWidth(120);
                 ImGui.InputFloat("Nav point reach (yd)", ref _settings.FollowNavMin, 0.1f, 1.0f, "%.1f");
                 _settings.FollowNavMin = LegacyUiSettings.ClampFollowNavMin(_settings.FollowNavMin);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("How close to get to each nav point before moving on to the next (yards). VTank calls it Follow/Nav Min Distance. Follow stops this close to its leader; the nav marker ring shows it.");
+                    ImGui.SetTooltip("How close to get to each nav point before moving on to the next (yards). VTank calls it Follow/Nav Min Distance. Up to 2 nav walks right up to each point before turning (tight dungeons); bigger values round corners. Follow stops this close to its leader; the nav marker ring shows it.");
 
                 ImGui.Spacing();
                 ImGui.Text("Nav Marker Display");
@@ -619,6 +893,11 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Show Terrain Passability", ref _settings.ShowTerrainPassability);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Highlight impassable terrain triangles in red.");
+                ImGui.SetNextItemWidth(160);
+                ImGui.Combo("Waypoint Labels", ref _settings.NavLabelMode, NavLabelModeNames, NavLabelModeNames.Length);
+                ImGui.Checkbox("Guide Line", ref _settings.NavGuideLine);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("A line from your character to the waypoint nav is heading for.");
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -633,6 +912,10 @@ internal sealed class LegacyAdvancedSettingsUi
                     ImGui.SetNextItemWidth(180);
                     ImGui.SliderFloat("Door Detection Range (yd)", ref _settings.OpenDoorRange, 0.1f, 70.0f, "%.1f");
 
+                    ImGui.Checkbox("Only Doors On My Path", ref _settings.OpenDoorsOnPathOnly);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("Open only a closed door that is on the way: within the range along the route's next legs (or straight ahead when not on a route).\nOff: every closed door within the range is opened.");
+
                     ImGui.Checkbox("Auto-Unlock Doors", ref _settings.AutoUnlockDoors);
                     if (ImGui.IsItemHovered())
                         ImGui.SetTooltip("If a door is locked, try to use a lockpick from your Consumable Items list.");
@@ -641,6 +924,10 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.Text("Getting Back On Route");
+
+                ImGui.Checkbox("Go To Closest Waypoint", ref _settings.NavResumeNearest);
+                if (ImGui.IsItemHovered())
+                    SafeImGui.SetTooltip(NavResumeNearestTip);
 
                 ImGui.Checkbox("Find A Way Back When Stuck", ref _settings.NavRecoveryEnabled);
                 if (ImGui.IsItemHovered())
@@ -689,7 +976,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.InputFloat("Lookahead (yd)", ref _settings.NavLookaheadYards, 0.5f, 1f, "%.1f");
                 if (_settings.NavLookaheadYards < 0f) _settings.NavLookaheadYards = 0f;
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Within this distance of a waypoint, blend the aim point toward the next one to cut corners smoothly. 0 = off (aim straight at each waypoint).");
+                    ImGui.SetTooltip("Within this distance of a waypoint, blend the aim point toward the next one to round corners. The nav point reach limits it to 2 yd per yard of reach over 1 yd (no rounding up to a 2 yd reach), never more than this. 0 = off (aim straight at each waypoint).");
 
                 ImGui.SetNextItemWidth(80);
                 ImGui.InputFloat("Turn Rate (deg/s)", ref _settings.NavTurnRateDegPerSec, 15f, 45f, "%.0f");
@@ -726,6 +1013,26 @@ internal sealed class LegacyAdvancedSettingsUi
             case "Buffing":
                 ImGui.Checkbox("Enable Buffing", ref _settings.EnableBuffing);
                 ImGui.Checkbox("Rebuff When Idle", ref _settings.RebuffWhenIdle);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Top buffs off early between fights. When the bot is idle (no target, no\n" +
+                        "monster within Monster Range, no corpse to loot), it rebuffs as soon as a\n" +
+                        "buff has 'Rebuff With' + 'Idle Margin' left, instead of waiting for\n" +
+                        "'Rebuff With'. So fewer buffs run out in the next fight.\n" +
+                        "It never stops a rebuff: a buff under 'Rebuff With' (or dispelled) is\n" +
+                        "recast as always, in a fight too. An early top-off never starts in a\n" +
+                        "fight, and one under way stops when a fight starts.");
+                if (_settings.RebuffWhenIdle)
+                {
+                    ImGui.SetNextItemWidth(180);
+                    ImGui.SliderInt("Idle Margin (minutes)", ref _settings.RebuffIdleMarginMinutes, 0, 60);
+                    if (_settings.RebuffIdleMarginMinutes < 0) _settings.RebuffIdleMarginMinutes = 0;
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(
+                            "How much earlier than 'Rebuff With' an idle top-off may start.\n" +
+                            "Default 2: with 'Rebuff With' 300 s, an idle bot rebuffs at 7 minutes\n" +
+                            "left instead of 5. 0 = Rebuff When Idle adds nothing.");
+                }
 
                 ImGui.Spacing();
                 ImGui.SetNextItemWidth(180);
@@ -752,6 +1059,54 @@ internal sealed class LegacyAdvancedSettingsUi
                         "Cast your own buff even when worn gear already gives that buff.\n" +
                         "For servers with buff augments, where your own cast is stronger or\n" +
                         "lasts longer. On by default: on retail it costs a few extra casts.");
+
+                ImGui.Checkbox("Chain buffs on the server's answer", ref _settings.FastBuffChain);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Send the next buff as soon as the server finishes the last one,\n" +
+                        "without waiting for the cast's recoil animation to end.\n" +
+                        "A refused cast turns it off for the rest of that buff pass.\n" +
+                        "On by default. Off = every buff waits for the animation.");
+                ImGui.Checkbox("Skip buffs this character can't use", ref _settings.SkipUnusableBuffs);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Leave out Blood Drinker / Heart Seeker / Swift Killer when you have no melee or\n" +
+                        "missile weapon (listed or in hand), Spirit Drinker / Hermetic Link when you have no\n" +
+                        "wand, and Defender when you have neither. Masteries for untrained skills are\n" +
+                        "always skipped. On by default. Off = weapon enchantments are cast regardless of\n" +
+                        "listed weapons.");
+                string skipped = _buffSkips?.Invoke() ?? "";
+                if (_settings.SkipUnusableBuffs && skipped.Length > 0)
+                    SafeImGui.TextWrapped("Skipping: " + skipped);
+                ImGui.Checkbox("Use fellowship buffs in a fellowship", ref _settings.UseFellowshipBuffs);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "While you're in a fellowship, cast the fellowship version of a buff where one exists\n" +
+                        "(Empowering the Conclave for Strength, the Clutch defenses, the Chants, the Wards,\n" +
+                        "the Winds): it replaces your own buff and buffs every member too. The highest level\n" +
+                        "your skill allows that you know and can cast; otherwise the self buff.\n" +
+                        "Off by default. Solo, it never applies. Works with buff profiles too.");
+
+                ImGui.Spacing();
+                if (ImGui.Button("Force Buff##forceBuff") && _forceBuff != null) _forceBuff();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Recast every buff now, whatever time is left on it, starting with\n" +
+                        "Creature Enchantment, Focus, Willpower and Life Magic.\n" +
+                        "Same as /ra buff force (and the FR button).");
+                ImGui.SameLine();
+                if (ImGui.Button("Cancel##cancelBuff") && _cancelBuff != null) _cancelBuff();
+
+                // Protections and Banes grid removed: spell buff profiles (Spells window) own
+                // which prots/banes to cast. DisabledBuffs still loads for old profiles.
+                ImGui.Spacing();
+                ImGui.Checkbox("Buff the shield", ref _settings.BuffShield);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Cast the Impenetrability and Banes your buff profile casts on your shield too, after\n" +
+                        "the armor, renewed with it. The shield is the one in the Items list\n" +
+                        "(Shield) that you wear: buffing puts it in a pack for the wand, so it\n" +
+                        "is buffed there. On by default. No shield listed: nothing changes.");
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -783,17 +1138,57 @@ internal sealed class LegacyAdvancedSettingsUi
 
             case "Looting":
                 ImGui.Checkbox("Enable Looting", ref _settings.EnableLooting);
+                // The loot profile picker (the dashboard's LOOT list), and beside it Loot Mode, which
+                // decides whether that profile is used at all.
+                string[]? lootFiles = LootProfiles?.Invoke();
+                if (lootFiles != null && lootFiles.Length > 0 && SelectLootProfile != null)
+                {
+                    int lootIdx = Math.Clamp(_settings.LootProfileIdx, 0, lootFiles.Length - 1);
+                    ImGui.SetNextItemWidth(200);
+                    if (ImGui.Combo("Loot Profile", ref lootIdx, lootFiles, lootFiles.Length) && lootIdx != _settings.LootProfileIdx)
+                        SelectLootProfile(lootIdx);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(Loot.LootModes.IsRares(_settings.LootMode)
+                            ? "The loot profile. Not used while Loot Mode is Rares and needed mana stones only."
+                            : "The loot profile: what corpses, chests and ground items give up.");
+                    ImGui.SameLine();
+                }
+                _settings.LootMode = Loot.LootModes.Clamp(_settings.LootMode);
+                ImGui.SetNextItemWidth(240);
+                ImGui.Combo("Loot Mode", ref _settings.LootMode, Loot.LootModes.Labels, Loot.LootModes.Labels.Length);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Profile: the loot profile picked on the dashboard (LOOT), with RynthAi's built-in keeps.\n" +
+                                     "Rares and needed mana stones only: the loot profile is not used. Every rare is looted, and\n" +
+                                     "mana stones while you have fewer than the Items panel's keep count (Mana Stone Tapping);\n" +
+                                     "nothing else (no salvage, no Learn Unknown Spells, no Mana Tap). Recover My Corpse still works.\n" +
+                                     "Also /ra loot mode profile|rares, and the meta setting LootMode (0 or 1).");
                 ImGui.Checkbox("Boost Loot Priority", ref _settings.BoostLootPriority);
-                ImGui.Checkbox("Loot Only Rare Corpses", ref _settings.LootOnlyRareCorpses);
+                // "Loot Only Rare Corpses" is hidden: nothing reads LootOnlyRareCorpses.
                 ImGui.Checkbox("Learn Unknown Spells", ref _settings.ReadUnknownScrolls);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("Loots scrolls of spells you don't know and can learn (magic school trained or\nspecialized, skill high enough), and reads them when it's safe. Scrolls already\nin your pack are read too.");
-                ImGui.Checkbox("Jump When Looting", ref _settings.LootJumpEnabled);
-                if (_settings.LootJumpEnabled)
+                ImGui.Checkbox("Pickup with macro off", ref _settings.LootChestsMacroOff);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("A chest you open is looted by the loaded loot profile\neven with the macro or Looting off.");
+                if (_settings.LootChestsMacroOff)
                 {
-                    ImGui.SetNextItemWidth(120);
-                    ImGui.SliderInt("Jump Height", ref _settings.LootJumpHeight, 1, 100);
+                    ImGui.Indent();
+                    ImGui.Checkbox("Leave the chest open", ref _settings.LootChestsMacroOffLeaveOpen);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("When the pickup is done the chest stays open and chat says what was taken,\n" +
+                                         "so you can check it and take anything your profile missed. Untick it and\n" +
+                                         "RynthAi closes the chest when it's done (some chests lock again on close).");
+                    ImGui.Unindent();
                 }
+                ImGui.Checkbox("Loot Nearby Chests", ref _settings.LootNearbyChests);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(NearbyChestsTooltip);
+                ImGui.Checkbox("Jump When Looting", ref _settings.LootJumpEnabled);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Hop (the keyboard jump) just before each pickup, so the server skips the\n" +
+                                     "bend-down (ACE servers). The hop has a fixed height. Attacks and heals wait\n" +
+                                     "for the landing (the server refuses them in the air), so there is no hop\n" +
+                                     "with monsters near or health under Heal At.");
 
                 ImGui.Spacing();
                 ImGui.Text("Corpse Ownership");
@@ -802,6 +1197,15 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Checkbox("Recover My Corpse", ref _settings.LootOwnCorpse);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("When your own corpse (\"Corpse of <you>\") is within loot range, open it and take\nevery item on it, whatever the loot profile and Loot From say.");
+                ImGui.Checkbox("Item Info On Select", ref _settings.ItemInfoSettings.OnSelect);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Selecting an item prints its details to chat (/ra iteminfo).");
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Options##iiOpts"))
+                    _settings.ItemInfoSettings.ShowWindow = !_settings.ItemInfoSettings.ShowWindow;
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Open the RynthAi Item Info window (fields, ratings, click trigger, layout).");
+                LegacyItemInfoUi.RenderLootChat(_settings.ItemInfoSettings, "##advLoot");
                 ImGui.Checkbox("Travel Back To My Corpse", ref _settings.TravelToOwnCorpse);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("After a death, travel back to where you died with RynthNav (outdoors only),\nfighting on the way, recover the corpse, then carry on. Needs the macro running.");
@@ -809,33 +1213,51 @@ internal sealed class LegacyAdvancedSettingsUi
                 ImGui.Spacing();
                 ImGui.Text("Inventory Management");
                 ImGui.Checkbox("Enable Autostack", ref _settings.EnableAutostack);
-                ImGui.Checkbox("Enable Autocram", ref _settings.EnableAutocram);
+                ImGui.BeginDisabled(_settings.AutoSortOn);
+                bool cramShown2 = _settings.EnableAutocram && !_settings.AutoSortOn;
+                if (ImGui.Checkbox("Enable Autocram", ref cramShown2)) _settings.EnableAutocram = cramShown2;
+                ImGui.EndDisabled();
+                if (_settings.AutoSortOn && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip("Off while RynthSort's auto-sort is on: RynthSort keeps your packs sorted, and the two fight.");
+                ImGui.Checkbox("Unbox Aetheria When Idle", ref _settings.UnboxAetheriaWhenIdle);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("With the macro on and nothing to fight or loot, uses an Aetheria Mana Stone on each\n" +
+                                     "Coalesced Aetheria in your pack, one at a time, to reveal its sigil. The server puts\n" +
+                                     "you in peace mode for the clap; combat takes its stance again for the next fight.\n" +
+                                     "The stone isn't used up. Also /ra aetheria unbox | status.");
                 ImGui.Checkbox("Combine Salvage Bags", ref _settings.EnableCombineSalvage);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("After the salvage queue empties, move same-name bags together so the server merges them.");
                 ImGui.Checkbox("Combine Bags During Salvage", ref _settings.CombineBagsDuringSalvage);
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip("When salvaging an item, also add any under-full salvage bag of the same material to the salvage panel — the salvage operation merges them into a single bag.");
+                ImGui.Checkbox("Salvage Without The Panel", ref _settings.SalvageWithoutPanel);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Salvage (and combine bags) by sending the salvage request to the server directly: AC's salvage panel never opens. A request that changes nothing is tried once through the panel. Needs an engine with plugin API v82.");
 
                 ImGui.Spacing();
                 ImGui.Separator();
                 ImGui.Text("Loot Timers (ms)");
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Inter-Item Delay", ref _settings.LootInterItemDelayMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Content Settle", ref _settings.LootContentSettleMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Empty Corpse Wait", ref _settings.LootEmptyCorpseMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Closing Delay", ref _settings.LootClosingDelayMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Assess Window", ref _settings.LootAssessWindowMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Loot Retry Timeout", ref _settings.LootRetryTimeoutMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Corpse Open Retry", ref _settings.LootOpenRetryMs);
-                ImGui.SetNextItemWidth(120);
-                ImGui.InputInt("Corpse Timeout", ref _settings.LootCorpseTimeoutMs);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("The baseline is measured from live looting on ACE (2026-10-14). The log's\n[LootSettings] line lists each timer as baseline or custom.");
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Use Baseline##lootTimers"))
+                    ApplyLootBaseline();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Set all six loot timers to the baseline.");
+                // Inter-Item Delay and Closing Delay are hidden: the corpse looting never reads them.
+                LootTimerInput("Content Settle", ref _settings.LootContentSettleMs, LootBaseline.ContentSettleMs,
+                    "Wait after an open for the container's items. Only used when the items\naren't already known; on ACE they always were.");
+                LootTimerInput("Empty Corpse Wait", ref _settings.LootEmptyCorpseMs, LootBaseline.EmptyCorpseMs,
+                    "Wait for a corpse's contents before probing it or calling it empty.");
+                LootTimerInput("Assess Window", ref _settings.LootAssessWindowMs, LootBaseline.AssessWindowMs,
+                    "Hold items for their appraisal. Measured replies: 127 ms typical,\n256 ms at the 95th percentile, 350 ms at most.");
+                LootTimerInput("Loot Retry Timeout", ref _settings.LootRetryTimeoutMs, LootBaseline.RetryTimeoutMs,
+                    "Wait, once the character is still, before resending a pickup that hasn't\nlanded. Too short resends pickups the server is still doing.");
+                LootTimerInput("Corpse Open Retry", ref _settings.LootOpenRetryMs, LootBaseline.OpenRetryMs,
+                    "Wait before sending another open to a corpse that hasn't opened.");
+                LootTimerInput("Corpse Timeout", ref _settings.LootCorpseTimeoutMs, LootBaseline.CorpseTimeoutMs,
+                    "Give up on a claimed corpse after this long. The clock stops during combat\nand buffing.");
 
                 ImGui.Spacing();
                 ImGui.Separator();
@@ -881,10 +1303,10 @@ internal sealed class LegacyAdvancedSettingsUi
                         : new Vector4(0.5f, 0.5f, 0.5f, 1.0f);
                     ImGui.Text("State:");
                     ImGui.SameLine();
-                    ImGui.TextColored(stateColor, stateLabel);
+                    SafeImGui.TextColored(stateColor, stateLabel);
 
                     if (!string.IsNullOrEmpty(_missileCraftingManager.StatusMessage))
-                        ImGui.TextWrapped(_missileCraftingManager.StatusMessage);
+                        SafeImGui.TextWrapped(_missileCraftingManager.StatusMessage);
                 }
                 break;
 
@@ -893,7 +1315,7 @@ internal sealed class LegacyAdvancedSettingsUi
                 break;
 
             default:
-                ImGui.Text($"Settings for {tabName} are currently under development.");
+                SafeImGui.Text($"Settings for {tabName} are currently under development.");
                 break;
         }
     }

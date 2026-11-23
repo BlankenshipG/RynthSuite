@@ -176,7 +176,30 @@ public class SpellManager
         _ => "I"
     };
 
-    public int GetDynamicSelfBuffId(string baseSpellName, AcSkillType magicSkill)
+    /// <summary>
+    /// The LOWEST known tier of <paramref name="baseSpellName"/> above the buff tier the skill
+    /// allows, 0 when none. For heals when nothing at or under the allowed tier is known: vitae
+    /// can drop Life Magic under a tier line while the character only knows higher tiers, and a
+    /// heal that may fizzle beats none (Drakkon died twice, 2026-10-06).
+    /// </summary>
+    public int GetSelfSpellIdAboveAllowedTier(string baseSpellName, AcSkillType magicSkill)
+    {
+        RefreshKnownSpells();
+        int maxTier = GetHighestBuffSpellTier(magicSkill);
+        string cleanBase = baseSpellName.Replace(" Self", "").Trim();
+        BaseNameAliases.TryGetValue(cleanBase, out string? alias);
+        for (int tier = maxTier + 1; tier <= 8; tier++)
+        {
+            // A level the server refused for components is no better than none.
+            if (TryGetTierId(cleanBase, tier, out int id) && !LacksComponents(id)) return id;
+            if (alias != null && TryGetTierId(alias, tier, out int idAlias) && !LacksComponents(idAlias)) return idAlias;
+        }
+        return 0;
+    }
+
+    /// <param name="skip">Levels to pass over (a level the server refused for missing components):
+    /// the next lower known level is returned instead.</param>
+    public int GetDynamicSelfBuffId(string baseSpellName, AcSkillType magicSkill, Func<int, bool>? skip = null)
     {
         RefreshKnownSpells(); // keep the authoritative inventory current (throttled)
 
@@ -189,8 +212,8 @@ public class SpellManager
 
         for (int tier = maxTier; tier >= 1; tier--)
         {
-            if (TryGetTierId(cleanBase, tier, out int id)) return id;
-            if (alias != null && TryGetTierId(alias, tier, out int idAlias)) return idAlias;
+            if (TryGetTierId(cleanBase, tier, out int id) && (skip == null || !skip(id))) return id;
+            if (alias != null && TryGetTierId(alias, tier, out int idAlias) && (skip == null || !skip(idAlias))) return idAlias;
         }
         return 0;
     }
@@ -243,6 +266,39 @@ public class SpellManager
     public void MarkSpellUnresolvable(int spellId)
     {
         if (spellId > 0) _unresolvableSpellIds.Add(spellId);
+    }
+
+    // Spells the server refused for missing components ("You don't have all the components for
+    // this spell."). The character KNOWS them, so the unresolvable set can't hold them (every
+    // refresh purges known spells from it, and combat never reads it): Sk's Flame Arc II was
+    // "marked unresolvable" 228 times and recast every time, and Heal Self V was retried every
+    // 0.4 s (2026-10-18). Combat (TrySpellByName) and the vital / buff pickers skip a spell here
+    // until it expires or the character picks up more scarabs or tapers.
+    private readonly Dictionary<int, DateTime> _noComponentsUntil = new();
+    /// <summary>How long a spell the server refused for components is passed over.</summary>
+    public const double NoComponentsSec = 600.0;
+    private int _lastScarabs = -1, _lastTapers = -1;
+
+    /// <summary>The server refused <paramref name="spellId"/> for missing components: pass it over for <see cref="NoComponentsSec"/>.</summary>
+    public void MarkNoComponents(int spellId)
+    {
+        if (spellId > 0) _noComponentsUntil[spellId] = RynthClock.Now.AddSeconds(NoComponentsSec);
+    }
+
+    /// <summary>True while <paramref name="spellId"/> is passed over for missing components.</summary>
+    public bool LacksComponents(int spellId)
+        => _noComponentsUntil.TryGetValue(spellId, out DateTime until) && RynthClock.Now < until;
+
+    /// <summary>
+    /// The pack's scarab and taper counts (the plugin's 3 s inventory scan): more of either than
+    /// last time (bought or looted) lets every spell refused for components be tried again.
+    /// </summary>
+    public void NoteComponentCounts(int scarabs, int tapers)
+    {
+        bool more = (_lastScarabs >= 0 && scarabs > _lastScarabs) || (_lastTapers >= 0 && tapers > _lastTapers);
+        _lastScarabs = scarabs;
+        _lastTapers = tapers;
+        if (more && _noComponentsUntil.Count > 0) _noComponentsUntil.Clear();
     }
 
     /// <summary>Persisted by BuffManager so the tier-7→6 drop is learned once
@@ -309,6 +365,9 @@ public class SpellManager
     /// didn't execute (off-thread busy-count leak), NOT "unknown/no comps".
     /// </summary>
     public bool IsKnownSpellId(int id) => _knownSpellIds.Contains(id);
+
+    /// <summary>The next RefreshKnownSpells reads the spellbook at once (a spell was just learned).</summary>
+    public void InvalidateKnownSpells() => _lastKnownRefreshUtc = DateTime.MinValue;
 
     /// <summary>
     /// Copy of the known-spell snapshot for the render thread (the Spells window). Call it on the

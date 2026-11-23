@@ -106,7 +106,7 @@ public sealed partial class RynthNavPlugin
         // 20:42). Within PortalUseUnits with the live portal seen: stand still and use it every 3 s.
         if (_portalLiveId != 0 && Host.HasUseObject && d <= PortalUseUnits)
         {
-            Host.SetAutoRun(false);
+            AutoRun.Run(false);
             if (now - _portalLastUseMs > 3000)
             {
                 _portalLastUseMs = now;

@@ -31,11 +31,18 @@
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthLua\*.cs" Link="RynthLua\%(Filename)%(Extension)" />
     <Compile Include="..\..\Plugins\Shared\RynthAiScriptApi.cs" Link="RynthLua\RynthAiScriptApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthAiCombatApi.cs" Link="RynthLua\RynthAiCombatApi.cs" />
     <Compile Include="..\..\Plugins\Shared\UseAudit.cs" Link="RynthLua\UseAudit.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
     <!-- The engine's AC icon decoder (pure code) and its DXT helper: decoded against the real client_portal.dat when it is there (read only). -->
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\AcIconDecoder.cs" Link="Engine\AcIconDecoder.cs" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.StatusAgent\Dat\DxtUtil.cs" Link="Engine\DxtUtil.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- RynthLuaPaths.cs uses the install-folder resolver. -->
+    <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
 </Project>

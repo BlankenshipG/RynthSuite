@@ -45,8 +45,12 @@ internal sealed class QuestTracker
     // Matches lines produced by the AC /myquests command.
     // Format: key - N solves (unixTimestamp)"description" maxSolves repeatSeconds
     // Example: blankaug - 1 solves (1609459200)"Blank Aug" 1 0
+    // Infinite Leaftide (ACECustom) puts a space after the timestamp:
+    //   templeattributefocuswait - 42 solves (1792844530) "TempleAttributeFocusWait" -1 571000
+    // Without "\s*" there the description, max solves and repeat time went unread, every flag had
+    // no cooldown and RynthILT's Guardian rows all said "Ready now" (2026-10-30).
     private static readonly Regex QuestLineRegex = new Regex(
-        @"(?<key>\S+) \- (?<solves>\d+) solves \((?<completedOn>\d{0,11})\)""?((?<description>.*)"" (?<maxSolves>.*) (?<repeatTime>\d{0,11}))?.*$",
+        @"(?<key>\S+) \- (?<solves>\d+) solves \((?<completedOn>\d{0,11})\)\s*""?((?<description>.*)"" (?<maxSolves>-?\d+) (?<repeatTime>\d{0,11}))?.*$",
         RegexOptions.Compiled);
 
     private readonly RynthCoreHost _host;
@@ -57,6 +61,10 @@ internal sealed class QuestTracker
     private bool _quietRefresh;
     private DateTime _lastLineTime;
     private DateTime _refreshStarted;
+    private int _linesThisRefresh;
+    // Past this many lines a reply waits LongReplyQuietSec of silence before it counts as done.
+    private const int LongReplyLines = 500;
+    private const double LongReplyQuietSec = 5.0;
 
     public bool IsRefreshing => _refreshing;
 
@@ -66,14 +74,18 @@ internal sealed class QuestTracker
     /// <summary>UTC time the last refresh finished with data (MinValue = never).</summary>
     public DateTime LastRefreshUtc { get; private set; } = DateTime.MinValue;
 
-    /// <summary>Last refresh outcome text for the ILT Hub ("12 flags", "rate limited", ...).</summary>
+    /// <summary>Last refresh outcome text for the Mini Remote's Quests tab ("12 flags", "rate limited", ...).</summary>
     public string LastStatus { get; private set; } = "not refreshed";
 
     /// <summary>Number of cached flags.</summary>
     public int Count => _flags.Count;
 
-    /// <summary>Raised on the pump thread when a refresh ends. The ILT Hub reads Disabled and Count.</summary>
-    public event Action? RefreshCompleted;
+    /// <summary>
+    /// Bumped on the pump thread each time a refresh ends (0 = none yet). RynthILT polls it through
+    /// RynthAi.Hub QuestStatus to read Disabled and Count (a counter, not an event: nothing to
+    /// unsubscribe across plugin reloads).
+    /// </summary>
+    public int RefreshGeneration { get; private set; }
 
     public QuestTracker(RynthCoreHost host) => _host = host;
 
@@ -85,7 +97,7 @@ internal sealed class QuestTracker
 
     /// <summary>
     /// Issues /myquests. <paramref name="quiet"/> asks <see cref="OnChatLine"/> to report
-    /// those lines as eatable so the ILT Hub can hide its own poll.
+    /// those lines as eatable so the Quests tab can hide its own poll.
     /// </summary>
     public void Refresh(bool quiet)
     {
@@ -108,6 +120,7 @@ internal sealed class QuestTracker
     {
         _refreshing = true;
         _gotFirstQuest = false;
+        _linesThisRefresh = 0;
         _lastLineTime = DateTime.UtcNow;
         _refreshStarted = DateTime.UtcNow;
     }
@@ -119,7 +132,15 @@ internal sealed class QuestTracker
     public bool OnChatLine(string text)
     {
         if (!_refreshing)
-            return false;
+        {
+            // A /myquests reply someone else asked for (RynthOracle polls every 10 minutes, the
+            // player types it): read it too, or the flags stay as they were at login and RynthILT's
+            // Guardian rows never move (2026-10-28). Never eaten here: the asker hides its own.
+            if (!QuestLineRegex.IsMatch(text))
+                return false;
+            ExpectReply();
+            _quietRefresh = false;
+        }
 
         if (text.Contains("Quest list is empty"))
         {
@@ -149,6 +170,7 @@ internal sealed class QuestTracker
 
         _gotFirstQuest = true;
         _lastLineTime = DateTime.UtcNow;
+        _linesThisRefresh++;
 
         var rec = new QuestRecord();
         rec.Key = m.Groups["key"].Value.ToLowerInvariant();
@@ -185,7 +207,10 @@ internal sealed class QuestTracker
         var now = DateTime.UtcNow;
         if (_gotFirstQuest)
         {
-            if ((now - _lastLineTime).TotalSeconds >= 1.0)
+            // A long reply (15,000-25,000+ flags on ACECustom) reaches the client in pieces with
+            // pauses between them: wait longer once it is big, so one reply isn't ended mid-way.
+            double quietSec = _linesThisRefresh >= LongReplyLines ? LongReplyQuietSec : 1.0;
+            if ((now - _lastLineTime).TotalSeconds >= quietSec)
                 Finish($"{Count} flags", gotData: true);
         }
         else
@@ -205,11 +230,10 @@ internal sealed class QuestTracker
             Disabled = false;
             LastRefreshUtc = DateTime.UtcNow;
         }
-        try { RefreshCompleted?.Invoke(); }
-        catch (Exception ex) { _host.Log($"[RynthAi] QuestTracker RefreshCompleted threw: {ex.Message}"); }
+        RefreshGeneration++;
     }
 
-    /// <summary>Copy of every cached record for the ILT Hub quest list.</summary>
+    /// <summary>Copy of every cached record for the Quests tab.</summary>
     public QuestRecord[] Snapshot() => _flags.Values.ToArray();
 
     /// <summary>Returns true if the key exists in the cached quest flag list.</summary>

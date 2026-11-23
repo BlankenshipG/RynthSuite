@@ -26,16 +26,31 @@
          highest API use NOT behind a Has*/version check. Script windows (v71, HasUi) draw the search window and instance ids (v73) fall back to ownership info; below v71 it still scans and saves (/ginv status), as with ImGui off. -->
     <RynthPluginMinEngineApi>66</RynthPluginMinEngineApi>
     <RynthPluginDescription>Search every character's items.</RynthPluginDescription>
+    <!-- RynthServers (sibling repo): RynthILT's data interface, read for the Infinite Leaftide Banking page. -->
+    <RynthServersRoot Condition="'$(RynthServersRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\RynthServers\</RynthServersRoot>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <!-- "Find like this in Global Inventory" (/ginv like): the filter spec, its matcher and T11 parsing (2026-10-24). -->
+    <ProjectReference Include="..\..\Shared\RynthCore.LootSdk\RynthCore.LootSdk.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- Spell names for item spells: RynthAi's spell table, shared rather than copied. -->
     <EmbeddedResource Include="..\RynthCore.Plugin.RynthAi\Combat\SpellData.txt" LogicalName="RynthInventory.SpellData.txt" Link="Shared\SpellData.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Storage another plugin reads for us ("storage" commands: Aelrynth's vault from RynthAelrynth). Also linked by RynthInventory.Tests. -->
+    <Compile Include="..\Shared\StorageFeed.cs" Link="Shared\StorageFeed.cs" />
+    <!-- Which server RynthCore says is active: the Banking page shows on Infinite Leaftide only. -->
+    <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
+    <!-- RynthILT's "RynthILT.Data" interface (RynthServers): the Banking page's balances for every character on the server. -->
+    <Compile Include="$(RynthServersRoot)Plugins\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
+    <!-- How a chat command answers (2026-10-28): the shared reply queue and colours. -->
+    <Compile Include="..\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
 </Project>

@@ -8,7 +8,9 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 
 /// <summary>
 /// Character: level and experience, luminance, the status summary (upstream's Status HUD: buff,
-/// house, beer, page and rare timers, key skills, aetheria surges) and the full buff list.
+/// house, beer, page and rare timers, key skills, aetheria surges), RynthAi's session (the generic
+/// part of the Mini Remote's old Character tab, moved here 2026-10-13) and the full buff list. A
+/// server's own character extras are its server plugin's (the charms list left on 2026-10-21).
 /// </summary>
 internal sealed partial class OracleView
 {
@@ -54,6 +56,8 @@ internal sealed partial class OracleView
         Field(w, "Melee D", SkillText(c.MeleeDefense), 0f, 100f);
         Field(w, "Summoning", SkillText(c.Summoning), 300f, 400f);
 
+        DrawSession(w);
+
         var list = new List<ActiveEnchantment>(c.Enchantments);
         list.Sort((a, b) => a.Remaining.CompareTo(b.Remaining));
         if (w.CollapsingHeader($"Buffs and debuffs ({list.Count})", "c.buffs", defaultOpen: true))
@@ -68,6 +72,38 @@ internal sealed partial class OracleView
             }
         }
     }
+
+    /// <summary>
+    /// "Session": RynthAi's session (the Mini Remote's Session Stats), so every tracker shows the same
+    /// XP, luminance and kills. Read through "RynthAi.Hub" only while this tab is on screen.
+    /// </summary>
+    private void DrawSession(UiWindow w)
+    {
+        w.SeparatorText("Session");
+        if (!_c.SessionKnown)
+        {
+            w.TextDisabled("Load RynthAi for the session rates (the Mini Remote's Session Stats).");
+            return;
+        }
+        RynthCore.Plugin.Shared.SessionStatsV1 s = _c.Session;
+        w.TextDisabled($"From RynthAi's Mini Remote, {TimeText.Clock(Math.Max(0, s.SessionSeconds))} so far.");
+        Field(w, "XP", $"{TimeText.Number(s.Xp)} ({RateText(s.XpPerHour)}/h)", 0f, 100f);
+        Field(w, "Luminance", $"{TimeText.Number(s.Lum)} ({RateText(s.LumPerHour)}/h)", 300f, 400f);
+        Field(w, "Kills", $"{s.Kills} ({s.KillsPerHour:0}/h)", 0f, 100f);
+        Field(w, "Lum, 5 min", TimeText.Number(s.LumLast5Min), 300f, 400f);
+        if (s.PassUpTracked != 0)
+            Field(w, "Pass-up", $"{TimeText.Number(s.LumPassUp)} ({RateText(s.PassUpPerHour)}/h)", 0f, 100f);
+        w.SmallButton("Session Stats", "c.session.open", () => _c.RunCommand(SessionStatsCommand));
+        w.Tooltip("Opens RynthCore's Mini Remote on Session Stats (reset the session there).");
+    }
+
+    /// <summary>
+    /// The Mini Remote's Session Stats section (RynthCore 2026-10-13). "section", not "tab": the
+    /// engine sends "tab char" back here (/ro character), since that tab moved to this one.
+    /// </summary>
+    internal const string SessionStatsCommand = "/rc miniremote section char";
+
+    private static string RateText(double perHour) => perHour > 0 ? TimeText.Number((long)Math.Round(perHour)) : "0";
 
     /// <summary>
     /// The buff timer: the soonest-ending long (over 15 minutes) buff that isn't a beer, a debuff

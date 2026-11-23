@@ -17,19 +17,66 @@ internal sealed class OracleSettings
     public bool ReadQuestsAtLogin = true;
     /// <summary>Hide the server's reply to RynthOracle's own /myquests (a typed /myquests always shows).</summary>
     public bool HideOwnQuestReplies = true;
+    /// <summary>
+    /// Read /myquests again when the flags are this many minutes old (0 = only at login and on
+    /// Refresh). Any reply counts, RynthAi's meta polls too, so this only fills the gaps: before it,
+    /// a character running for days showed flags frozen at whenever something last asked.
+    /// </summary>
+    public int QuestRefreshMinutes = 10;
+    /// <summary>The choices the About tab offers for <see cref="QuestRefreshMinutes"/>.</summary>
+    public static readonly int[] QuestRefreshChoices = { 0, 5, 10, 15, 30 };
     /// <summary>Check once a day for a newer master quest list at upstream's address.</summary>
     public bool CheckQuestListDaily;
     public DateTime LastQuestListCheckUtc = DateTime.MinValue;
     /// <summary>Show the Void target window by itself for characters with Void Magic.</summary>
     public bool AutoShowVoidWindow = true;
     public bool MainWindowOpen;
+    /// <summary>The Quest Timers window (tracked quests) was left open; it opens again at login.</summary>
+    public bool QuestTimersOpen;
     /// <summary>The selected tab, by name (the set of tabs depends on the server).</summary>
     public string TabName = "Quests";
-    /// <summary>ConquestAC: "/bank deposit" at every ten-minute mark (upstream's auto-deposit; off by default).</summary>
-    public bool ConquestAutoDeposit;
+    /// <summary>Say so in chat when a tracked quest's timer comes up.</summary>
+    public bool AlertTimers = true;
+    /// <summary>false: only tracked quests are watched; true: every quest the character holds.</summary>
+    public bool AlertAllTimers;
+    /// <summary>The Gear tab's view: "Overlap" or "Ratings".</summary>
+    public string GearView = "Overlap";
+    /// <summary>Gear, Overlap: hide the families where spells compete.</summary>
+    public bool GearHideOverlap;
+    /// <summary>The Quests tab shows the quest guide (two panes: the list, the steps) rather than the flag list.</summary>
+    public bool QuestGuideView = DefaultQuestGuideView;
+    /// <summary>The guide view is the default (the offline tests of the flag list turn it off).</summary>
+    internal static bool DefaultQuestGuideView = true;
+    /// <summary>The quest guide hides quests whose stamps are all held.</summary>
+    public bool GuideHideCollected;
+    /// <summary>Gear, Ratings: list the packs' gear as well as what is worn.</summary>
+    public bool GearIncludePack;
+    /// <summary>Gear, Ratings: each item as a Mag-Tools ItemInfo line (true) or in columns (false).</summary>
+    public bool GearRatingsMag = true;
 
-    private static string FilePath => Path.Combine(
+    /// <summary>Where the tests keep the settings file (a scratch path); null means the rynthoracle.json in RynthCore's %APPDATA% folder.</summary>
+    internal static string? PathOverride;
+
+    internal static string FilePath => PathOverride ?? Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "rynthoracle.json");
+
+    /// <summary>The names this version reads and writes; any other value in the file is kept as it was.</summary>
+    private static readonly string[] KnownNames =
+    {
+        "readQuestsAtLogin", "hideOwnQuestReplies", "checkQuestListDaily", "lastQuestListCheck", "autoShowVoidWindow",
+        "mainWindowOpen", "questTimersOpen", "alertTimers", "alertAllTimers", "tabName",
+        // Written by Save too: without them here each save wrote them twice (2026-11-01).
+        "questRefreshMinutes", "gearHideOverlap", "gearIncludePack", "gearRatingsMag", "gearView",
+        "questGuideView", "guideHideCollected",
+    };
+    // "conquestAutoDeposit" moved to RynthConquest (2026-10-20), which takes it over from this file once;
+    // it is kept here (as any value this version doesn't use) until then.
+
+    /// <summary>
+    /// Values in the file this version doesn't use (a newer version's, or a setting that moved to
+    /// another plugin, which reads it from here once), written back unchanged so a save never loses them.
+    /// </summary>
+    private readonly System.Collections.Generic.List<(string Name, string Raw)> _kept = new();
 
     public void Load()
     {
@@ -39,13 +86,26 @@ internal sealed class OracleSettings
             using var doc = JsonDocument.Parse(File.ReadAllText(FilePath));
             JsonElement r = doc.RootElement;
             if (r.ValueKind != JsonValueKind.Object) return;
+            _kept.Clear();
+            foreach (JsonProperty p in r.EnumerateObject())
+                if (Array.IndexOf(KnownNames, p.Name) < 0 && !_kept.Exists(k => k.Name == p.Name)) _kept.Add((p.Name, p.Value.GetRawText()));
             ReadQuestsAtLogin = Bool(r, "readQuestsAtLogin", ReadQuestsAtLogin);
             HideOwnQuestReplies = Bool(r, "hideOwnQuestReplies", HideOwnQuestReplies);
+            if (r.TryGetProperty("questRefreshMinutes", out JsonElement qr) && qr.ValueKind == JsonValueKind.Number && qr.TryGetInt32(out int qrm))
+                QuestRefreshMinutes = Math.Clamp(qrm, 0, 240);
             CheckQuestListDaily = Bool(r, "checkQuestListDaily", CheckQuestListDaily);
             AutoShowVoidWindow = Bool(r, "autoShowVoidWindow", AutoShowVoidWindow);
             MainWindowOpen = Bool(r, "mainWindowOpen", MainWindowOpen);
-            ConquestAutoDeposit = Bool(r, "conquestAutoDeposit", ConquestAutoDeposit);
+            QuestTimersOpen = Bool(r, "questTimersOpen", QuestTimersOpen);
+            AlertTimers = Bool(r, "alertTimers", AlertTimers);
+            AlertAllTimers = Bool(r, "alertAllTimers", AlertAllTimers);
+            GearHideOverlap = Bool(r, "gearHideOverlap", GearHideOverlap);
+            QuestGuideView = Bool(r, "questGuideView", QuestGuideView);
+            GuideHideCollected = Bool(r, "guideHideCollected", GuideHideCollected);
+            GearIncludePack = Bool(r, "gearIncludePack", GearIncludePack);
+            GearRatingsMag = Bool(r, "gearRatingsMag", GearRatingsMag);
             if (r.TryGetProperty("tabName", out JsonElement t) && t.ValueKind == JsonValueKind.String) TabName = t.GetString() ?? TabName;
+            if (r.TryGetProperty("gearView", out JsonElement gv) && gv.ValueKind == JsonValueKind.String) GearView = gv.GetString() ?? GearView;
             if (r.TryGetProperty("lastQuestListCheck", out JsonElement c) && c.ValueKind == JsonValueKind.String
                 && DateTime.TryParse(c.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime when))
                 LastQuestListCheckUtc = when.ToUniversalTime();
@@ -64,13 +124,24 @@ internal sealed class OracleSettings
             sb.Append("{\n");
             sb.Append("  \"readQuestsAtLogin\": ").Append(ReadQuestsAtLogin ? "true" : "false").Append(",\n");
             sb.Append("  \"hideOwnQuestReplies\": ").Append(HideOwnQuestReplies ? "true" : "false").Append(",\n");
+            sb.Append("  \"questRefreshMinutes\": ").Append(QuestRefreshMinutes.ToString(CultureInfo.InvariantCulture)).Append(",\n");
             sb.Append("  \"checkQuestListDaily\": ").Append(CheckQuestListDaily ? "true" : "false").Append(",\n");
             sb.Append("  \"lastQuestListCheck\": \"").Append(LastQuestListCheckUtc.ToString("o", CultureInfo.InvariantCulture)).Append("\",\n");
             sb.Append("  \"autoShowVoidWindow\": ").Append(AutoShowVoidWindow ? "true" : "false").Append(",\n");
             sb.Append("  \"mainWindowOpen\": ").Append(MainWindowOpen ? "true" : "false").Append(",\n");
-            sb.Append("  \"conquestAutoDeposit\": ").Append(ConquestAutoDeposit ? "true" : "false").Append(",\n");
-            sb.Append("  \"tabName\": \"").Append(JsonEncodedText.Encode(TabName).ToString()).Append("\"\n");
-            sb.Append("}\n");
+            sb.Append("  \"questTimersOpen\": ").Append(QuestTimersOpen ? "true" : "false").Append(",\n");
+            sb.Append("  \"alertTimers\": ").Append(AlertTimers ? "true" : "false").Append(",\n");
+            sb.Append("  \"alertAllTimers\": ").Append(AlertAllTimers ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearHideOverlap\": ").Append(GearHideOverlap ? "true" : "false").Append(",\n");
+            sb.Append("  \"questGuideView\": ").Append(QuestGuideView ? "true" : "false").Append(",\n");
+            sb.Append("  \"guideHideCollected\": ").Append(GuideHideCollected ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearIncludePack\": ").Append(GearIncludePack ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearRatingsMag\": ").Append(GearRatingsMag ? "true" : "false").Append(",\n");
+            sb.Append("  \"gearView\": \"").Append(JsonEncodedText.Encode(GearView).ToString()).Append("\",\n");
+            sb.Append("  \"tabName\": \"").Append(JsonEncodedText.Encode(TabName).ToString()).Append('"');
+            foreach ((string name, string raw) in _kept)
+                sb.Append(",\n  \"").Append(JsonEncodedText.Encode(name).ToString()).Append("\": ").Append(raw);
+            sb.Append("\n}\n");
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
             string tmp = FilePath + ".tmp";
             File.WriteAllText(tmp, sb.ToString());

@@ -33,7 +33,8 @@ internal static class TravelPlan
     public static Result Plan(IReadOnlyList<PortalLink>? portals, IReadOnlyList<RecallLink>? recalls, HubLinks? hub,
         bool portalsOn, bool recallsOn, bool startOnMap,
         double startNs, double startEw, double goalNs, double goalEw,
-        Func<double, double, double, double, bool>? canWalk, bool? landReachable, string goalName)
+        Func<double, double, double, double, bool>? canWalk, bool? landReachable, string goalName,
+        IReadOnlyList<double>? startHubWalks = null)
     {
         var r = new Result { Est = NavCoords.Distance(startNs, startEw, goalNs, goalEw) };
         recalls ??= Array.Empty<RecallLink>();
@@ -43,16 +44,19 @@ internal static class TravelPlan
 
         if (!startOnMap)
         {
-            // No walking start: only a recall gets you out.
-            if (!portalsOn) { r.Refusal = "you're in a dungeon, so the way out is a recall: turn on Use portals and recalls"; return r; }
-            if (!recallsOn) { r.Refusal = "you're in a dungeon, so the way out is a recall: turn on Recalls"; return r; }
-            if (usableRecalls.Count == 0) { r.Refusal = "you're in a dungeon and no recall is ready to use (/rnav recalls says why)"; return r; }
+            // No walking start: a recall gets you out, or a walk RynthNav learned in this dungeon to one of its portals.
+            bool walkOut = false;
+            if (startHubWalks != null) foreach (double w in startHubWalks) if (!double.IsNaN(w) && w >= 0) { walkOut = true; break; }
+            if (!portalsOn) { r.Refusal = "you're in a dungeon, so the way out is a recall or a portal: turn on Use portals and recalls"; return r; }
+            if (!walkOut && !recallsOn) { r.Refusal = "you're in a dungeon, so the way out is a recall: turn on Recalls"; return r; }
+            if (!walkOut && usableRecalls.Count == 0) { r.Refusal = "you're in a dungeon and no recall is ready to use (/rnav recalls says why)"; return r; }
             r.Steps = PortalRoute.Plan(portals ?? Array.Empty<PortalLink>(), usableRecalls, hub, startNs, startEw, goalNs, goalEw,
-                out r.Est, out r.Teleports, canWalk, startOnMap: false);
+                out r.Est, out r.Teleports, canWalk, startOnMap: false, startHubWalks: startHubWalks);
             if (double.IsPositiveInfinity(r.Est) || r.Steps.Count == 0)
             {
                 r.Steps = null;
-                r.Refusal = $"you're in a dungeon and none of your recalls leads on to {goalName}";
+                r.Refusal = walkOut ? $"you're in a dungeon and neither its learned portals nor your recalls lead on to {goalName}"
+                                    : $"you're in a dungeon and none of your recalls leads on to {goalName}";
             }
             return r;
         }

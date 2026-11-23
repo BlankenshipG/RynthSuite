@@ -58,12 +58,19 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
             }
         }
 
+        /// <summary>Blacklists a target for its own duration rather than the configured one.</summary>
+        public void BlacklistFor(int targetId, int seconds)
+        {
+            _blacklistExpirations[targetId] = RynthClock.Now.AddSeconds(seconds);
+            Log?.Invoke($"0x{(uint)targetId:X8} blacklisted {seconds}s (out of reach)");
+        }
+
         /// <summary>
         /// Immediately blacklists a target for the configured timeout duration.
         /// </summary>
         private void BlacklistTarget(int targetId)
         {
-            DateTime expirationTime = DateTime.Now.AddSeconds(TimeoutSeconds);
+            DateTime expirationTime = RynthClock.Now.AddSeconds(TimeoutSeconds);
             _blacklistExpirations[targetId] = expirationTime;
 
             int fc = _failureCounts.TryGetValue(targetId, out var c) ? c : 0;
@@ -82,7 +89,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 return false; // Target not in blacklist
 
             // Check if blacklist timeout has expired
-            if (DateTime.Now >= expiration)
+            if (RynthClock.Now >= expiration)
             {
                 // Timeout expired - remove from blacklist and allow re-evaluation
                 _blacklistExpirations.Remove(targetId);
@@ -138,7 +145,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
             foreach (var kvp in _blacklistExpirations)
             {
-                if (DateTime.Now < kvp.Value)
+                if (RynthClock.Now < kvp.Value)
                 {
                     count++;
                 }

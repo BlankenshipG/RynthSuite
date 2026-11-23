@@ -20,14 +20,40 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavCoords.cs" Link="Linked\NavCoords.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\Atlas.cs" Link="Linked\Atlas.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\AtlasStore.cs" Link="Linked\AtlasStore.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavReplies.cs" Link="Linked\NavReplies.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\ArrowGuide.cs" Link="Linked\ArrowGuide.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RecallMemory.cs" Link="Linked\RecallMemory.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RecallPlanner.cs" Link="Linked\RecallPlanner.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PackGems.cs" Link="Linked\PackGems.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavDataConfig.cs" Link="Linked\NavDataConfig.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\Entrance.cs" Link="Linked\Entrance.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TownNet.cs" Link="Linked\TownNet.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\WalkDoors.cs" Link="Linked\WalkDoors.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripFollow.cs" Link="Linked\TripFollow.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\WallStuck.cs" Link="Linked\WallStuck.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PortalAvoid.cs" Link="Linked\PortalAvoid.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TravelPlan.cs" Link="Linked\TravelPlan.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\CustomPortals.cs" Link="Linked\CustomPortals.cs" />
+    <!-- The goto's autorun, sent when it changes (AutoRunGateTests). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\AutoRunGate.cs" Link="Linked\AutoRunGate.cs" />
+    <!-- The goto's heading servo and path follower (SteeringTests). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\WalkSteer.cs" Link="Linked\WalkSteer.cs" />
+    <!-- The planned trip, its path, the path markers and "save as nav route" (TripExportTests). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPlan.cs" Link="Linked\TripPlan.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPath.cs" Link="Linked\TripPath.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PathMarkers.cs" Link="Linked\PathMarkers.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavRouteExport.cs" Link="Linked\NavRouteExport.cs" />
+    <Compile Include="..\..\Plugins\Shared\Nav3DText.cs" Link="Linked\Nav3DText.cs" />
+    <!-- The route maker's parts that need no navmesh (RouteMakerTests): requests, jobs, loop order and
+         the nav file, routeinfo, a plan's figures, the building outlines. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RouteRequest.cs" Link="Linked\RouteRequest.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RouteJobs.cs" Link="Linked\RouteJobs.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RouteShape.cs" Link="Linked\RouteShape.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RouteInfo.cs" Link="Linked\RouteInfo.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripSummary.cs" Link="Linked\TripSummary.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\BuildingOutlines.cs" Link="Linked\BuildingOutlines.cs" />
+    <!-- RynthAi's own nav reader/writer: the saved route is read back the way RynthAi reads it. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\LegacyUi\NavRouteParser.cs" Link="Linked\NavRouteParser.cs" />
   </ItemGroup>
 
 </Project>

@@ -10,11 +10,7 @@ internal sealed partial class OracleView
 {
     private void DrawSociety(UiWindow w)
     {
-        CharacterSnapshot c = _c.Character;
-        var s = new SocietyStanding(
-            c.Int(_c.Host, CharacterSnapshot.IntSocietyCelhan),
-            c.Int(_c.Host, CharacterSnapshot.IntSocietyEldweb),
-            c.Int(_c.Host, CharacterSnapshot.IntSocietyRadblo));
+        SocietyStanding s = Standing();
         QuestFlagStore flags = _c.Flags;
         DateTime now = _c.UtcNow;
 

@@ -74,12 +74,24 @@ public sealed class NavPoint
     /// </summary>
     public bool Doorway { get; set; }
 
+    /// <summary>"Lifestone Recall": a recall step by its spell's name (it showed "Spell 1635",
+    /// 2026-10-08); the id when the spell table doesn't know it.</summary>
+    internal static string RecallName(int spellId)
+    {
+        string? name = SpellNameLookup?.Invoke(spellId);
+        return string.IsNullOrEmpty(name) ? $"Spell {spellId}" : name;
+    }
+
+    /// <summary>The spell table's name for an id; RynthAi sets it (this file is also compiled into
+    /// tools without the spell table, which keep "Spell N").</summary>
+    internal static Func<int, string?>? SpellNameLookup { get; set; }
+
     public override string ToString()
     {
         return Type switch
         {
             NavPointType.Point      => $"[Point] {NS:F3}, {EW:F3}",
-            NavPointType.Recall     => $"[Recall] Spell {SpellId}",
+            NavPointType.Recall     => $"[Recall] {RecallName(SpellId)}",
             NavPointType.Pause      => $"[Pause] {PauseTimeMs / 1000.0:F1}s",
             NavPointType.Chat       => $"[Chat] {ChatCommand}",
             NavPointType.OpenVendor => $"[Vendor] {TargetName}",
@@ -96,6 +108,13 @@ public sealed class NavRouteParser
 {
     public NavRouteType RouteType { get; set; }
     public List<NavPoint> Points { get; set; } = new();
+
+    /// <summary>
+    /// The Outdoor Hunt's own walk to its next monster (RynthAiPlugin.OutdoorHunt.cs), not a nav
+    /// route the player loaded. Boost Nav Priority leaves it alone (BoostNavRule): the hunt goes
+    /// from monster to monster, so it fights and loots as usual. Never set on a loaded route.
+    /// </summary>
+    public bool OutdoorHuntWalk { get; set; }
 
     /// <summary>
     /// Non-null if the last load hit an unknown waypoint type or a malformed
@@ -126,6 +145,14 @@ public sealed class NavRouteParser
 
     /// <summary>A waypoint that is simply walked to (Point, Checkpoint).</summary>
     public static bool IsPlainWaypoint(NavPointType t) => t is NavPointType.Point or NavPointType.Checkpoint;
+
+    /// <summary>
+    /// Whether a freshly loaded route starts at [0] rather than at its nearest waypoint.
+    /// Follow and Once routes always do, so their opening Recall/Portal/Chat steps fire;
+    /// with <c>NavResumeNearest</c> off every route does.
+    /// </summary>
+    public static bool StartsAtFirstPoint(NavRouteType type, bool resumeNearest)
+        => !resumeNearest || type is NavRouteType.Follow or NavRouteType.Once;
 
     /// <summary>
     /// Follow-type nav files (route type 3) name a character to follow instead of
@@ -265,6 +292,17 @@ public sealed class NavRouteParser
     public void Save(string filePath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? ".");
+        // A .nav marked read-only can't be overwritten: clear that first (no dependencies here:
+        // this file is linked into RynthNav and test tools; RynthAi reports failures itself).
+        try
+        {
+            if (File.Exists(filePath))
+            {
+                FileAttributes attrs = File.GetAttributes(filePath);
+                if ((attrs & FileAttributes.ReadOnly) != 0) File.SetAttributes(filePath, attrs & ~FileAttributes.ReadOnly);
+            }
+        }
+        catch { /* the write below fails and the caller reports why */ }
 
         using var writer = new StreamWriter(filePath, false);
         WriteTo(writer);

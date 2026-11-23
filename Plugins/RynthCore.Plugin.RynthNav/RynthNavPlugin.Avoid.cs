@@ -46,44 +46,48 @@ public sealed partial class RynthNavPlugin
         long now = NowMs;
         if (!force && now < _nextAvoidMs) return;
         _nextAvoidMs = now + AvoidRefreshMs;
-        if (!_avoidPortals) { _avoid.Clear(); return; }
+        // What the walk ran into on this leg (RynthNavPlugin.Blocked.cs) is kept out of like a
+        // portal, whatever the portals setting.
+        if (!_avoidPortals) { _avoid.Set(_blockedSpots, Array.Empty<PortalAvoid.Spot>()); return; }
 
-        Atlas atlas = _atlas;
-        if (!ReferenceEquals(atlas, _avoidAtlas))
-        {
-            var list = new List<PortalAvoid.Spot>();
-            foreach (AtlasLocation l in atlas.Locations)
-                if (l.OnMap && l.Type.Equals("Portal", StringComparison.Ordinal))
-                    list.Add(new PortalAvoid.Spot(NavCoords.WorldX(l.Ew), NavCoords.WorldY(l.Ns), PortalAvoid.MapRadius, l.Name));
-            _atlasPortals = list;
-            _avoidAtlas = atlas;
-        }
+        IReadOnlyList<PortalAvoid.Spot> atlasPortals = AtlasPortalSpots();
         var map = new List<PortalAvoid.Spot>();
-        foreach (PortalAvoid.Spot sp in _atlasPortals)
+        foreach (PortalAvoid.Spot sp in atlasPortals)
             if (Math.Abs(sp.X - _wx) < AvoidNearUnits && Math.Abs(sp.Y - _wy) < AvoidNearUnits) map.Add(sp);
 
         var live = new List<PortalAvoid.Spot>();
-        if (Host.HasGetLiveObjectIds)
-        {
-            foreach (uint id in Host.GetLiveObjectIds())
-            {
-                if (!Host.TryGetItemType(id, out uint type) || (type & ItemTypePortal) == 0) continue;
-                if (!Host.TryGetObjectPosition(id, out uint cell, out float x, out float y, out _) || cell == 0) continue;
-                double wx = ((cell >> 24) & 0xFF) * 192.0 + x, wy = ((cell >> 16) & 0xFF) * 192.0 + y;
-                if (Math.Abs(wx - _wx) > AvoidNearUnits || Math.Abs(wy - _wy) > AvoidNearUnits) continue;
-                Host.TryGetObjectName(id, out string name);
-                live.Add(new PortalAvoid.Spot(wx, wy, PortalAvoid.LiveRadius, name ?? ""));
-            }
-        }
+        LivePortalSpots(live, _wx - AvoidNearUnits, _wy - AvoidNearUnits, _wx + AvoidNearUnits, _wy + AvoidNearUnits);
 
         // The step's own target: walking into a portal (a route's portal step, a dungeon's entrance).
         bool portalLeg = _route != null && _routeIdx < _route.Count && _route[_routeIdx].UsePortal;
+        int portals = live.Count, mapPortals = map.Count;
+        map.AddRange(_blockedSpots);   // after the live portals: one inside a live portal's circle adds nothing
         if (portalLeg) _avoid.Set(live, map, _gotoTew, _gotoTns, AvoidTargetUnits);
         else _avoid.Set(live, map);
         if (_avoid.Count != _avoidLogged)
         {
             _avoidLogged = _avoid.Count;
-            Host.Log($"[RynthNav] avoid: {_avoid.Count} portal(s) near you to keep out of ({live.Count} seen, {map.Count} from the Atlas){(portalLeg ? "; the step's own portal excepted" : "")}");
+            string blocked = _blockedSpots.Count > 0 ? $", {_blockedSpots.Count} spot(s) it ran into" : "";
+            Host.Log($"[RynthNav] avoid: {_avoid.Count} spot(s) near you to keep out of ({portals} portal(s) seen, {mapPortals} from the Atlas{blocked}){(portalLeg ? "; the step's own portal excepted" : "")}");
+        }
+    }
+
+    /// <summary>
+    /// Every portal object the client knows standing in the box (world units, edges included), as
+    /// circles of <see cref="PortalAvoid.LiveRadius"/>: exact positions. The walker's set and
+    /// FindPathEx's (RynthNavPlugin.PathApi.cs) both start from these.
+    /// </summary>
+    private void LivePortalSpots(List<PortalAvoid.Spot> into, double minX, double minY, double maxX, double maxY)
+    {
+        if (!Host.HasGetLiveObjectIds) return;
+        foreach (uint id in Host.GetLiveObjectIds())
+        {
+            if (!Host.TryGetItemType(id, out uint type) || (type & ItemTypePortal) == 0) continue;
+            if (!Host.TryGetObjectPosition(id, out uint cell, out float x, out float y, out _) || cell == 0) continue;
+            double wx = ((cell >> 24) & 0xFF) * 192.0 + x, wy = ((cell >> 16) & 0xFF) * 192.0 + y;
+            if (wx < minX || wx > maxX || wy < minY || wy > maxY) continue;
+            Host.TryGetObjectName(id, out string name);
+            into.Add(new PortalAvoid.Spot(wx, wy, PortalAvoid.LiveRadius, name ?? ""));
         }
     }
 
@@ -116,11 +120,15 @@ public sealed partial class RynthNavPlugin
                 RouteStep st = steps[i];
                 bool nextHub = i + 1 < steps.Count && steps[i + 1].IsHub;
                 if (st.UseRecall) parts.Add("recall " + st.Label);
-                else if (st.IsHub) parts.Add($"Town Network (exit {HubWhere(HubExitOf(i) ?? (_townNet != null && st.HubExit >= 0 && st.HubExit < _townNet.Exits.Count ? _townNet.Exits[st.HubExit] : null))})");
+                else if (st.IsHub)
+                {
+                    TownNetExit? hx = HubExitOf(i) ?? (_townNet != null && st.HubExit >= 0 && st.HubExit < _townNet.Exits.Count ? _townNet.Exits[st.HubExit] : null);
+                    parts.Add($"{TheHub(hx)} (exit {HubWhere(hx)})");
+                }
                 else
                 {
                     double d = NavCoords.Distance(pns, pew, st.Ns, st.Ew);
-                    parts.Add(nextHub ? $"walk {d:F0} yd to the Town Network portal"
+                    parts.Add(nextHub ? $"walk {d:F0} yd to the portal into {TheHub(HubExitOf(steps[i + 1]))}"
                         : st.UsePortal ? $"walk {d:F0} yd, portal {st.Label}"
                         : $"walk {d:F0} yd");
                 }
@@ -145,7 +153,7 @@ public sealed partial class RynthNavPlugin
         double ns = NavCoords.NsFromWorld(_finalTns), ew = NavCoords.EwFromWorld(_finalTew);
         string type = _gotoType, enter = _enterName, enterType = _enterType;
         bool onFinalLeg = _route == null || _routeIdx >= _route.Count - 1;
-        if (_portalsEnabled && !_landReplanned)
+        if (PortalsRouting && !_landReplanned)
         {
             _landReplanned = true;
             Host.Log($"[RynthNav] no route over land to {name}: planning again with portals and recalls");
@@ -154,7 +162,7 @@ public sealed partial class RynthNavPlugin
             return;
         }
         string why = $"no walking route to {(onFinalLeg ? name : "the next step")} (water or cliffs in the way)";
-        FinishGoto(_portalsEnabled
+        FinishGoto(PortalsRouting
             ? $"stopped: {why}, and no portal, recall or the Town Network I know of gets there"
             : $"stopped: {why}; turn on Use portals and recalls");
     }

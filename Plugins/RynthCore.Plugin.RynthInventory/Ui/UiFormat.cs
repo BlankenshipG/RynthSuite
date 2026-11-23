@@ -48,6 +48,9 @@ internal static class UiFormat
     // Window flags
     public const uint FlagVisible = 1u << 0;
     public const uint FlagShowInBar = 1u << 1;
+    /// <summary>With ShowInBar: a bar button of its own instead of a Scripts menu line (engines from
+    /// 2026-10-11; older ones ignore it and list the window in the Scripts menu).</summary>
+    public const uint FlagBarButton = 1u << 11;
     public const uint FlagNoScrollbar = 1u << 5;
 
     // Image icon kinds (op level 2)

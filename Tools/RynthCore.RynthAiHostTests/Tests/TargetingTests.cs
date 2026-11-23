@@ -1,0 +1,908 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using RynthCore.Plugin.RynthAi;
+using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.RynthAiHostTests.Fakes;
+using RynthCore.RynthAiTests.Harness;
+
+namespace RynthCore.RynthAiHostTests.Tests;
+
+// Combat target selection (2026-10-10): the Targeting setting (lowest health, closest, farthest,
+// least turning) and Target Lock. Combat used to switch targets mid-fight on a blended score; now
+// a locked target is kept until it dies or goes or leaves Monster Range (a higher priority too,
+// since 2026-11-07), and with the lock off a higher priority in range takes over at once and any
+// other switch needs a clear margin under the rule.
+internal static class TargetingTests
+{
+    private const uint Player = 0x50000E01;
+    private const uint Lb = 0xA9B40000;
+    private const uint A = 0x80000401, B = 0x80000402, C = 0x80000403, Boss = 0x80000404;
+
+    private const int LowestHealth = 0, Closest = 1, Farthest = 2, LeastTurning = 3;
+
+    // Melee reaches through walls (2026-11-06): within 4 yd the raycast doesn't hide a monster from melee.
+    private static void MeleeThroughWalls()
+    {
+        var near = new ScanPick(20);
+        near.Place(A, "Mob A", north: 3);
+        near.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(near.Tick(), A, "melee, 3 yd, a wall between: still the target");
+
+        var far = new ScanPick(20);
+        far.Place(A, "Mob A", north: 6);
+        far.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(far.Tick(), 0u, "melee, 6 yd, a wall between: the raycast still counts");
+
+        var magic = new ScanPick(20);
+        magic.Place(A, "Mob A", north: 3);
+        magic.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        Check.Eq(magic.Tick(), 0u, "magic, 3 yd, a wall between: spells don't go through");
+
+        var missile = new ScanPick(20);
+        missile.Place(A, "Mob A", north: 3);
+        missile.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Missile;
+        Check.Eq(missile.Tick(), 0u, "missile, 3 yd, a wall between: nor do arrows");
+
+        // 2026-11-13: not through a building's wall (outside, the monster in the building's rooms, or the other way).
+        var building = new ScanPick(20);
+        building.Place(A, "Mob A", north: 3);
+        building.Blocked.Add(A);
+        FakeHost.Positions[A] = (Lb | 0x01C9, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(building.Tick(), 0u, "melee outside, 3 yd, the monster inside a building behind its wall: not the target");
+
+        var inside = new ScanPick(20);
+        inside.Place(A, "Mob A", north: 3);
+        inside.Blocked.Add(A);
+        FakeHost.Positions[Player] = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(inside.Tick(), 0u, "melee inside a building, the monster outside its wall: not the target either");
+
+        var dungeon = new ScanPick(20);
+        dungeon.Place(A, "Mob A", north: 3);
+        dungeon.Blocked.Add(A);
+        FakeHost.Positions[Player] = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0107, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(dungeon.Tick(), A, "two rooms' cells (a dungeon wall): melee still reaches through");
+
+        var unblocked = new ScanPick(20);
+        unblocked.Place(A, "Mob A", north: 3);
+        FakeHost.Positions[A] = (Lb | 0x01C9, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(unblocked.Tick(), A, "in the building's doorway with a clear line: the target as before");
+
+        Check.True(CombatManager.InsideVersusOutside(0xE74E0023, 0xE74E01C9), "Drakkon's case: outside 0x0023, the sorcerer in 0x01C9");
+        Check.False(CombatManager.InsideVersusOutside(0xE74E0023, 0xE74E001B), "both outside");
+    }
+
+    // 2026-11-15: Melee through walls is a setting (MeleeThroughWalls, on by default; the meta option meleethroughwalls).
+    // On is the rule above, the building's wall included; off, a blocked monster is out of sight however close.
+    private static void MeleeThroughWallsSetting()
+    {
+        Check.True(new LegacyUiSettings().MeleeThroughWalls, "on by default");
+        var old = System.Text.Json.JsonSerializer.Deserialize("{\"MonsterRange\":7}", RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(old != null && old.MeleeThroughWalls, "a profile saved before the setting loads it as on");
+        Check.True(RynthCore.Plugin.RynthAi.Meta.MetaManager.TryMapVtOption("meleethroughwalls", out string ra) && ra == "MeleeThroughWalls", "the meta option meleethroughwalls is the setting");
+        Check.True(RynthCore.Plugin.RynthAi.Meta.MetaManager.TryMapVtOption("MeleeThroughWalls", out _), "any case");
+
+        // On: today's behaviour.
+        var on = new ScanPick(20);
+        on.Place(A, "Mob A", north: 3);
+        on.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(on.Tick(), A, "on: melee, 3 yd, a wall between: the target");
+
+        var onBuilding = new ScanPick(20);
+        onBuilding.Place(A, "Mob A", north: 3);
+        onBuilding.Blocked.Add(A);
+        FakeHost.Positions[A] = (Lb | 0x01C9, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(onBuilding.Tick(), 0u, "on: not through a building's wall");
+        Check.False(onBuilding.C.HasNearbyMonsters, "on: and not counted as out of sight (the hunt's walk to the door isn't held)");
+
+        // Off: a blocked monster within 4 m is like one farther off.
+        var off = new ScanPick(20);
+        off.S.MeleeThroughWalls = false;
+        off.Place(A, "Mob A", north: 3);
+        off.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(off.Tick(), 0u, "off: melee, 3 yd, a wall between: not the target");
+        Check.True(off.C.HasNearbyMonsters, "off: counted as a monster nearby out of sight, like one 6 yd off");
+        Check.Eq(off.C.LastScanLosBlocked, 1, "off: the scan counts it as LOS-blocked");
+        Check.Eq(off.C.LastScanPossible, 0, "off: and not as a possible target");
+
+        var offClose = new ScanPick(20);
+        offClose.S.MeleeThroughWalls = false;
+        offClose.Place(A, "Mob A", north: 1);
+        offClose.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offClose.Tick(), 0u, "off: 1 yd, a wall between: still not the target");
+
+        var offBuilding = new ScanPick(20);
+        offBuilding.S.MeleeThroughWalls = false;
+        offBuilding.Place(A, "Mob A", north: 3);
+        offBuilding.Blocked.Add(A);
+        FakeHost.Positions[A] = (Lb | 0x01C9, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offBuilding.Tick(), 0u, "off: the monster in a building behind its wall: not the target");
+        Check.True(offBuilding.C.HasNearbyMonsters, "off: counted out of sight like any blocked monster");
+
+        var offDungeon = new ScanPick(20);
+        offDungeon.S.MeleeThroughWalls = false;
+        offDungeon.Place(A, "Mob A", north: 3);
+        offDungeon.Blocked.Add(A);
+        FakeHost.Positions[Player] = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0105, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0107, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offDungeon.Tick(), 0u, "off: a dungeon wall between two rooms: not the target either");
+
+        var offClear = new ScanPick(20);
+        offClear.S.MeleeThroughWalls = false;
+        offClear.Place(A, "Mob A", north: 3);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offClear.Tick(), A, "off: a clear line: the target as always");
+
+        var offOther = new ScanPick(20);
+        offOther.S.MeleeThroughWalls = false;
+        offOther.Place(A, "Mob A", north: 2);
+        offOther.Place(B, "Mob B", north: -5);
+        offOther.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offOther.Tick(), B, "off: the one in sight 5 yd off, not the one behind a wall 2 yd off");
+
+        var offTurnOn = new ScanPick(20);
+        offTurnOn.S.MeleeThroughWalls = false;
+        offTurnOn.Place(A, "Mob A", north: 3);
+        offTurnOn.Blocked.Add(A);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(offTurnOn.Tick(), 0u, "off: not the target");
+        offTurnOn.S.MeleeThroughWalls = true;
+        Check.Eq(offTurnOn.Tick(), A, "turned on: the next scan takes it");
+
+        // Profile copy and the engine's Settings row.
+        var copy = typeof(LegacyDashboardRenderer).GetMethod("CopySettings", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var dst = new LegacyUiSettings();
+        copy.Invoke(null, new object[] { new LegacyUiSettings { MeleeThroughWalls = false }, dst });
+        Check.False(dst.MeleeThroughWalls, "a profile's off is copied");
+        copy.Invoke(null, new object[] { old!, dst });
+        Check.True(dst.MeleeThroughWalls, "an old profile loads it on");
+
+        var s = new LegacyUiSettings { MeleeThroughWalls = false };
+        var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+        typeof(LegacyDashboardRenderer).GetField("_profileLoaded", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(dash, true);
+        typeof(LegacyDashboardRenderer).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(dash, s);
+        typeof(LegacyDashboardRenderer).GetField("_advancedSettingsUi", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(dash, new LegacyAdvancedSettingsUi(s));
+        var sent = System.Text.Json.JsonSerializer.Deserialize(dash.BuildSettingsJson(), RynthAiJsonContext.Default.SettingsBridgePayload);
+        Check.True(sent != null && sent.MeleeThroughWalls == false, "sent to the engine's Settings window");
+        dash.ApplySettingsJson("{\"PatrolOnLogin\":false}");
+        Check.False(s.MeleeThroughWalls, "an engine without the row leaves it alone");
+        dash.ApplySettingsJson("{\"MeleeThroughWalls\":true}");
+        Check.True(s.MeleeThroughWalls, "the row's tick sets it");
+    }
+
+    // 11-12: a test character locked golems on the floor above (d 9.0, h 6.7, dz +6.0; d 7.4, h 3.3, dz +6.6) and
+    // swung under them. Melee leaves out a monster more than 3 m up or down and steeper than 0.75 from here.
+    private static void MeleeOtherFloor()
+    {
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(9.0, 6.0), "the golem on the floor above (h 6.7, dz +6.0)");
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(7.4, 6.6), "the other one (h 3.3, dz +6.6)");
+        Check.True(CombatManager.OutOfMeleeReachUpOrDown(6.5, -6.0), "and on the floor below");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(2.2, 0.9), "on the same floor");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(10.0, 4.0), "up a ramp or a hillside (h 9.2, dz +4.0)");
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(3.5, 2.9), "2.9 m up, close: within reach");
+
+        var up = new ScanPick(20);
+        up.Place(A, "Mob A", north: 3, up: 6);
+        up.Place(B, "Mob B", north: 8);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(up.Tick(), B, "melee: the one 8 m off on this floor, not the one 3 m off on the floor above");
+
+        var alone = new ScanPick(20);
+        alone.Place(A, "Mob A", north: 3, up: 6);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(alone.Tick(), 0u, "melee: no target when the only one is on the floor above");
+        Check.False(alone.C.HasNearbyMonsters, "and it doesn't hold navigation (the hunt walks up to it)");
+
+        var magic = new ScanPick(20);
+        magic.Place(A, "Mob A", north: 3, up: 6);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Magic;
+        Check.Eq(magic.Tick(), A, "magic: one on a balcony in sight is still a target");
+
+        // 2026-11-16, a Thread: in a building, an Armoredillo 5.5 m up and 8 m off in another of its cells
+        // (h 8.1, dz +5.5: a gentle slope by the rule above). It was locked and chased round under it.
+        Check.False(CombatManager.OutOfMeleeReachUpOrDown(9.8, 5.5), "by the slope alone it would be walked to");
+        var balcony = new ScanPick(20);
+        balcony.Place(A, "Mob A", north: 8, up: 5.5);
+        FakeHost.Positions[Player] = (Lb | 0x0107, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0107, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0100, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(balcony.Tick(), 0u, "melee, both inside, another cell 5.5 m up: not the target (the stairs first)");
+
+        // 2026-11-16 17:11, a Thread: the building's floor above 3.0 m up, the monsters in the next cell 2.5 m
+        // off; "more than 3 m" let them through and they were swung at from the floor below.
+        var floorAbove = new ScanPick(20);
+        floorAbove.Place(A, "Mob A", north: 2.5, up: 3.0);
+        FakeHost.Positions[Player] = (Lb | 0x0125, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0125, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0126, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(floorAbove.Tick(), 0u, "melee, both inside, the next cell 3.0 m up: not the target");
+
+        var stair = new ScanPick(20);
+        stair.Place(A, "Mob A", north: 2.5, up: 2.0);
+        FakeHost.Positions[Player] = (Lb | 0x0125, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0125, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0126, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(stair.Tick(), A, "the next cell 2.0 m up (a stair): still the target");
+
+        var hill = new ScanPick(20);
+        hill.Place(A, "Mob A", north: 8, up: 5.5);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(hill.Tick(), A, "outdoors, the same up a hillside: still the target");
+
+        var sameCell = new ScanPick(20);
+        sameCell.Place(A, "Mob A", north: 8, up: 5.5);
+        FakeHost.Positions[Player] = (Lb | 0x0107, 96f, 96f, 0f);
+        FakeHost.PlayerPose = (Lb | 0x0107, 96f, 96f, 0f);
+        FakeHost.Positions[A] = (Lb | 0x0107, FakeHost.Positions[A].Item2, FakeHost.Positions[A].Item3, FakeHost.Positions[A].Item4);
+        FakeHost.WeaponCalls = true;
+        FakeHost.CombatModeValue = CombatMode.Melee;
+        Check.Eq(sameCell.Tick(), A, "inside, up a ramp in the same cell: still the target");
+    }
+
+    public static void Register(Runner r)
+    {
+        r.Add("targeting: melee within 4 yd ignores the raycast; beyond it, or with magic or missile, it counts", MeleeThroughWalls);
+        r.Add("targeting (11-15): Melee through walls: on keeps the 4 yd rule and the building's wall; off, a blocked monster is never the target", MeleeThroughWallsSetting);
+        r.Add("targeting (11-12): melee leaves out a monster on the floor above or below; magic doesn't", MeleeOtherFloor);
+        r.Add("targeting: each scheme picks its monster", SchemesPick);
+        r.Add("targeting: unknown health counts as full; ties go to the closest, then the lower id", UnknownHealthAndTies);
+        r.Add("targeting: Target Lock keeps the target when a better one of its tier appears", LockKeeps);
+        r.Add("targeting: Target Lock lets go when the target goes (after the scan grace)", LockReleasesWhenGone);
+        r.Add("targeting: Target Lock lets go when the target leaves Monster Range", LockReleasesOutOfRange);
+        r.Add("targeting: lock off, a higher-priority monster in range takes over", HigherPriorityWins);
+        r.Add("targeting: Target Lock holds over a higher priority until the target dies or leaves Monster Range", LockHoldsOverPriority);
+        r.Add("targeting: lock off switches only past each scheme's margin", LockOffMargins);
+        r.Add("targeting: lock off never switches with an attack at the target in flight", NoSwitchInFlight);
+        r.Add("targeting: settings default to lowest health with the lock on", Defaults);
+        r.Add("targeting: a higher priority out of sight is named as passed over, once per reason", PassedOverOutOfSight);
+        r.Add("targeting: a higher priority just past Monster Range is named on the lock line", PassedOverBeyondRange);
+        r.Add("targeting: nothing is named when no higher priority was left out", PassedOverNothingHigher);
+        r.Add("targeting: lock off keeps a target that blinks out of the scan (no switch on stale values)", LockOffNoSwitchOnStale);
+        r.Add("targeting: lock off holds right after a cast goes out, before it is judged", LockOffHoldsJustSentCast);
+        r.Add("targeting: a higher priority just past Monster Range is logged once while fighting, and /ra why names it", BeyondRangeWhileEngaged);
+        r.Add("targeting: lowest health ranks unread monsters by the engine plates' readings", PlatesRankUnread);
+        r.Add("targeting: plate readings older than 10 s, or 0, are ignored", PlatesStaleIgnored);
+        r.Add("targeting: a plate reading beats an estimate when lower, and an older own server value when clearly fresher", PlatesVersusOwn);
+        r.Add("targeting: plate readings rank only; health, fight and kill tracking are untouched", PlatesRankOnly);
+        r.Add("targeting: without the engine call (or on an older engine) lowest health is as before", PlatesNoCapability);
+    }
+
+    // ── The engine plates' health (API v93 GetMonsterHealth, 2026-11-07) ─────
+
+    private static void PlatesRankUnread()
+    {
+        // The server streams health only for the queried target: RynthAi knows none of these three.
+        var plates = new Dictionary<uint, (float, uint)> { [A] = (0.9f, 1000), [B] = (0.25f, 3000), [C] = (0.6f, 500) };
+        var t = new Rig(LowestHealth, true, plates: plates);
+        Check.True(t.Host.HasMonsterHealth, "the fake engine has the call");
+        Check.Eq(t.Pick((A, 2, 0), (B, 5, 0), (C, 3, 0)), B, "B, 25% on the plates, is the most hurt (the closest is A)");
+        Check.True(FakeHost.PlateHealthQueries > 0, "the plates were asked");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] lock 0x80000402") && l.Contains("lowest health: health 25% (the plates' reading)")),
+            "the lock line gives the plates' number and says where it came from");
+
+        // A known own value still competes: A at 20% (the streamed target) beats B's 25% on the plates.
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [A] = 0.2f }, plates: new() { [B] = (0.25f, 3000) });
+        Check.Eq(t.Pick((A, 4, 0), (B, 2, 0)), A, "own 20% beats the plates' 25%");
+
+        // Lock off: a plate reading clearly lower takes over, by the scheme's margin.
+        t = new Rig(LowestHealth, false, new Dictionary<uint, float> { [A] = 0.5f }, plates: new() { [B] = (0.9f, 1000) });
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "lock off: A at 50%, B at 90% on the plates");
+        t.Plate(B, 0.47f, 1000);
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "B at 47% on the plates (3 points lower): A kept");
+        t.Plate(B, 0.30f, 1000);
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), B, "B at 30% on the plates (20 points lower): switch");
+    }
+
+    private static void PlatesStaleIgnored()
+    {
+        var t = new Rig(LowestHealth, true, plates: new() { [A] = (0.9f, 1000), [B] = (0.1f, 10_500) });
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "B's 10% is 10.5 s old: ignored (full), A's 90% wins");
+
+        t = new Rig(LowestHealth, true, plates: new() { [A] = (0.9f, 1000), [B] = (0.1f, 10_000) });
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), B, "exactly 10 s old: still used");
+
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [B] = 0.95f }, plates: new() { [A] = (0f, 500) });
+        Check.Eq(t.Pick((A, 1, 0), (B, 3, 0)), B, "a plate 0 (dead to the plates, not to RynthAi) isn't the most hurt: B at 95%");
+
+        t = new Rig(LowestHealth, true, plates: new() { [A] = (0.9f, uint.MaxValue) });
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), B, "a reading of unknown age is stale: all full, the closest");
+    }
+
+    private static void PlatesVersusOwn()
+    {
+        // Own estimate (our splash hit) vs the plates: the lower of the two.
+        var t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [B] = 0.5f }, plates: new() { [A] = (0.4f, 2000) });
+        t.Cache.ApplyDamageEstimate(unchecked((int)A), 0.3);   // A estimated 70%
+        Check.True(t.Cache.IsHealthEstimated(unchecked((int)A)), "A's own value is an estimate");
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "A: estimate 70%, plates 40% -> 40%, below B's 50%");
+
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [B] = 0.5f }, plates: new() { [A] = (0.8f, 2000) });
+        t.Cache.ApplyDamageEstimate(unchecked((int)A), 0.7);   // A estimated 30%
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "A: estimate 30%, plates 80% -> 30% (the estimate saw hits the plates didn't)");
+
+        // Own server value 80%, 5 s old; the plates read 30% a second ago: the plates are fresher.
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [A] = 0.5f }, plates: new() { [B] = (0.3f, 1000) });
+        t.Health(B, 0.8f);
+        t.Advance(5000);
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), B, "B: own 80% (5 s old) vs plates 30% (1 s old) -> 30%");
+
+        // Own server value just in; the plates' is older: own stands.
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [A] = 0.5f }, plates: new() { [B] = (0.3f, 1000) });
+        t.Health(B, 0.8f);
+        t.Advance(200);
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "B: own 80% (0.2 s old) stands over the plates' 30% (1 s old): A at 50%");
+
+        // A few ms apart is the same 0x01C0: not "fresher".
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [A] = 0.5f }, plates: new() { [B] = (0.3f, 1000) });
+        t.Health(B, 0.8f);
+        t.Advance(1300);
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "plates only 0.3 s fresher: own 80% stands");
+
+        // The server said dead: that stands whatever the plates say.
+        // (A dead monster never reaches the pick: the scan drops it. The rank itself is checked here.)
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [B] = 0f }, plates: new() { [B] = (0.4f, 100) });
+        Check.True(t.Combat.RankingHealth(unchecked((int)B), out bool fromPlates) == 0f && !fromPlates, "own 0 (dead) isn't revived by the plates");
+    }
+
+    private static void PlatesRankOnly()
+    {
+        var t = new Rig(LowestHealth, true, plates: new() { [A] = (0.9f, 1000), [B] = (0.2f, 1000) });
+        Check.Eq(t.Pick((A, 2, 0), (B, 4, 0)), B, "B is picked on the plates' 20%");
+        int a = unchecked((int)A), b = unchecked((int)B);
+        Check.Eq(t.Cache.GetHealthRatio(b), -1f, "the cache still doesn't know B's health");
+        Check.Eq(t.Cache.GetHealthRatio(a), -1f, "nor A's");
+        Check.False(t.Cache.IsHealthEstimated(b), "nothing was written as an estimate");
+        Check.False(t.Cache.TryGetServerHealthTime(b, out _), "nor as a server reading");
+        Check.Eq(t.Combat.FightTargetHealthRatio, -1f, "the fight target's health (metas, kill checks) is RynthAi's own: unknown");
+
+        // The kill path is the same as without the plates: the notice drops B, the next pick is fresh.
+        t.Combat.OnKillNotification("Mob B's perforated corpse falls before you!");
+        Check.Eq(t.Combat.activeTargetId, 0, "the kill notice drops B");
+        Check.Eq(t.Cache.GetHealthRatio(b), -1f, "and still nothing in the cache from the plates");
+        t.Plate(B, 0.2f, 1000);   // the plates still remember B's last reading
+        Check.Eq(t.Pick((A, 2, 0)), A, "A is next");
+
+        // The server's own stream still drives the cache exactly as before.
+        t.Health(A, 0.6f);
+        Check.Eq(t.Cache.GetHealthRatio(a), 0.6f, "a real UpdateHealth lands in the cache");
+        Check.Eq(t.Combat.FightTargetHealthRatio, 0.6f, "and is the fight target's health");
+    }
+
+    private static void PlatesNoCapability()
+    {
+        // No call on the engine: the plates' numbers can't be read, all unknown counts as full.
+        var t = new Rig(LowestHealth, true);
+        FakeHost.PlateHealth[B] = (0.1f, 500);   // what an engine would have said (not wired)
+        Check.False(t.Host.HasMonsterHealth, "no GetMonsterHealth on this engine");
+        Check.Eq(t.Pick((A, 2, 0), (B, 4, 0)), A, "all unknown: the closest, as before");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("lowest health: health unknown (as full)")), "logged as unknown, as before");
+
+        // The slot filled but the engine says API 92: not used, never called.
+        t = new Rig(LowestHealth, true, plates: new() { [B] = (0.1f, 500) }, plateVersion: 92);
+        Check.False(t.Host.HasMonsterHealth, "API 92: no HasMonsterHealth");
+        Check.Eq(t.Pick((A, 2, 0), (B, 4, 0)), A, "the closest, as before");
+        Check.Eq(FakeHost.PlateHealthQueries, 0, "the call was never made");
+
+        // With the call, but the plates know nothing: as before too.
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [B] = 0.95f }, plates: new());
+        Check.Eq(t.Pick((A, 2, 0), (B, 5, 0)), B, "a known 95% beats an unknown (full) health, as before");
+    }
+
+    // ── Schemes ───────────────────────────────────────────────────────────────
+
+    private static void SchemesPick()
+    {
+        // A: close, facing away, lightly wounded. B: mid, nearly ahead, badly wounded.
+        // C: far, health unknown.
+        var health = new Dictionary<uint, float> { [A] = 0.8f, [B] = 0.3f };
+        (uint, double, double)[] scan = { (A, 2, 90), (B, 4, 10), (C, 6, 50) };
+
+        Check.Eq(new Rig(LowestHealth, true, health).Pick(scan), B, "lowest health: B at 30%");
+        Check.Eq(new Rig(Closest, true, health).Pick(scan), A, "closest: A at 2 m");
+        Check.Eq(new Rig(Farthest, true, health).Pick(scan), C, "farthest: C at 6 m");
+        Check.Eq(new Rig(LeastTurning, true, health).Pick(scan), B, "least turning: B, 10 degrees off");
+
+        var t = new Rig(LeastTurning, true, health);
+        t.Pick((A, 2, 90), (B, 4, 60), (C, 6, 5));
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] lock 0x80000403") && l.Contains("least turning: turn 5 deg")),
+            "the lock line names the scheme and the deciding value");
+    }
+
+    private static void UnknownHealthAndTies()
+    {
+        // B is at 95%, A unknown: unknown counts as full, so B is the more wounded.
+        var t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [B] = 0.95f });
+        Check.Eq(t.Pick((A, 2, 0), (B, 5, 0)), B, "a known 95% beats an unknown (full) health");
+
+        // Every health unknown: all tie at full, so the closest.
+        t = new Rig(LowestHealth, true);
+        Check.Eq(t.Pick((A, 3, 0), (B, 1.5, 0), (C, 2, 0)), B, "all unknown: the closest");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("lowest health: health unknown (as full)")), "logged as unknown");
+
+        // Same distance: the lower id.
+        t = new Rig(Closest, true);
+        Check.Eq(t.Pick((B, 2, 0), (A, 2, 0)), A, "a tie in distance: the lower id");
+
+        // Lock off: an unknown-health monster never looks more wounded than the incumbent.
+        t = new Rig(LowestHealth, false, new Dictionary<uint, float> { [A] = 0.5f });
+        Check.Eq(t.Pick((A, 3, 0), (B, 1, 0)), A, "A at 50% is picked over an unknown B");
+        Check.Eq(t.Pick((A, 3, 0), (B, 1, 0), (C, 1, 0)), A, "unknown B and C don't take over");
+    }
+
+    // ── Target Lock ───────────────────────────────────────────────────────────
+
+    private static void LockKeeps()
+    {
+        var t = new Rig(Closest, true);
+        Check.Eq(t.Pick((A, 4, 0)), A, "A, alone, is locked");
+        int before = FakeHost.Logs.Count(l => l.Contains("[CombatTarget]"));
+        Check.Eq(t.Pick((A, 4, 0), (B, 1, 0)), A, "B walks up to 1 m: the lock keeps A");
+        Check.Eq(t.Pick((A, 4.5, 30), (B, 0.5, 0), (C, 0.8, 0)), A, "and keeps it with more around");
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("[CombatTarget]")), before, "nothing new is logged while the lock holds");
+
+        t = new Rig(LowestHealth, true, new Dictionary<uint, float> { [A] = 0.7f, [B] = 0.9f });
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "lowest health: A at 70%");
+        t.Health(B, 0.1f);
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "B drops to 10%: the lock keeps A");
+    }
+
+    private static void LockReleasesWhenGone()
+    {
+        var t = new Rig(Closest, true);
+        Check.Eq(t.Pick((A, 2, 0), (B, 3, 0)), A, "A is locked");
+        Check.Eq(t.Pick((B, 3, 0)), A, "A blinks out of the scan: kept within the scan grace");
+        t.Advance(1000);
+        Check.Eq(t.Pick((B, 3, 0)), A, "still within the 1.5 s grace");
+        t.Advance(1000);
+        Check.Eq(t.Pick((B, 3, 0)), B, "gone past the grace: B");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] switch 0x80000401") && l.Contains("(gone,")),
+            "the switch says why: gone");
+
+        // A kill drops the target outright (DropTarget), and the next pick is fresh.
+        t = new Rig(Closest, true);
+        t.Pick((A, 2, 0), (B, 3, 0));
+        t.Combat.OnKillNotification("Mob A's perforated corpse falls before you!");
+        Check.Eq(t.Combat.activeTargetId, 0, "the kill drops A");
+        Check.Eq(t.Pick((B, 3, 0)), B, "and B is locked");
+    }
+
+    private static void LockReleasesOutOfRange()
+    {
+        var t = new Rig(Closest, true, monsterRange: 5);
+        Check.Eq(t.Pick((A, 4, 0), (B, 4.5, 0)), A, "A is locked at 4 m");
+        Check.Eq(t.Pick((A, 5.5, 0)), A, "A steps past Monster Range, nothing else in range: kept");
+        Check.Eq(t.Pick((A, 6.5, 0), (B, 4.8, 0)), B, "past Monster Range with B inside it: B");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] switch 0x80000401") && l.Contains("out of Monster Range, 6.5 m")),
+            "the switch says why: out of Monster Range");
+        Check.Eq(t.Pick((A, 3, 0), (B, 4.8, 0)), B, "A coming back closer doesn't take it back (B is locked now)");
+    }
+
+    // Target Lock holds until the target dies or leaves Monster Range, a higher priority or not
+    // (the owner, 2026-11-07); with the lock off a higher priority in range takes over at once.
+    private static void LockHoldsOverPriority()
+    {
+        var t = new Rig(Closest, true, monsterRange: 10);
+        t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 2 });
+        Check.Eq(t.Pick((A, 2, 0), (B, 3, 0)), A, "A is locked");
+        Check.Eq(t.Pick((A, 2, 0), (B, 3, 0), (Boss, 9, 0)), A, "a Boss inside Monster Range: the lock keeps A");
+        Check.True(FakeHost.Logs.Count(l => l.Contains("[CombatTarget] Target Lock keeps 0x80000401") && l.Contains("over 0x80000404")) == 1,
+            "the hold is logged once");
+        t.Pick((A, 2, 0), (Boss, 9, 0));
+        Check.True(FakeHost.Logs.Count(l => l.Contains("[CombatTarget] Target Lock keeps")) == 1, "and not again");
+        Check.Eq(t.Pick((A, 11, 0), (Boss, 9, 0)), Boss, "A leaves Monster Range: the Boss");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] switch 0x80000401") && l.Contains("out of Monster Range")),
+            "the switch says why: out of Monster Range");
+
+        t = new Rig(Closest, true, monsterRange: 10);
+        t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 2 });
+        t.Pick((A, 2, 0), (Boss, 9, 0));
+        Check.Eq(t.Combat.activeTargetId, unchecked((int)Boss), "nothing locked yet: the higher priority is picked first");
+    }
+
+    private static void HigherPriorityWins()
+    {
+        foreach (bool lockOn in new[] { false })
+        {
+            string mode = lockOn ? "lock on" : "lock off";
+            var t = new Rig(Closest, lockOn, monsterRange: 10);
+            t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 2 });
+            Check.Eq(t.Pick((A, 2, 0), (B, 3, 0)), A, $"{mode}: A is locked");
+            Check.Eq(t.Pick((A, 2, 0), (B, 3, 0), (Boss, 12, 0)), A, $"{mode}: a Boss outside Monster Range doesn't count");
+            Check.Eq(t.Pick((A, 2, 0), (B, 3, 0), (Boss, 9, 0)), Boss, $"{mode}: the Boss inside Monster Range takes over at once, farther or not");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] switch 0x80000401") && l.Contains("priority 1 < 2")),
+                $"{mode}: the switch says why: priority");
+            Check.Eq(t.Pick((A, 1, 0), (Boss, 9, 0)), Boss, $"{mode}: the Boss is kept over a closer, lower-priority A");
+        }
+    }
+
+    // ── Lock off ──────────────────────────────────────────────────────────────
+
+    private static void LockOffMargins()
+    {
+        // Closest: 1.5 m.
+        var t = new Rig(Closest, false);
+        Check.Eq(t.Pick((A, 3, 0)), A, "closest: A at 3 m");
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "B 1 m closer: kept");
+        Check.Eq(t.Pick((A, 3, 0), (B, 1.2, 0)), B, "B 1.8 m closer: switch");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] switch 0x80000401") && l.Contains("closest: 3.0 m, another is clearly better")
+                                       && l.Contains("-> 0x80000402") && l.Contains("closest: 1.2 m")),
+            "the switch names the scheme and both values");
+
+        // Farthest: 1.5 m.
+        t = new Rig(Farthest, false, monsterRange: 10);
+        Check.Eq(t.Pick((A, 8, 0)), A, "farthest: A at 8 m");
+        Check.Eq(t.Pick((A, 8, 0), (B, 9, 0)), A, "B 1 m farther: kept");
+        Check.Eq(t.Pick((A, 8, 0), (B, 9.8, 0)), B, "B 1.8 m farther: switch");
+
+        // Lowest health: 5 percentage points.
+        t = new Rig(LowestHealth, false, new Dictionary<uint, float> { [A] = 0.5f, [B] = 0.9f });
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "lowest health: A at 50%");
+        t.Health(B, 0.47f);
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), A, "B at 47% (3 points lower): kept");
+        t.Health(B, 0.40f);
+        Check.Eq(t.Pick((A, 3, 0), (B, 2, 0)), B, "B at 40% (10 points lower): switch");
+
+        // Least turning: 20 degrees.
+        t = new Rig(LeastTurning, false);
+        Check.Eq(t.Pick((A, 3, 30)), A, "least turning: A");
+        Check.Eq(t.Pick((A, 3, 40), (B, 3, 25)), A, "B needs 15 degrees less: kept");
+        Check.Eq(t.Pick((A, 3, 40), (B, 3, 15)), B, "B needs 25 degrees less: switch");
+    }
+
+    private static void NoSwitchInFlight()
+    {
+        // An attack at A with no damage since: held for the flight window.
+        var t = new Rig(Closest, false);
+        Check.Eq(t.Pick((A, 3, 0)), A, "A is locked");
+        t.Combat.RecordOffensiveCast(unchecked((int)A));
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), A, "a cast at A in flight: B (2.5 m closer) waits");
+        t.Advance(2000);
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), A, "still in the 4 s window");
+        t.Advance(2500);
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), B, "the window passed with nothing landed: switch");
+
+        // Damage landing ends the hold.
+        t = new Rig(Closest, false);
+        t.Pick((A, 3, 0));
+        t.Combat.RecordOffensiveCast(unchecked((int)A));
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), A, "cast in flight: kept");
+        t.Combat.ReportDamageOnTarget(unchecked((int)A));
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), B, "the cast landed: switch");
+
+        // A target that never takes damage can't hold it forever under continuous fire.
+        t = new Rig(Closest, false);
+        t.Pick((A, 3, 0));
+        t.Advance(16000);
+        t.Combat.RecordOffensiveCast(unchecked((int)A));
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), B, "16 s locked without damage: a fresh cast doesn't hold it");
+    }
+
+    private static void Defaults()
+    {
+        var s = new LegacyUiSettings();
+        Check.Eq(s.TargetSelection, 0, "Targeting: lowest health");
+        Check.True(s.TargetLock, "Target Lock: on");
+        var loaded = System.Text.Json.JsonSerializer.Deserialize("{\"MonsterRange\":7}", RynthAiJsonContext.Default.LegacyUiSettings);
+        Check.True(loaded != null && loaded.TargetLock, "a profile saved before the setting loads the lock as on");
+
+        // Profile switch/load copies them (CopySettings is the hand-written field list).
+        var copy = typeof(LegacyDashboardRenderer).GetMethod("CopySettings", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var dst = new LegacyUiSettings();
+        copy.Invoke(null, new object[] { new LegacyUiSettings { TargetSelection = 3, TargetLock = false }, dst });
+        Check.Eq(dst.TargetSelection, 3, "a profile's Targeting is copied");
+        Check.False(dst.TargetLock, "and its lock off");
+        copy.Invoke(null, new object[] { loaded!, dst });
+        Check.True(dst.TargetLock && dst.TargetSelection == 0, "an old profile loads the defaults");
+
+        // Engine Settings face: the payload carries them; an engine without the fields leaves them alone.
+        s = new LegacyUiSettings { TargetSelection = 2, TargetLock = false };
+        var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+        typeof(LegacyDashboardRenderer).GetField("_profileLoaded", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(dash, true);   // a stand-in with its profile in memory
+        typeof(LegacyDashboardRenderer).GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(dash, s);
+        typeof(LegacyDashboardRenderer).GetField("_advancedSettingsUi", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(dash, new LegacyAdvancedSettingsUi(s));   // BuildSettingsJson reads its crafting state
+        var sent = System.Text.Json.JsonSerializer.Deserialize(dash.BuildSettingsJson(), RynthAiJsonContext.Default.SettingsBridgePayload);
+        Check.True(sent != null && sent.TargetSelection == 2 && sent.TargetLock == false, "sent to the engine face");
+        dash.ApplySettingsJson("{\"PatrolOnLogin\":false}");
+        Check.True(s.TargetSelection == 2 && !s.TargetLock, "a save without the fields leaves them alone");
+        dash.ApplySettingsJson("{\"TargetSelection\":1,\"TargetLock\":true}");
+        Check.True(s.TargetSelection == 1 && s.TargetLock, "a save with them sets them");
+        dash.ApplySettingsJson("{\"TargetSelection\":9}");
+        Check.Eq(s.TargetSelection, 3, "an out-of-range choice is clamped");
+    }
+
+    // ── Passed over (R-20261031-201214-8be7) ──────────────────────────────────
+    // A report said a Priority 5 monster was ignored for Priority 1 ones; the log showed only
+    // that some monsters in range were LOS-blocked, not which. The lock line now names the best
+    // higher-priority monster that wasn't a candidate, and why. Selection itself is unchanged.
+
+    private static void PassedOverOutOfSight()
+    {
+        var t = new ScanPick(monsterRange: 10);
+        t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 5 });
+        t.Place(A, "Mob A", north: 2);
+        t.Place(Boss, "Boss", east: 3);
+        t.Blocked.Add(Boss);
+        Check.Eq(t.Tick(), A, "the Boss is behind a wall: Mob A, the only candidate, is locked");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] lock 0x80000401")
+                                       && l.Contains("[passed over 0x80000404 'Boss' priority 5, 3.0 m: line of sight blocked]")),
+            "the lock line names the Boss and why it wasn't picked");
+
+        int lines = PassedLines();
+        t.Tick();
+        t.Tick();
+        Check.Eq(PassedLines(), lines, "still behind the wall: not logged again");
+
+        FakeHost.NotAttackable.Add(Boss);
+        t.Tick();
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] passed over 0x80000404 'Boss' priority 5, 3.0 m: not attackable")
+                                       && l.Contains("the target stays 0x80000401 'Mob A' priority 1")),
+            "a new reason is one new line, with the target that stays");
+        int after = PassedLines();
+        t.Tick();
+        Check.Eq(PassedLines(), after, "and only once");
+
+        FakeHost.NotAttackable.Remove(Boss);
+        t.Blocked.Remove(Boss);
+        t.S.TargetLock = false;   // with the lock on, Mob A would be kept (LockHoldsOverPriority)
+        Check.Eq(t.Tick(), Boss, "in sight and attackable: the Boss takes over at once");
+        string sw = FakeHost.Logs.Last(l => l.Contains("[CombatTarget] switch"));
+        Check.True(sw.Contains("priority 1 < 5") && !sw.Contains("passed over"), "the switch says priority, with nothing passed over");
+    }
+
+    private static void PassedOverBeyondRange()
+    {
+        var t = new ScanPick(monsterRange: 10);
+        t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 5 });
+        t.Place(A, "Mob A", north: 2);
+        t.Place(Boss, "Boss", north: -12);
+        Check.Eq(t.Tick(), A, "the Boss at 12 m is past Monster Range 10: Mob A");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] lock 0x80000401")
+                                       && l.Contains("[passed over 0x80000404 'Boss' priority 5, 12.0 m: beyond Monster Range (10 m)]")),
+            "the lock line names the Boss past the range");
+
+        t = new ScanPick(monsterRange: 10);
+        t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 5 });
+        t.Place(A, "Mob A", north: 2);
+        t.Place(Boss, "Boss", north: -30);
+        t.Tick();
+        Check.False(FakeHost.Logs.Any(l => l.Contains("passed over")), "30 m out (more than 15 m past the range): not named");
+    }
+
+    private static void PassedOverNothingHigher()
+    {
+        var t = new ScanPick(monsterRange: 10);
+        t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 5 });
+        t.Place(A, "Mob A", north: 2);
+        t.Place(B, "Mob B", east: 3);
+        t.Place(C, "Mob C", north: -12);
+        t.Blocked.Add(B);
+        Check.Eq(t.Tick(), A, "Mob A is locked");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("passed over")),
+            "a same-priority monster behind a wall or past the range isn't named");
+
+        t = new ScanPick(monsterRange: 10);
+        t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 5 });
+        t.Place(A, "Mob A", north: 2);
+        t.Place(Boss, "Boss", east: 3);
+        Check.Eq(t.Tick(), Boss, "the Boss in sight is the target");
+        t.Blocked.Add(Boss);
+        t.Tick();
+        Check.False(FakeHost.Logs.Any(l => l.Contains("passed over")), "the target itself out of sight isn't 'passed over'");
+    }
+
+    // ── R-20261031-201214-8be7: a switch on stale values, 124 ms after a bolt went out ─────
+
+    private static void LockOffNoSwitchOnStale()
+    {
+        var t = new Rig(Closest, false);
+        Check.Eq(t.Pick((A, 4.3, 0)), A, "A, a swarm closing in, is locked at 4.3 m");
+        Check.Eq(t.Pick((B, 2.4, 0)), A, "A blinks out of the scan (its last value 4.3 m): kept, not judged on it");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("another is clearly better")), "no 'clearly better' switch");
+        Check.Eq(t.Pick((A, 1.9, 0), (B, 2.4, 0)), A, "back in the scan at 1.9 m: still A");
+        t.Advance(2000);
+        Check.Eq(t.Pick((B, 2.4, 0)), B, "gone past the scan grace: B");
+    }
+
+    private static void LockOffHoldsJustSentCast()
+    {
+        var t = new Rig(Closest, false);
+        Check.Eq(t.Pick((A, 3, 0)), A, "A is locked");
+        t.Combat.NoteCastSent(unchecked((int)A));   // the bolt went out; no judgement yet
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), A, "a cast just sent at A: B (2.5 m closer) waits");
+        t.Combat.ReportDamageOnTarget(unchecked((int)A));
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), B, "the cast landed: the switch goes ahead");
+
+        t = new Rig(Closest, false);
+        t.Pick((A, 3, 0));
+        t.Combat.NoteCastSent(unchecked((int)A));
+        t.Advance(4100);
+        Check.Eq(t.Pick((A, 3, 0), (B, 0.5, 0)), B, "past the 4 s flight window with nothing landed: switch");
+    }
+
+    private static void BeyondRangeWhileEngaged()
+    {
+        var t = new ScanPick(monsterRange: 10);
+        t.S.MonsterRules.Add(new MonsterRule { Name = "Boss", Priority = 5 });
+        t.Place(A, "Mob A", north: 2);
+        t.Place(Boss, "Boss", north: -40);
+        Check.Eq(t.Tick(), A, "Mob A is locked; the Boss is far off");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("passed over")), "nothing named yet");
+
+        t.Place(Boss, "Boss", north: -12);   // the Boss walks up, still past Monster Range 10
+        Check.Eq(t.Tick(), A, "the Boss at 12 m is not a candidate: the target stays (intended)");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] passed over 0x80000404 'Boss' priority 5, 12.0 m: beyond Monster Range (10 m), the Monster Range setting")
+                                       && l.Contains("the target stays 0x80000401 'Mob A' priority 1")),
+            "logged: the setting is why");
+        int lines = PassedLines();
+        t.Tick();
+        Check.Eq(PassedLines(), lines, "once");
+        string? why = t.C.DescribeHigherPriorityPassedOver();
+        Check.True(why != null && why.Contains("'Boss' priority 5") && why.Contains("beyond Monster Range (10 m)"), $"/ra why names it ({why})");
+
+        t.Place(Boss, "Boss", north: -9);
+        t.S.TargetLock = false;   // with the lock on, Mob A would be kept (LockHoldsOverPriority)
+        Check.Eq(t.Tick(), Boss, "inside Monster Range, lock off: the Boss takes over at once");
+    }
+
+    private static int PassedLines() => FakeHost.Logs.Count(l => l.Contains("[CombatTarget] passed over"));
+
+    /// <summary>The real scan (ScanNearbyTargets) over placed monsters, then the pick.</summary>
+    private sealed class ScanPick
+    {
+        public readonly LegacyUiSettings S;
+        public readonly HashSet<uint> Blocked = new();
+        private readonly List<uint> _ids = new();
+        private CombatManager? _c;
+        public CombatManager C => _c!;
+        private static readonly FieldInfo LastScan =
+            typeof(CombatManager).GetField("_lastScanTime", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        public ScanPick(int monsterRange)
+        {
+            FakeHost.Reset();
+            TargetingTests.Place(Player, "Me", 96, 96, creature: false);
+            FakeHost.PlayerPose = (Lb | 0x1C, 96f, 96f, 0f);
+            S = new LegacyUiSettings { MonsterRange = monsterRange, TargetSelection = Closest, TargetLock = true };
+        }
+
+        /// <summary>A monster <paramref name="north"/>/<paramref name="east"/> m from the player.</summary>
+        public void Place(uint id, string name, double north = 0, double east = 0, double up = 0)
+        {
+            TargetingTests.Place(id, name, (float)(96 + east), (float)(96 + north), z: (float)up);
+            if (!_ids.Contains(id)) _ids.Add(id);
+        }
+
+        /// <summary>One combat tick's selection: scan, pick, and the passed-over note.</summary>
+        public uint Tick()
+        {
+            if (_c == null)
+            {
+                var host = FakeHost.Create();
+                var cache = FakeHost.MakeCache(host, Player, _ids, null);
+                _c = new CombatManager(host, S, cache);
+                _c.SetPlayerId(Player);
+                _c.SetDamageStores(null, new RynthCore.Plugin.RynthAi.CreatureData.MonsterDamageStore());
+                _c.LosBlockedOverride = id => Blocked.Contains(unchecked((uint)id));
+            }
+            LastScan.SetValue(_c, DateTime.MinValue);
+            _c.ScanNearbyTargets();
+            _c.HandleCombatTrigger();
+            _c.NotePassedOverWhileEngaged();
+            return unchecked((uint)_c.activeTargetId);
+        }
+    }
+
+    // ── Rig ───────────────────────────────────────────────────────────────────
+
+    private sealed class Rig
+    {
+        public readonly CombatManager Combat;
+        public readonly LegacyUiSettings S;
+        private readonly WorldObjectCache _cache;
+        private DateTime _now = RynthClock.Now;   // the clock RynthAi times with
+
+        /// <param name="plates">The engine plates' readings (API v93 GetMonsterHealth: id -> ratio, age ms);
+        /// null = an engine without the call. <paramref name="plateVersion"/> non-zero: the table's Version.</param>
+        public Rig(int scheme, bool targetLock, Dictionary<uint, float>? health = null, int monsterRange = 20,
+                   Dictionary<uint, (float Ratio, uint AgeMs)>? plates = null, uint plateVersion = 0)
+        {
+            FakeHost.Reset();
+            if (plates != null)
+            {
+                FakeHost.PlateHealthCalls = true;
+                FakeHost.PlateHealthVersion = plateVersion;
+                foreach (var kv in plates) FakeHost.PlateHealth[kv.Key] = kv.Value;
+            }
+            Place(Player, "Me", 96, 96, creature: false);
+            FakeHost.PlayerPose = (Lb | 0x1C, 96f, 96f, 0f);
+            Place(A, "Mob A", 96, 98);
+            Place(B, "Mob B", 96, 99);
+            Place(C, "Mob C", 96, 100);
+            Place(Boss, "Boss", 96, 101);
+            S = new LegacyUiSettings { MonsterRange = monsterRange, TargetSelection = scheme, TargetLock = targetLock };
+            var host = FakeHost.Create();
+            Host = host;
+            _cache = FakeHost.MakeCache(host, Player, new[] { A, B, C, Boss }, health);
+            _cache.Clock = () => _now;   // health from here on is stamped on the rig's clock
+            Combat = new CombatManager(host, S, _cache);
+            Combat.SetPlayerId(Player);
+            Combat.SetDamageStores(null, new RynthCore.Plugin.RynthAi.CreatureData.MonsterDamageStore());
+            Combat.TargetClock = () => _now;
+        }
+
+        public readonly RynthCore.PluginSdk.RynthCoreHost Host;
+        public WorldObjectCache Cache => _cache;
+        public void Health(uint id, float ratio) => _cache.OnUpdateHealth(id, ratio);
+        /// <summary>The engine plates now read <paramref name="id"/> at <paramref name="ratio"/>, <paramref name="ageMs"/> old.</summary>
+        public void Plate(uint id, float ratio, uint ageMs) => FakeHost.PlateHealth[id] = (ratio, ageMs);
+        public void Advance(double ms) => _now = _now.AddMilliseconds(ms);
+
+        /// <summary>One tick: the scan holds these (id, distance m, facing angle deg); returns the target.</summary>
+        public uint Pick(params (uint Id, double Dist, double Angle)[] scan)
+        {
+            Combat.SetScannedTargetsForTests(scan.Select(t => new CombatManager.ScannedTarget
+            {
+                Id = unchecked((int)t.Id), Distance = t.Dist, Angle = t.Angle, Bearing = double.NaN, Name = FakeHost.Names[t.Id],
+            }));
+            Combat.HandleCombatTrigger();
+            return unchecked((uint)Combat.activeTargetId);
+        }
+    }
+
+    private static void Place(uint id, string name, float x, float y, bool creature = true, float z = 0f)
+    {
+        FakeHost.Names[id] = name;
+        FakeHost.Positions[id] = (Lb | 0x1C, x, y, z);
+        if (creature) FakeHost.ItemTypes[id] = 0x10;
+    }
+}

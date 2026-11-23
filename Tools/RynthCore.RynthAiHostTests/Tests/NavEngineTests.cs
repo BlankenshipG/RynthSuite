@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
@@ -28,15 +29,22 @@ internal static class NavEngineTests
         r.Add("nav engine: walks to each waypoint, a Circular route wraps", CircularWraps);
         r.Add("nav engine: a Linear route turns round at both ends", LinearBounces);
         r.Add("nav engine: a Linear route keeps its direction through a pause", LinearDirectionSurvivesStop);
-        r.Add("nav engine: a Once route ends, turns nav off, and re-runs from [0]", OnceCompletes);
+        r.Add("nav engine: a Once route ends, turns nav off, stays finished, and the player can re-run it from [0]", OnceCompletes);
         r.Add("nav engine: closest approach counts as arriving; a pause forgets it", SweepPass);
         r.Add("nav engine: a pause point waits its time on the clock", PausePoint);
+        r.Add("nav engine: standing still through a pause, the stop is sent once and then once a second (not every tick)", PauseStopsOnce);
         r.Add("nav engine: a chat point sends its text once and moves on", ChatPoint);
         r.Add("nav engine: a jump point jumps on arrival (heading and power clamped)", JumpPoint);
         r.Add("nav engine: a recall that teleports moves on after the settle", RecallTeleports);
         r.Add("nav engine: a recall that never fires, next waypoint close: moves on after 60 s", RecallTimeoutNear);
         r.Add("nav engine: macro start picks the nearest plain waypoint", ResumeNearest);
         r.Add("nav engine: indoors, macro start picks the nearest waypoint on foot, not through a wall", ResumeNearestByWalk);
+        r.Add("nav engine: macro start skips a nearest waypoint already walked past, not one still ahead", ResumeNearestPassed);
+        r.Add("nav engine: back from a pause that moved 10+ yd, nav heads for the closest waypoint", ResumeAfterPauseMoved);
+        r.Add("nav engine: back from a pause that moved under 10 yd, nav keeps its waypoint", ResumeAfterPauseStill);
+        r.Add("nav engine: the dungeon patrol keeps its waypoint after a pause that moved it (no closest-waypoint pick)", ResumeAfterPausePatrol);
+        r.Add("nav engine: Go To Closest Waypoint off keeps the last waypoint (hazard/corpse still rejoin)", ResumeNearestOff);
+        r.Add("nav engine: a loaded route starts at [0] for Once/Follow, or for any route with the option off", StartsAtFirstPoint);
         r.Add("nav engine: nearest waypoint lookup", FindNearest);
         r.Add("nav engine: off track only beyond 160 yd (159 yd never), after 5 s, once per trip", OffTrack159);
         r.Add("nav engine: coming back from a pause far off the route is not off track", OffTrackDisarmedByStop);
@@ -49,12 +57,23 @@ internal static class NavEngineTests
         r.Add("nav engine: a hold is checked again every 3 s, so a wrong answer doesn't hold for good", AreaRecheck);
         r.Add("nav engine: at the last waypoint before the area change it walks on through for 6 s", AreaGraceWalk);
         r.Add("nav engine: with recovery off the area is never checked", AreaRecoveryOff);
+        r.Add("nav area after a portal: a later waypoint in this area (a recall cast here, the loop's start) is carried on from", AreaCarryOnRecallHere);
+        r.Add("nav area after a portal: a route that walks into the dungeon carries on at its first waypoint inside", AreaCarryOnIntoDungeon);
+        r.Add("nav area after a portal: a Linear route looks to its end and back, and turns round for a point behind", AreaCarryOnLinearBack);
+        r.Add("nav area: at the route's own way out it still walks through, it doesn't go back to an earlier point here", AreaBoundaryNotCarried);
+        r.Add("nav area: nothing of the route here, in a dungeon: says once to load a route or press Patrol, offers Patrol", AreaNoneHereDungeon);
+        r.Add("nav area: nothing of the route here, on the landscape: says to load a route for here, no Patrol", AreaNoneHereLandscape);
+        r.Add("nav area: loading the route again over a hold says so again; a route for here (the Patrol) runs at once", AreaReloadAndPatrol);
         r.Add("nav area: the decision (same dungeon, other dungeon, landscape, off the map)", ClassifyArea);
+        r.Add("nav engine: steep ground on the way to a waypoint: a way round is planned before getting stuck", SteepAheadDetours);
+        r.Add("nav engine: the steep check runs once per waypoint and again every 10 yd walked", SteepAheadRecheck);
+        r.Add("nav engine: a way round whose first leg climbs steep ground is refused", SteepFirstLegRefused);
+        r.Add("nav steep ground: climbing or crossing a red slope blocks, running down it doesn't", SteepGroundRule);
         r.Add("nav recovery: a waypoint behind a wall is in the room whose floor holds it, not the nearest centre", ContainingCellByFloor);
 
         r.Add("nav point reach: values under 1.5 yd work (it used to be floored at 1.5)", ReachBelowOneAndAHalf);
         r.Add("nav point reach: a doorway point is reached within 1 yd, its sweep pass within 1.5 yd", DoorwayPointTight);
-        r.Add("nav point reach: no lookahead corner cut at a doorway point", DoorwayNoLookahead);
+        r.Add("nav point reach: no lookahead corner cut at a doorway point (or at a small reach)", DoorwayNoLookahead);
         r.Add("nav point reach: Follow stops within it and moves again 3 yd farther out", FollowUsesReach);
         r.Add("nav point reach: metas set it as FollowNavMin (yd) or VTank's NavCloseStopRange (x240)", ReachFromMetas);
 
@@ -65,6 +84,7 @@ internal static class NavEngineTests
         r.Add("nav engine: a Linear index past the end carries on from that end", LinearIndexOffEnd);   // was a known failure; fixed by 91178c1
         r.Add("nav engine: a chat point that loads another route hands over to it", ChatLoadsRoute);   // was a known failure; fixed by a8e5de0
         r.Add("nav engine: a recall that never fires, next waypoint far: stops instead of walking off", RecallTimeoutFar);   // was a known failure; fixed by 5cfbcea
+        r.Add("nav engine: a portal/NPC use the engine did not send is not logged as sent and is asked again", PortalNpcUseNotSent);
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────────
@@ -105,6 +125,9 @@ internal static class NavEngineTests
     private sealed class FakePlanner : INavRecoveryPlanner
     {
         public NavAreaCheck Area = NavAreaCheck.Match;
+        /// <summary>Per-point answer (nav coordinates); used instead of <see cref="Area"/> when set.</summary>
+        public Func<double, double, NavAreaCheck>? AreaAt;
+        public string RouteArea = "dungeon 0x01D9", PlayerArea = "on the landscape";
         public int AreaCalls;
         public bool GivePlan;
         /// <summary>Per-target walk length (yd); null = no path. Used instead of GivePlan when set.</summary>
@@ -122,13 +145,26 @@ internal static class NavEngineTests
             return plan;
         }
 
+        /// <summary>Steep ground on a leg: yards along it, or null for none (the default).</summary>
+        public Func<double, double, double, double, double?>? SteepAt;
+        public int SteepCalls;
+
+        public bool CrossesSteepGround(double aNs, double aEw, double bNs, double bEw, out double atYd)
+        {
+            SteepCalls++;
+            double? at = SteepAt?.Invoke(aNs, aEw, bNs, bEw);
+            atYd = at ?? -1;
+            return at != null;
+        }
+
         public NavAreaCheck CheckArea(uint playerCell, double tNs, double tEw, out string routeArea, out string playerArea)
         {
             AreaCalls++;
-            bool mis = Area == NavAreaCheck.Mismatch;
-            routeArea = mis ? "dungeon 0x01D9" : string.Empty;
-            playerArea = mis ? "on the landscape" : string.Empty;
-            return Area;
+            var a = AreaAt != null ? AreaAt(tNs, tEw) : Area;
+            bool mis = a == NavAreaCheck.Mismatch;
+            routeArea = mis ? RouteArea : string.Empty;
+            playerArea = mis ? PlayerArea : string.Empty;
+            return a;
         }
     }
 
@@ -214,10 +250,21 @@ internal static class NavEngineTests
         Check.Eq(nav.Idx, 2, "the index is left past the end");
         Check.False(FakeHost.AutoRun, "stopped");
 
-        nav.S.EnableNavigation = true;   // re-run
+        // A meta or expression switching nav on (a macro start replays "/vt opt set enablenav true"):
+        // the route stays finished, as a finished VTank Once route does (2026-10-28; it re-ran from [0]).
+        nav.S.EnableNavigation = true;
         nav.Tick();
-        Check.Eq(nav.Idx, 0, "re-enabled: the route restarts from [0]");
-        Check.Eq(LogCount("Once route re-armed"), 1, "logged");
+        Check.Eq(nav.Idx, 2, "nav switched on: still finished");
+        Check.False(nav.S.EnableNavigation, "and nav off again");
+        Check.Eq(LogCount("the Once route is finished"), 1, "logged");
+
+        // The player's Nav switch / Start Navigation (RearmFinishedNavRoute) re-runs it from [0].
+        Check.True(nav.S.RearmFinishedNavRoute(), "the player re-runs it");
+        nav.S.EnableNavigation = true;
+        nav.Tick();
+        Check.Eq(nav.Idx, 0, "re-run from [0]");
+        Check.True(nav.S.EnableNavigation, "nav on");
+        Check.False(nav.S.RearmFinishedNavRoute(), "a route that isn't finished is left alone");
     }
 
     private static void SweepPass()
@@ -253,6 +300,26 @@ internal static class NavEngineTests
         Check.Eq(nav.Idx, 0, "2.9 s: still pausing");
         nav.Run(0.2);
         Check.Eq(nav.Idx, 1, "3.1 s: on to [1]");
+    }
+
+    /// <summary>
+    /// Standing still through a pause, nav sends its stop once and then a reminder a second, not every
+    /// tick: in portal space the game thread takes none of them and 137 ran 12.7 s late, against the
+    /// next leg (Dargoth Hera, 2026-10-19).
+    /// </summary>
+    private static void PauseStopsOnce()
+    {
+        FakeHost.Reset(); At(0, 0);
+        var pause = Pt(0, 0, T.Pause); pause.PauseTimeMs = 5000;
+        var nav = new Nav(Route(RT.Circular, pause, Pt(20, 0)));
+        nav.Tick(100);
+        int before = FakeHost.AutoRunCalls.Count(on => !on);
+        nav.Run(4.5);
+        int during = FakeHost.AutoRunCalls.Count(on => !on) - before;
+        Check.True(nav.E.GetStateSnapshot().InPause, "still pausing");
+        Check.True(during <= 5, $"4.5 s of pause: {during} autorun-off sends (a reminder a second at most)");
+        Check.True(during >= 3, $"but the reminders keep coming ({during})");
+        Check.False(FakeHost.AutoRun, "standing still");
     }
 
     private static void ChatPoint()
@@ -334,6 +401,34 @@ internal static class NavEngineTests
         nav.Run(0.4);
         Check.Eq(nav.Idx, 1, "after the settle: on to [1]");
         Check.True(nav.S.EnableNavigation, "nav still on");
+    }
+
+    private static void PortalNpcUseNotSent()
+    {
+        FakeHost.Reset(); At(0, 0);
+        FakeHost.WeaponCalls = true;   // UseObject
+        const uint Npc = 0x7A000001, Me = 0x50000F01;
+        var pose = FakeHost.PlayerPose;
+        FakeHost.Names[Me] = "Tester";
+        FakeHost.Positions[Me] = pose;
+        FakeHost.Names[Npc] = "Gateway";
+        FakeHost.Positions[Npc] = (pose.Cell, pose.X + 1f, pose.Y, pose.Z);
+        var host = FakeHost.Create(Me);
+        var cache = FakeHost.MakeCache(host, Me, new[] { Npc });
+        var nav = new Nav(Route(RT.Once, Pt(10, 0), Pt(20, 0)));
+        nav.E.SetWorldObjectCache(cache);
+        nav.E.SetPlayerId(Me);
+        var fire = typeof(NavigationEngine).GetMethod("FirePortalNpcUse", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var point = new NavPoint { Type = T.PortalNPC, TargetName = "Gateway" };
+
+        FakeHost.UseObjectAccepts = false;
+        Check.False((bool)fire.Invoke(nav.E, new object[] { point })!, "the engine did not send the use: not fired, the caller asks again");
+        Check.Eq(LogCount("UseObject portal 'Gateway' (dist="), 0, "and no 'used' line is logged");
+        Check.Eq(LogCount("was not sent - will retry"), 1, "the refusal is logged");
+
+        FakeHost.UseObjectAccepts = true;
+        Check.True((bool)fire.Invoke(nav.E, new object[] { point })!, "once the engine sends it the portal counts as fired");
+        Check.Eq(LogCount("UseObject portal 'Gateway' (dist="), 1, "and the 'used' line is logged");
     }
 
     private static void RecallTimeoutNear()
@@ -425,6 +520,93 @@ internal static class NavEngineTests
         nav3.E.ResumeFromNearestWaypoint();
         Check.Eq(nav3.Idx, 2, "outdoors: straight-line nearest");
         Check.Eq(p3.PlanTargets.Count, 0, "outdoors: no plans asked for");
+    }
+
+    /// <summary>A 40 yd square, run clockwise: [0] origin, [1] 40 east, [2] 40 north-east, [3] 40 north.</summary>
+    private static NavRouteParser Square()
+        => Route(RT.Circular, Pt(0, 0), Pt(0, 40), Pt(40, 40), Pt(40, 0));
+
+    private static void ResumeNearestPassed()
+    {
+        // Just beyond [2] on the leg toward [3]: the closest spot on the route is on that leg.
+        FakeHost.Reset(); At(42, 30);
+        var past = new Nav(Square(), idx: 0);
+        past.E.ResumeFromNearestWaypoint();
+        Check.Eq(past.Idx, 3, "walked past [2]: on to [3] instead of turning back");
+
+        // Still short of [1], a little off the leg into it: [1] stays the target.
+        FakeHost.Reset(); At(2, 30);
+        var shy = new Nav(Square(), idx: 0);
+        shy.E.ResumeFromNearestWaypoint();
+        Check.Eq(shy.Idx, 1, "still on the leg into [1]: [1]");
+    }
+
+    private static void ResumeAfterPauseMoved()
+    {
+        FakeHost.Reset(); At(0, 10);
+        var nav = new Nav(Square(), idx: 1);
+        nav.Tick();
+        nav.E.Stop();                  // a fight starts
+        At(38, 42);                    // ... and the chase ends near [2]
+        nav.Run(6.0);                  // past any teleport settle
+        Check.Eq(nav.Idx, 2, "the closest waypoint, not the one it was heading for");
+        Check.True(LogCount("back from a pause") == 1, "logged once");
+    }
+
+    private static void ResumeAfterPausePatrol()
+    {
+        FakeHost.Reset(); At(0, 10);
+        var nav = new Nav(Square(), idx: 1);
+        nav.E.KeepWaypointAfterPause = () => true;   // the plugin: _dunPatrolActive
+        nav.Tick();
+        nav.E.Stop();
+        At(38, 42);                    // the same chase as ResumeAfterPauseMoved
+        nav.Run(6.0);
+        Check.Eq(nav.Idx, 1, "patrol: carries on to the waypoint it was heading for");
+        Check.Eq(LogCount("back from a pause"), 0, "nothing re-picked");
+
+        nav.E.ResumeFromNearestWaypoint(always: true);
+        Check.Eq(nav.Idx, 2, "hazard escape / corpse run: still rejoins at the closest waypoint");
+    }
+
+    private static void ResumeAfterPauseStill()
+    {
+        FakeHost.Reset(); At(2, 38);
+        var nav = new Nav(Square(), idx: 2);
+        nav.Tick();
+        nav.E.Stop();
+        At(-3, 36);                    // 5 yd: [1] is now nearer, but the pause barely moved us
+        nav.Run(1.0);
+        Check.Eq(nav.Idx, 2, "kept: moved under 10 yd");
+        Check.Eq(LogCount("back from a pause"), 0, "nothing re-picked");
+    }
+
+    private static void ResumeNearestOff()
+    {
+        FakeHost.Reset(); At(0, 10);
+        var nav = new Nav(Square(), idx: 1);
+        nav.S.NavResumeNearest = false;
+        nav.Tick();
+        nav.E.Stop();
+        At(38, 42);
+        nav.Run(6.0);
+        Check.Eq(nav.Idx, 1, "pause: carries on to the waypoint it was heading for");
+
+        nav.E.ResumeFromNearestWaypoint();
+        Check.Eq(nav.Idx, 1, "macro start: keeps the last waypoint");
+
+        nav.E.ResumeFromNearestWaypoint(always: true);
+        Check.Eq(nav.Idx, 2, "hazard escape / corpse run: rejoins at the closest waypoint anyway");
+    }
+
+    private static void StartsAtFirstPoint()
+    {
+        Check.False(NavRouteParser.StartsAtFirstPoint(RT.Circular, true), "Circular, option on: nearest");
+        Check.False(NavRouteParser.StartsAtFirstPoint(RT.Linear, true), "Linear, option on: nearest");
+        Check.True(NavRouteParser.StartsAtFirstPoint(RT.Once, true), "Once: always [0]");
+        Check.True(NavRouteParser.StartsAtFirstPoint(RT.Follow, true), "Follow: always [0]");
+        Check.True(NavRouteParser.StartsAtFirstPoint(RT.Circular, false), "Circular, option off: [0]");
+        Check.True(NavRouteParser.StartsAtFirstPoint(RT.Linear, false), "Linear, option off: [0]");
     }
 
     private static void FindNearest()
@@ -546,6 +728,73 @@ internal static class NavEngineTests
         Check.True(FakeHost.Logs.Exists(l => l.Contains("passes over 2 waypoint(s)")), "logged as passing over 2 waypoints");
     }
 
+    // ── Steep ground ahead (Silentkelpie 2026-10-20: the route ran up to red slopes in water) ──
+
+    private static void SteepAheadDetours()
+    {
+        FakeHost.Reset(); At(0, 0);
+        var wp = Pt(100, 0);
+        // Steep only on the straight leg to the waypoint; the way round's first leg is clear.
+        var p = new FakePlanner { GivePlan = true, SteepAt = (_, _, bNs, _) => Math.Abs(bNs - wp.NS) < 1e-9 ? 30 : null };
+        var nav = new Nav(Route(RT.Circular, wp, Pt(200, 0)), planner: p);
+        nav.Tick();
+        Check.Eq(p.PlanTargets.Count, 1, "a way round is planned on the first tick, no stuck needed");
+        Check.Eq(FakeHost.Jumps, 0, "no jump");
+        Check.True(FakeHost.Logs.Exists(l => l.Contains("steep ground 30yd ahead on the way to waypoint 1")), "logged with the distance");
+        Check.True(nav.Recovery != "none" && !nav.Recovery.StartsWith("none"), $"a detour is running ({nav.Recovery})");
+    }
+
+    private static void SteepAheadRecheck()
+    {
+        FakeHost.Reset(); At(0, 0);
+        var p = new FakePlanner { GivePlan = true };   // SteepAt null: the way is clear
+        var nav = new Nav(Route(RT.Circular, Pt(100, 0), Pt(200, 0)), planner: p);
+        nav.Tick(); nav.Tick(); nav.Tick();
+        Check.Eq(p.SteepCalls, 1, "checked once for the waypoint, not every tick");
+        At(9, 0); nav.Tick();
+        Check.Eq(p.SteepCalls, 1, "9 yd walked: not again yet");
+        At(11, 0); nav.Tick();
+        Check.Eq(p.SteepCalls, 2, "10+ yd walked: checked again from here");
+        Check.Eq(p.PlanTargets.Count, 0, "a clear way plans nothing");
+    }
+
+    private static void SteepFirstLegRefused()
+    {
+        FakeHost.Reset(); At(0, 0);
+        // The leg to the waypoint and the plan's first leg both climb a slope.
+        var p = new FakePlanner { GivePlan = true, SteepAt = (_, _, _, _) => 4 };
+        var nav = new Nav(Route(RT.Circular, Pt(100, 0), Pt(200, 0)), planner: p);
+        nav.Tick();
+        Check.Eq(p.PlanTargets.Count, 1, "planned once");
+        Check.True(FakeHost.Logs.Exists(l => l.Contains("its first leg climbs steep ground")), "refused, and logged why");
+        Check.True(nav.Recovery.StartsWith("none"), $"no detour runs ({nav.Recovery})");
+    }
+
+    private static void SteepGroundRule()
+    {
+        const uint key = 0x8080;                       // landblock 0x80, 0x80
+        double ox = 0x80 * 192.0, oy = 0x80 * 192.0;
+        var cliff = new float[9, 9];                   // flat west of x = 72, then 40 up per 24 yd (59°)
+        for (int ix = 0; ix < 9; ix++)
+            for (int iy = 0; iy < 9; iy++)
+                cliff[ix, iy] = ix <= 3 ? 0f : (ix - 3) * 40f;
+        var flat = new float[9, 9];
+        Func<uint, float[,]?> Cliff = k => k == key ? cliff : null;
+        Func<uint, float[,]?> Flat = k => k == key ? flat : null;
+
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, Flat, 0, 0, 500), -1.0, "flat ground: clear");
+        double at = NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, Cliff, 0, 0, 500);
+        Check.True(at >= 61 && at <= 63, $"east, uphill: blocked where the slope starts, 62 yd along ({at})");
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 150, oy + 100, ox + 10, oy + 100, Cliff, 0, 0, 500), -1.0, "west, down the same slope: clear");
+        Check.True(NavSteepGround.FirstBlockedYd(ox + 110, oy + 10, ox + 110, oy + 180, Cliff, 0, 0, 500) >= 0, "north, across the slope: blocked");
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, Cliff, 0, 0, 40), -1.0, "beyond the lookahead: not checked");
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, _ => null, 0, 0, 500), -1.0, "landscape not loaded: clear");
+
+        var gentle = new float[9, 9];                  // 10 up per 24 yd (23°): walkable
+        for (int ix = 0; ix < 9; ix++) for (int iy = 0; iy < 9; iy++) gentle[ix, iy] = ix * 10f;
+        Check.Eq(NavSteepGround.FirstBlockedYd(ox + 10, oy + 100, ox + 150, oy + 100, k => k == key ? gentle : null, 0, 0, 500), -1.0, "a walkable climb: clear");
+    }
+
     private static void RejoinLimits()
     {
         Check.Eq(RejoinFrom(Line(RT.Circular, 16, 3), 1, 0.5, 2), 1, "nearer to [0], behind the target: stays on [1]");
@@ -593,7 +842,8 @@ internal static class NavEngineTests
 
         nav.Run(12);
         Check.Eq(FakeHost.Chat.Count(c => c.Contains("different area")), 1, "still one chat line after 12 s");
-        Check.True(p.AreaCalls >= 4 && p.AreaCalls <= 5, $"asked again every 3 s while held ({p.AreaCalls} calls in 12 s)");
+        // 1 for the waypoint, 1 for the one look along the route for a waypoint here (not repeated), 4 rechecks.
+        Check.True(p.AreaCalls >= 5 && p.AreaCalls <= 6, $"asked again every 3 s while held ({p.AreaCalls} calls in 12 s)");
         Check.Eq(p.PlanTargets.Count, 0, "no detour is tried");
         Check.Eq(FakeHost.Jumps, 0, "no escape jumps");
         Check.Eq(nav.Idx, 1, "the waypoint is kept");
@@ -679,6 +929,129 @@ internal static class NavEngineTests
         Check.True(FakeHost.AutoRun, "walks toward the waypoint");
     }
 
+    // ── Different area after a portal / a load (2026-11-01) ──────────────────
+
+    /// <summary>A planner that says Match where <paramref name="here"/> holds (yards north, east of the origin), Mismatch elsewhere.</summary>
+    private static FakePlanner AreaWhere(Func<double, double, bool> here, string routeArea = "the landscape", string playerArea = "in dungeon 0x5756")
+        => new() { AreaAt = (ns, ew) => here((ns - NS0) * 240.0, (ew - EW0) * 240.0) ? NavAreaCheck.Match : NavAreaCheck.Mismatch,
+                   RouteArea = routeArea, PlayerArea = playerArea };
+
+    /// <summary>Puts the fake character in an indoor cell of the landblock it stands in.</summary>
+    private static void Indoors() => FakeHost.PlayerPose = ((FakeHost.PlayerPose.Cell & 0xFFFF0000u) | 0x0124, FakeHost.PlayerPose.X, FakeHost.PlayerPose.Y, FakeHost.PlayerPose.Z);
+
+    private static void AreaCarryOnRecallHere()
+    {
+        // The logged case: a Circular route that starts with a recall cast in the home dungeon, then walks
+        // the landscape to a portal. Loaded (or the macro started) in the dungeon, nav was on [2] out on the
+        // landscape (the "nearest" point by map distance) and held for good.
+        FakeHost.Reset(); At(-500, -500); Indoors();
+        var recall = Pt(-500, -500, T.Recall); recall.SpellId = 4198;
+        var route = Route(RT.Circular, recall, Pt(100, 0), Pt(110, 0), Pt(120, 0));
+        var p = AreaWhere((n, e) => n < -400);
+        var nav = new Nav(route, idx: 2, planner: p);
+        nav.Tick();
+        Check.Eq(nav.Idx, 0, "carries on from [0], the recall cast here (the loop goes on to it)");
+        Check.True(FakeHost.Chat.Exists(c => c.Contains("carrying on from [0]") && c.Contains("Recall")), "says so in chat, naming the step");
+        Check.Eq(FakeHost.Chat.Count(c => c.Contains("different area")), 0, "no hold line");
+        Check.False(nav.S.NavIsStuck, "not flagged stuck");
+        Check.Eq(nav.Recovery, "none", "no area hold");
+        nav.Run(1.0);
+        Check.Eq(nav.E.GetStateSnapshot().PortalState, "FiringAction", "and casts the recall");
+    }
+
+    private static void AreaCarryOnIntoDungeon()
+    {
+        // A Once route: landscape [0]-[1], the portal at [2] (used out there), then the dungeon [3]-[4].
+        // The character went through (or was put) inside with nav still on [1]: on to [3], not a hold.
+        FakeHost.Reset(); At(-300, 0); Indoors();
+        var portal = Pt(20, 0, T.PortalNPC); portal.TargetName = "Abandoned Experiment";
+        var route = Route(RT.Once, Pt(0, 0), Pt(10, 0), portal, Pt(-290, 0), Pt(-280, 0));
+        var nav = new Nav(route, idx: 1, planner: AreaWhere((n, e) => n < -200));
+        nav.Tick();
+        Check.Eq(nav.Idx, 3, "carries on from [3], the first waypoint inside (the portal step out there is passed)");
+        nav.Run(0.5);
+        Check.True(FakeHost.AutoRun, "walks toward [3]");
+        Check.Eq(FakeHost.Chat.Count(c => c.Contains("different area")), 0, "never held");
+
+        // Nothing is walked out of order on a Once route: points before the current one are never picked.
+        FakeHost.Reset(); At(-330, 0); Indoors();   // 40 yd from [0]: not standing at the way out
+        var back = new Nav(Route(RT.Once, Pt(-290, 0), Pt(10, 0), Pt(20, 0)), idx: 1, planner: AreaWhere((n, e) => n < -200));
+        back.Tick();
+        Check.Eq(back.Idx, 1, "a Once route never goes back to [0]");
+        Check.Eq(FakeHost.Chat.Count(c => c.Contains("nothing ahead on it is here")), 1, "it holds and says nothing ahead is here");
+    }
+
+    private static void AreaCarryOnLinearBack()
+    {
+        FakeHost.Reset(); At(-330, 0); Indoors();   // 40 yd from [0]: not standing at the way out
+        var nav = new Nav(Route(RT.Linear, Pt(-290, 0), Pt(10, 0), Pt(20, 0)), idx: 1, planner: AreaWhere((n, e) => n < -200));
+        nav.Tick();
+        Check.Eq(nav.Idx, 0, "nothing ahead to the end: back from it to [0]");
+        Check.Eq(nav.E.GetStateSnapshot().LinearDir, -1, "reached heading back");
+    }
+
+    private static void AreaBoundaryNotCarried()
+    {
+        // The route walks into a portal at [1]; [0] is in this area too. Standing at [1] (the way out), it
+        // walks on through as before rather than turning back to [0].
+        FakeHost.Reset(); At(0.5, 0);
+        var nav = new Nav(Route(RT.Circular, Pt(-20, 0), Pt(0, 0), Pt(900, 0)), idx: 2, planner: AreaWhere((n, e) => n < 100, "dungeon 0x01D9", "on the landscape"));
+        nav.Tick();
+        Check.Eq(nav.Idx, 2, "keeps the waypoint past the portal");
+        Check.True(nav.S.NavStatusLine.Contains("walking on through"), "the grace walk");
+        Check.False(FakeHost.Chat.Exists(c => c.Contains("carrying on")), "no carry-on");
+    }
+
+    private static void AreaNoneHereDungeon()
+    {
+        FakeHost.Reset(); At(-500, -500); Indoors();
+        var nav = new Nav(Route(RT.Circular, Pt(100, 0), Pt(110, 0), Pt(120, 0)), idx: 1, planner: AreaWhere((n, e) => false));
+        nav.Tick();
+        Check.False(FakeHost.AutoRun, "held");
+        var lines = FakeHost.Chat.Where(c => c.Contains("different area")).ToList();
+        Check.Eq(lines.Count, 1, "one chat line");
+        Check.True(lines.Count == 1 && lines[0].Contains("nothing ahead on it is here") && lines[0].Contains("press Patrol"),
+            $"it says what to do ({(lines.Count > 0 ? lines[0] : "")})");
+        Check.True(nav.S.NavStatusLine.Contains("press Patrol") && nav.S.NavStatusLine.Contains("the landscape"), $"status says it too ({nav.S.NavStatusLine})");
+        Check.True(nav.S.NavAreaHoldOffersPatrol, "the nav window offers the Patrol button");
+        nav.Run(12);
+        Check.Eq(FakeHost.Chat.Count(c => c.Contains("different area")), 1, "still one line after 12 s of rechecks");
+        Check.Eq(nav.Idx, 1, "the waypoint is kept");
+    }
+
+    private static void AreaNoneHereLandscape()
+    {
+        FakeHost.Reset(); At(30, 0);
+        var nav = new Nav(Route(RT.Circular, Pt(0, 0), Pt(50, 0)), idx: 1, planner: new FakePlanner { Area = NavAreaCheck.Mismatch });
+        nav.Tick();
+        var line = FakeHost.Chat.FirstOrDefault(c => c.Contains("different area")) ?? "";
+        Check.True(line.Contains("load a route for here") && !line.Contains("Patrol"), $"load a route, no Patrol on the landscape ({line})");
+        Check.False(nav.S.NavAreaHoldOffersPatrol, "no Patrol button");
+    }
+
+    private static void AreaReloadAndPatrol()
+    {
+        FakeHost.Reset(); At(-500, -500); Indoors();
+        var p = AreaWhere((n, e) => n < -400);
+        var landscape = Route(RT.Circular, Pt(100, 0), Pt(110, 0));
+        var nav = new Nav(landscape, idx: 1, planner: p);
+        nav.Tick();
+        Check.Eq(FakeHost.Chat.Count(c => c.Contains("different area")), 1, "held, said once");
+
+        // The player loads the same nav file again: a new route object, the same hold - and it says so again.
+        nav.S.CurrentRoute = Route(RT.Circular, Pt(100, 0), Pt(110, 0));
+        nav.Run(0.3);
+        Check.Eq(FakeHost.Chat.Count(c => c.Contains("different area")), 2, "the load is answered: still nothing here, said again");
+
+        // Patrol (or a route for this dungeon) replaces it: walks at once, the hold and its button are gone.
+        nav.S.CurrentRoute = Route(RT.Circular, Pt(-490, -500), Pt(-480, -500));
+        nav.S.ActiveNavIndex = 0;
+        nav.Run(0.5);
+        Check.True(FakeHost.AutoRun, "walking the route for here");
+        Check.Eq(nav.Recovery, "none", "no hold");
+        Check.False(nav.S.NavAreaHoldOffersPatrol, "no Patrol button any more");
+    }
+
     private static void ContainingCellByFloor()
     {
         static RynthCore.Plugin.RynthAi.Raycasting.Vector3[] Sq(float x0, float y0, float x1, float y1, float z) => new[]
@@ -746,18 +1119,27 @@ internal static class NavEngineTests
 
     private static void DoorwayNoLookahead()
     {
-        // 3 yd short of a point, the next one due east: a plain point blends the aim east
-        // (4 yd lookahead), a doorway point keeps aiming straight at itself.
+        // 3 yd short of a point, the next one due east, with a 2.8 yd reach (big enough to round
+        // corners: 3.6 yd of lookahead): a plain point blends the aim east, a doorway point keeps
+        // aiming straight at itself. At the 1.5 yd default reach there is no rounding at all
+        // (the lookahead scales with the reach since 2026-10-05, see NavReachTests).
         foreach (bool doorway in new[] { false, true })
         {
             FakeHost.Reset(); At(7, 0); Face(10, 0);
             var first = doorway ? Door(10, 0) : Pt(10, 0);
             var nav = new Nav(Route(RT.Circular, first, Pt(10, 10)));
+            nav.S.FollowNavMin = 2.8f;
             nav.Tick();
             double h = FakeHost.HeadingDeg;
             if (doorway) Check.True(h < 1.0 || h > 359.0, $"doorway point: still heading north ({h:F1})");
             else Check.True(h > 3.0 && h < 90.0, $"plain point: turning east early ({h:F1})");
         }
+
+        FakeHost.Reset(); At(8, 0); Face(10, 0);
+        var dflt = new Nav(Route(RT.Circular, Pt(10, 0), Pt(10, 10)));
+        dflt.Tick();
+        double hd = FakeHost.HeadingDeg;
+        Check.True(hd < 1.0 || hd > 359.0, $"1.5 yd default reach, 2 yd short: a plain point is walked straight at too ({hd:F1})");
     }
 
     private static void FollowUsesReach()

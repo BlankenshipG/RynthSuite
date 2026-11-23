@@ -47,6 +47,9 @@ internal static class UiFormat
     // Window flags
     public const uint FlagVisible = 1u << 0;
     public const uint FlagShowInBar = 1u << 1;
+    /// <summary>With ShowInBar: a bar button of its own instead of a Scripts menu line (engines from
+    /// 2026-10-11; older ones ignore it and list the window in the Scripts menu).</summary>
+    public const uint FlagBarButton = 1u << 11;
     public const uint FlagNoScrollbar = 1u << 5;
 
     // Event types
@@ -55,6 +58,8 @@ internal static class UiFormat
     public const ushort EvInt = 3;
     public const ushort EvText = 5;
     public const ushort EvOpen = 6;
+    /// <summary>The window's geometry changed: f32x8 pos, size, content avail, cursor (logical units), u32 flags.</summary>
+    public const ushort EvGeometry = 7;
     public const ushort EvVisibility = 8;
     public const ushort EvError = 10;
 

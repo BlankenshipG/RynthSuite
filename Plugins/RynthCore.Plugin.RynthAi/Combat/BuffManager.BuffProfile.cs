@@ -68,18 +68,29 @@ public partial class BuffManager
     /// <summary>Uses <paramref name="profile"/>'s enabled entries as the buff list (tests call this directly).</summary>
     internal void ApplyBuffProfile(BuffProfile profile)
     {
+        SpellCatalog.EnsureLoaded(m => _host.Log(m));
         _profileByKey.Clear();
         var keys = new List<string>(profile.Entries.Count);
+        var instant = new List<string>();
         foreach (var e in profile.Entries)
         {
             if (!e.Enabled || string.IsNullOrWhiteSpace(e.Key)) continue;
             // One cast per base name: two tiers of the same line would fight over one family.
             if (_profileByKey.ContainsKey(e.Key)) continue;
+            // A spell with no duration (Mana Boost restores mana at once) never stays on, so as a buff
+            // it would be cast again on every pass.
+            if (SpellCatalog.Get(e.SpellId) is { DurationSec: < 0 })
+            {
+                instant.Add(e.Name);
+                continue;
+            }
             _profileByKey[e.Key] = e;
             keys.Add(e.Key);
         }
         _profileKeys = keys;
         ActiveBuffProfileName = profile.Name;
+        if (instant.Count > 0)
+            _host.Log($"[RynthAi] Buff profile '{profile.Name}': left out {string.Join(", ", instant)} (no duration: not a buff, it would be recast every pass).");
     }
 
     private void ClearBuffProfile(string chatLine)
@@ -118,12 +129,14 @@ public partial class BuffManager
         SpellCatalogEntry? best = null;
         foreach (var c in SpellCatalog.Family(entry.FamilyId))
         {
-            if (!c.IsBuff || c.Level > maxTier || !_spellManager.IsKnownSpellId(c.Id)) continue;
+            // Fellowship versions are Use Fellowship Buffs' to pick (FellowshipVersion), not the profile's.
+            if (!c.IsBuff || c.Level > maxTier || !_spellManager.IsKnownSpellId(c.Id) || IsFellowshipSpell(c)) continue;
+            if (LevelUnusable(c.Id)) continue;   // refused by the server for components: a lower level
             if (best == null || Rank(c) > Rank(best)) best = c;
         }
         if (best != null) return best.Id;
         // Family unknown to the catalog: the exact spell picked in the Spells window.
-        return entry.SpellId != 0 && _spellManager.IsKnownSpellId(entry.SpellId) ? entry.SpellId : 0;
+        return entry.SpellId != 0 && _spellManager.IsKnownSpellId(entry.SpellId) && !LevelUnusable(entry.SpellId) ? entry.SpellId : 0;
 
         static long Rank(SpellCatalogEntry c) =>
             (long)c.Level * 1_000_000 + (c.IsSelf || c.IsItemTarget ? 100_000 : 0) + c.Power;

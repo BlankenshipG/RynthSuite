@@ -332,10 +332,40 @@ internal sealed class CollisionGeometry
 
     /// <summary>
     /// The cells of the landblock's buildings (EnvCells flagged SeenOutside): their walls and floors
-    /// (CellStruct physics polygons) and the static objects inside them. Dungeon cells are left out.
+    /// (CellStruct physics polygons) and the static objects inside them. Dungeon cells are left out
+    /// (<see cref="AppendDungeonCells"/> reads those).
     /// Stab frames in an EnvCell are landblock positions already (ACE uses them as they are).
     /// </summary>
     public void AppendBuildingCells(uint lb, List<Tri> outTris, Func<Placement, bool>? objFilter = null)
+        => AppendCells(lb, outTris, dungeon: false, objFilter);
+
+    /// <summary>
+    /// The cells of a dungeon landblock (EnvCells not flagged SeenOutside): the other half of
+    /// <see cref="AppendBuildingCells"/>. Returns how many cells were read.
+    /// </summary>
+    public int AppendDungeonCells(uint lb, List<Tri> outTris, Func<Placement, bool>? objFilter = null)
+    {
+        int before = CellsRead;
+        AppendCells(lb, outTris, dungeon: true, objFilter);
+        return CellsRead - before;
+    }
+
+    /// <summary>How many EnvCells the landblock has that are dungeon cells (0 for a plain outdoor landblock).</summary>
+    public int DungeonCellCount(uint lb)
+    {
+        byte[]? info = _cell.GetFileData((lb << 16) | 0xFFFE);
+        if (info == null || info.Length < 8) return 0;
+        uint numCells = BitConverter.ToUInt32(info, 4);
+        int n = 0;
+        for (uint c = 0; c < numCells && c < 0xFE00; c++)
+        {
+            byte[]? data = _cell.GetFileData((lb << 16) | (0x0100 + c));
+            if (data != null && data.Length >= 20 && (BitConverter.ToUInt32(data, 4) & 0x01) == 0) n++;
+        }
+        return n;
+    }
+
+    private void AppendCells(uint lb, List<Tri> outTris, bool dungeon, Func<Placement, bool>? objFilter)
     {
         byte[]? info = _cell.GetFileData((lb << 16) | 0xFFFE);
         if (info == null || info.Length < 8) return;
@@ -351,7 +381,7 @@ internal sealed class CollisionGeometry
                 using var r = new BinaryReader(ms);
                 r.ReadUInt32();
                 uint flags = r.ReadUInt32();
-                if ((flags & 0x01) == 0) continue;              // not SeenOutside: a dungeon cell
+                if (((flags & 0x01) == 0) != dungeon) continue; // SeenOutside = a building cell, else a dungeon cell
                 r.ReadUInt32();
                 byte numSurf = r.ReadByte(), numPortals = r.ReadByte();
                 ushort numStabs = r.ReadUInt16();
@@ -384,7 +414,10 @@ internal sealed class CollisionGeometry
                         CellObjects++;
                         int first = outTris.Count;
                         AppendModel(id, f, 1f, offX, offY, outTris);
-                        RaiseIfLow(outTris, first, null);   // on a floor: its base is its own lowest point
+                        // On a floor, at its origin: the base is where the origin stands, not the object's own lowest point (a
+                        // panel modelled around its origin goes 1 m under the floor; measured from there it is 2 m tall and the
+                        // part above the floor, 1 m, read as a step the mesh can climb: the Town Network's wooden panels).
+                        RaiseIfLow(outTris, first, f.OriginZ);
                     }
                 }
             }
@@ -449,7 +482,8 @@ internal sealed class CollisionGeometry
         {
             int first = outTris.Count;
             AppendModel(p.Model, p.Frame, 1f, offX, offY, outTris);
-            if (p.Kind == "obj") RaiseIfLow(outTris, first, groundLocal?.Invoke(p.Frame.OriginX, p.Frame.OriginY));
+            // Outdoors the base is the ground under the object; in a dungeon (no terrain) it is where the object's origin stands.
+            if (p.Kind == "obj") RaiseIfLow(outTris, first, groundLocal != null ? groundLocal(p.Frame.OriginX, p.Frame.OriginY) : p.Frame.OriginZ);
         }
     }
 

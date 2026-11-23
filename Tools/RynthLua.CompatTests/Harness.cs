@@ -22,11 +22,20 @@ internal static class Harness
 
     private static FakeWorld W => FakeWorld.W;
 
+    /// <summary>Plugins\RynthCore.Plugin.RynthLua\Examples\<paramref name="file"/>, found from this source file's folder.</summary>
+    private static string ExamplePath(string file, [System.Runtime.CompilerServices.CallerFilePath] string source = "")
+    {
+        string tools = System.IO.Path.GetDirectoryName(System.IO.Path.GetDirectoryName(source) ?? string.Empty) ?? string.Empty;
+        string root = System.IO.Path.GetDirectoryName(tools) ?? string.Empty;
+        return System.IO.Path.Combine(root, "Plugins", "RynthCore.Plugin.RynthLua", "Examples", System.IO.Path.GetFileName(file));
+    }
+
     public static void Reset()
     {
         Checks = 0;
         Failures.Clear();
         Done = false;
+        FakeCombat.Reset();
     }
 
     public static void Register(Script s, string scriptName)
@@ -75,6 +84,20 @@ internal static class Harness
         }
 
         Fn("chat", a => { W.IncomingChat(Str(a, 0), (int)Num(a, 1, 0)); return DynValue.Nil; });
+        // The server prompt answers: what the script armed, and the last prompt the "server" sent.
+        Fn("promptArm", a =>
+        {
+            var t = new Table(s);
+            t["Type"] = (double)FakeHost.ArmType; t["MinPercent"] = (double)FakeHost.ArmMinPercent;
+            t["TimeoutMs"] = (double)FakeHost.ArmTimeoutMs; t["Calls"] = (double)FakeHost.ArmCalls;
+            return DynValue.NewTable(t);
+        });
+        Fn("setLastPrompt", a =>
+        {
+            FakeHost.PromptSeq = (int)Num(a, 0); FakeHost.PromptType = (uint)Num(a, 1); FakeHost.PromptContext = (uint)Num(a, 2);
+            FakeHost.PromptPercent = (int)Num(a, 3, -1); FakeHost.PromptOutcome = (int)Num(a, 4); FakeHost.PromptAgeMs = (int)Num(a, 5);
+            return DynValue.Nil;
+        });
         Fn("chatInput", a =>
         {
             int eat = 0;
@@ -214,6 +237,61 @@ internal static class Harness
         {
             var t = new Table(s);
             foreach (uint id in W.SalvageItems) t.Append(DynValue.NewNumber(id));
+            return DynValue.NewTable(t);
+        });
+        // RynthAi's combat hook (FakeCombat): turn the table on/off, open a request as RynthAi
+        // would, and read back what RynthLua claimed, decided and released.
+        Fn("combatTable", a => { FakeCombat.Enabled = a.Count > 0 && a[0].CastToBool(); return DynValue.Nil; });
+        Fn("combatOpen", a => DynValue.NewNumber(FakeCombat.Open((uint)Num(a, 0, 1), Id(a, 1), (long)Num(a, 2, 2000))));
+        Fn("combatResolve", a => { FakeCombat.ResolveInFlight(RynthCore.Plugin.Shared.RynthAiCombat.KindAttack, (int)Num(a, 0, -1)); return DynValue.Nil; });
+        Fn("combatOlderRynthAi", a => { FakeCombat.OlderRynthAi = a.Count > 0 && a[0].CastToBool(); return DynValue.Nil; });
+        Fn("combatScanned", a =>
+        {
+            FakeCombat.Scanned.Clear();
+            if (a.Count > 0 && a[0].Type == DataType.Table)
+                foreach (DynValue row in a[0].Table.Values)
+                    FakeCombat.Scanned.Add(((uint)row.Table.Get(1).Number, (float)row.Table.Get(2).Number));
+            return DynValue.Nil;
+        });
+        Fn("combatDecisions", a =>
+        {
+            var t = new Table(s);
+            foreach (var d in FakeCombat.Decisions)
+            {
+                var row = new Table(s);
+                row["seq"] = (double)d.Seq; row["kind"] = (double)d.Kind; row["spell"] = (double)d.Spell;
+                row["target"] = (double)d.Target; row["flags"] = (double)d.Flags; row["taken"] = d.Taken;
+                t.Append(DynValue.NewTable(row));
+            }
+            return DynValue.NewTable(t);
+        });
+        Fn("combatState", a =>
+        {
+            var t = new Table(s);
+            t["owner"] = FakeCombat.Owner; t["kinds"] = (double)FakeCombat.Kinds;
+            t["claims"] = (double)FakeCombat.Claims; t["refusals"] = (double)FakeCombat.Refusals;
+            t["releases"] = (double)FakeCombat.Releases; t["releasedKinds"] = (double)FakeCombat.ReleasedKinds;
+            return DynValue.NewTable(t);
+        });
+        // A second script in the same plugin (another script competing for a handler).
+        Fn("runScript", a => { Plugin!.RunCode(Str(a, 0), Str(a, 1)); return DynValue.Nil; });
+        // A script file in the (temp) Scripts folder, for "/lua start <name>" (replies.lua).
+        Fn("writeScript", a =>
+        {
+            System.IO.File.WriteAllText(System.IO.Path.Combine(RynthLuaPaths.Scripts, Str(a, 0) + ".lua"), Str(a, 1));
+            return DynValue.Nil;
+        });
+        Fn("stopScript", a => DynValue.NewBoolean(Plugin!.StopScript(Str(a, 0))));
+        Fn("scriptLoaded", a => DynValue.NewBoolean(Plugin!.ScriptIsLoaded(Str(a, 0))));
+        Fn("scriptConsole", a => DynValue.NewString(Plugin!.ScriptConsoleText(Str(a, 0))));
+        Fn("combatReload", a => { FakeCombat.Reload(); return DynValue.Nil; });
+        // The text of a script in the plugin's Examples folder (so a test can run it).
+        Fn("exampleCode", a => DynValue.NewString(System.IO.File.ReadAllText(ExamplePath(Str(a, 0)))));
+        Fn("scriptHooks", a =>
+        {
+            var (keepAlive, onStop) = Plugin!.ScriptHookCounts(Str(a, 0));
+            var t = new Table(s);
+            t["keepAlive"] = (double)keepAlive; t["onStop"] = (double)onStop;
             return DynValue.NewTable(t);
         });
         s.Globals["harness"] = DynValue.NewTable(h);

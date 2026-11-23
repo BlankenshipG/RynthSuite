@@ -3,7 +3,8 @@
   <!--
     Offline tests for RynthNav's long-range route graph: region building (NavRegions), the
     baker's portal matching and costs (GraphBuild), the file format and A* (NavGraph) and the
-    route follower (NavCoarse). Tiles are baked here from small made-up floors with the same
+    route follower (NavCoarse), and the "RynthNav.Path" interface's FindPathEx and Raycast
+    (NavPathQuery). Tiles are baked here from small made-up floors with the same
     Recast settings as the baker, written to %TEMP%, and removed afterwards.
     Run: dotnet run -c Release   (exit 0 = pass, 1 = fail)
   -->
@@ -13,6 +14,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>RynthNav.GraphTests</RootNamespace>
+    <!-- The linked RynthNav.Path contract holds function pointers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,7 +24,35 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavCoarse.cs" Link="Linked\NavCoarse.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\PortalAvoid.cs" Link="Linked\PortalAvoid.cs" />
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\AvoidFilter.cs" Link="Linked\AvoidFilter.cs" />
+    <!-- The navmesh drawn in the world (green floor, red walls) and the sink it writes to. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavMeshView.cs" Link="Linked\NavMeshView.cs" />
+    <Compile Include="..\..\Plugins\Shared\Nav3DText.cs" Link="Linked\Nav3DText.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\DungeonTileFile.cs" Link="Linked\DungeonTileFile.cs" />
     <Compile Include="..\RynthNav.Baker\GraphBuild.cs" Link="Linked\GraphBuild.cs" />
+    <!-- A planned trip's walk from the tile files (TilePathFinder) and what it needs. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TilePathFinder.cs" Link="Linked\TilePathFinder.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPlan.cs" Link="Linked\TripPlan.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TripPath.cs" Link="Linked\TripPath.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavCoords.cs" Link="Linked\NavCoords.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\TownNet.cs" Link="Linked\TownNet.cs" />
+    <!-- TownNet.Merge takes the learned portals and the Atlas (2026-10-29); without them this project
+         stopped building (found 2026-11-01, the first full Run-AllTests on Windows). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\Atlas.cs" Link="Linked\Atlas.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\CustomPortals.cs" Link="Linked\CustomPortals.cs" />
+    <Compile Include="..\RynthNav.PortalGraph\PortalRoute.cs" Link="Linked\PortalRoute.cs" />
+    <!-- The route maker on the navmesh (RouteMakerTests): loops, legs, paths, and what they're written as. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\LoopMaker.cs" Link="Linked\LoopMaker.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\AreaFilter.cs" Link="Linked\AreaFilter.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RouteShape.cs" Link="Linked\RouteShape.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\BuildingOutlines.cs" Link="Linked\BuildingOutlines.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RouteRequest.cs" Link="Linked\RouteRequest.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RouteInfo.cs" Link="Linked\RouteInfo.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\RouteJobs.cs" Link="Linked\RouteJobs.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavRouteExport.cs" Link="Linked\NavRouteExport.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\LegacyUi\NavRouteParser.cs" Link="Linked\NavRouteParser.cs" />
+    <!-- "RynthNav.Path" v2 (FindPathEx, Raycast) and the walker's planning steps it shares; the contract it answers. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthNav\NavPathQuery.cs" Link="Linked\NavPathQuery.cs" />
+    <Compile Include="..\..\Plugins\Shared\RynthNavPathApi.cs" Link="Linked\RynthNavPathApi.cs" />
   </ItemGroup>
 
   <ItemGroup>

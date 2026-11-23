@@ -6,12 +6,14 @@ using System.Reflection;
 
 namespace RynthCore.Plugin.RynthOracle.Data;
 
-internal readonly record struct SpellInfo(string Name, double Duration, bool IsDebuff);
+/// <summary>A spell from SpellData.txt. <see cref="Category"/> is ACE's SpellCategory (the stacking family), <see cref="Power"/> its difficulty.</summary>
+internal readonly record struct SpellInfo(string Name, double Duration, bool IsDebuff, int Category = 0, int Power = 0);
 
 /// <summary>
 /// Spell names and base durations from RynthAi's embedded spell table (SpellData.txt, linked
 /// into this plugin): tab separated, id, name, category, family, words, duration (s, -1 none),
-/// difficulty, then three flags, the second of which marks a debuff. Loaded on first use.
+/// difficulty, then three flags, the second of which marks a debuff. Loaded on first use. The
+/// Gear tab falls back to it (category, power) when the client's portal.dat can't be read.
 /// </summary>
 internal static class SpellTable
 {
@@ -46,7 +48,9 @@ internal static class SpellTable
                     if (c.Length < 2 || !uint.TryParse(c[0].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out uint id)) continue;
                     double duration = c.Length > 5 && double.TryParse(c[5].Trim(), NumberStyles.Float | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out double d) ? d : -1;
                     bool debuff = c.Length > 8 && c[8].Trim().Equals("True", StringComparison.OrdinalIgnoreCase);
-                    map[id] = new SpellInfo(c[1].Trim(), duration, debuff);
+                    int category = c.Length > 2 && int.TryParse(c[2].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int cat) ? cat : 0;
+                    int power = c.Length > 6 && int.TryParse(c[6].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int pw) ? pw : 0;
+                    map[id] = new SpellInfo(c[1].Trim(), duration, debuff, category, power);
                 }
             }
         }

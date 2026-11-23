@@ -6,8 +6,8 @@ using RynthCore.RynthAiTests.Harness;
 
 namespace RynthCore.RynthAiTests.Tests;
 
-// MonsterDamageStore and Aelrynth's difficulty tiers (2026-10-03). Awakened worlds and scaled
-// copies hold the same monsters (same wcids) with +5% health, skills and damage a tier, so the
+// MonsterDamageStore and difficulty tiers (2026-10-03; a server plugin reports them, DifficultyTier).
+// Scaled worlds and copies hold the same monsters (same wcids) with more health, skills and damage a tier, so the
 // store keeps the HP pool, casts-to-kill, accuracy, fight times and damage taken per (wcid,
 // tier). Tier 0 must stay today's data in today's rows: on every other server the tier is
 // always 0, and a file written there must be what the old code wrote.
@@ -54,7 +54,7 @@ internal static class MonsterDamageTierTests
         var (_, dir, file) = Seeded("roundtrip");
         string before = File.ReadAllText(file);
         Check.False(before.Contains("\nA"), "no tier rows in a tier-0-only file");
-        Check.False(before.Contains("Aelrynth difficulty"), "no tier header in a tier-0-only file");
+        Check.False(before.Contains("difficulty tiers"), "no tier header in a tier-0-only file");
 
         var again = new MonsterDamageStore();
         again.SetCharacter(dir);
@@ -121,6 +121,7 @@ internal static class MonsterDamageTierTests
         string[] all = File.ReadAllLines(file);
         bool IsTierLine(string l) => l.StartsWith("A") || l.StartsWith("# A");
         Check.Eq(string.Join("\n", all.Where(l => !IsTierLine(l))), string.Join("\n", tier0), "tier-0 lines identical");
+        Check.True(all.Any(l => l.StartsWith("# Above tier 0: the server's difficulty tiers")), "the tier rows' header");
         Check.True(all.Any(l => l.StartsWith("AH|10|7|Drudge Skulker|1350|1")), "AH row written");
         Check.True(all.Any(l => l.StartsWith("AD|10|7|Drudge Skulker|" + Wand + "|Fire|7|3|1")), "AD row written");
         Check.True(all.Any(l => l.StartsWith("AU|10|7|")), "AU row written");

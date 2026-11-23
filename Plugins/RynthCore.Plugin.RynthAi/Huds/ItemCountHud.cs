@@ -3,6 +3,7 @@
 using System.Linq;
 using System.Numerics;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Huds;
 
@@ -15,11 +16,17 @@ internal sealed class ItemCountHud
 
     private readonly HudController _hud;
     private bool _rescueChecked; // off-screen check done for the current show
+    // Where the player left it, per character (the engine's store, not the shared imgui.ini).
+    private readonly SavedWindow _placement = new("RynthAi.ItemHud", trackSize: false);
 
     public ItemCountHud(HudController hud) => _hud = hud;
 
     /// <summary>The HUD was not drawn this frame: check its position again on the next show.</summary>
-    public void OnHidden() => _rescueChecked = false;
+    public void OnHidden()
+    {
+        _rescueChecked = false;
+        _placement.Reset();
+    }
 
     public void Render()
     {
@@ -36,10 +43,12 @@ internal sealed class ItemCountHud
         ImGui.SetNextWindowBgAlpha(0.55f);
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(4, 4));
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4, 2));
+        _placement.Apply();   // auto-sized: the spot only
         bool visible = ImGui.Begin("Item HUD##rynthitemhud", flags);
         ImGui.PopStyleVar(2);
         if (!visible) { ImGui.End(); return; }
         UiPlacement.RescueOncePerShow(ref _rescueChecked);
+        _placement.Track();
 
         if (entries.Length == 0)
         {
@@ -52,16 +61,16 @@ internal sealed class ItemCountHud
         {
             long count = pack.CountOf(e.Name);
             HudDraw.Icon(_hud.Icons, e.IconDid, e.Name, size, count == 0);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{e.Name}\n{count:N0} carried");
+            if (ImGui.IsItemHovered()) SafeImGui.SetTooltip($"{e.Name}\n{count:N0} carried");
             ImGui.SameLine();
             // Vertically centre the text on the icon.
             float pad = (size - ImGui.GetTextLineHeight()) * 0.5f;
             if (pad > 0) ImGui.SetCursorPosY(ImGui.GetCursorPosY() + pad);
-            ImGui.TextColored(count == 0 ? ColNone : ColCount, count.ToString("N0"));
+            SafeImGui.TextColored(count == 0 ? ColNone : ColCount, count.ToString("N0"));
             if (s.ItemHudShowNames)
             {
                 ImGui.SameLine();
-                ImGui.TextColored(ColName, e.Name);
+                SafeImGui.TextColored(ColName, e.Name);
             }
         }
 

@@ -54,6 +54,10 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         private readonly Dictionary<uint, List<MapPolygon>> _floorPolyCache =
             new Dictionary<uint, List<MapPolygon>>();
 
+        // Cache: landblock → per EnvCell, the surfaces its walkable floor shows (Detector C)
+        private readonly Dictionary<uint, Dictionary<uint, ushort[]>> _floorSurfaceCache =
+            new Dictionary<uint, Dictionary<uint, ushort[]>>();
+
         private const int MAX_ENV_CACHE = 50;
         private const int MAX_WALL_CACHE = 20;
 
@@ -69,6 +73,9 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
             public bool IsPortal;
             public bool IsFloor; // physics floor polygon — upward-facing, used by DungeonMapUiV2
             public uint CellId; // full landcell id (0xXXYYNNNN) — for per-cell "explored" tracking
+            /// <summary>The polygon's key in its CellStruct (render polygons): what an EnvCell's portal
+            /// record names as its polygon (BuildingMap finds a building's doors by it).</summary>
+            public ushort PolyKey;
         }
 
         /// <summary>
@@ -242,6 +249,114 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
             return result;
         }
 
+        /// <summary>AC's walkable slope limit (PhysicsGlobals.FloorZ, about 48 degrees): a polygon
+        /// whose unit normal points up at least this much is floor a character can stand on.</summary>
+        public const float FloorZ = 0.66417f;
+
+        /// <summary>
+        /// For each EnvCell of the landblock, the surfaces its walkable floor shows: the Surface
+        /// (0x08) file ids, low 16 bits as the EnvCell's palette stores them, of its render
+        /// polygons that are not portals and whose front side faces up at least as steeply as
+        /// <see cref="FloorZ"/> in world orientation. Walls, ceilings and slopes too steep to
+        /// stand on are left out, so a texture on a cell's walls or ceiling never lists the cell.
+        /// Cells without such a polygon (a cap cell holding only a ceiling) are absent. Render
+        /// polygons, not physics ones: physics polygons carry no surface (PosSurface -1).
+        /// Cached per landblock. Never throws.
+        /// </summary>
+        public Dictionary<uint, ushort[]> GetCellFloorSurfaces(uint landblockKey)
+        {
+            lock (_cacheGate)
+            {
+                if (_floorSurfaceCache.TryGetValue(landblockKey, out var cached)) return cached;
+            }
+
+            var result = new Dictionary<uint, ushort[]>();
+            if (_cellDat == null || _portalDat == null) return result;   // not initialized: nothing to cache
+            List<uint> cellIds;
+            try { cellIds = _cellDat.GetLandblockCellIds(landblockKey); }
+            catch { cellIds = new List<uint>(); }
+
+            foreach (uint cellId in cellIds)
+            {
+                try
+                {
+                    byte[] cellData = _cellDat.GetFileData(cellId);
+                    if (cellData == null || cellData.Length < 20) continue;
+                    var envCell = ParseEnvCellHeader(cellData);
+                    if (envCell == null || envCell.Surfaces.Length == 0) continue;
+                    var cellGeo = GetCellRenderGeometry(envCell.EnvironmentId, envCell.CellStructureIndex);
+                    if (cellGeo == null || cellGeo.Polygons.Count == 0) continue;
+
+                    // Orientation only: the cell's rotation decides which way a polygon
+                    // faces; its position doesn't (and large world offsets cost precision).
+                    var polys = new List<(IReadOnlyList<Vector3> Verts, short PosSurface, bool IsPortal)>(cellGeo.Polygons.Count);
+                    foreach (var poly in cellGeo.Polygons)
+                    {
+                        var rotated = new Vector3[poly.Vertices.Count];
+                        for (int i = 0; i < rotated.Length; i++)
+                            rotated[i] = RotateByQuat(poly.Vertices[i], envCell.RotW, envCell.RotX, envCell.RotY, envCell.RotZ);
+                        polys.Add((rotated, poly.PosSurface, poly.IsPortal));
+                    }
+
+                    var floor = FloorSurfaceIds(envCell.Surfaces, polys);
+                    if (floor.Count > 0) result[cellId] = floor.ToArray();
+                }
+                catch { }
+            }
+
+            lock (_cacheGate)
+            {
+                if (_floorSurfaceCache.Count >= MAX_WALL_CACHE)
+                {
+                    foreach (var k in _floorSurfaceCache.Keys) { _floorSurfaceCache.Remove(k); break; }
+                }
+                _floorSurfaceCache[landblockKey] = result;
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// The palette entries shown on walkable floor among <paramref name="polys"/>: polygons
+        /// that are not portals, whose PosSurface indexes <paramref name="palette"/>, and that
+        /// <see cref="IsWalkableFloor"/>. Each surface id once, in first-seen order.
+        /// </summary>
+        internal static List<ushort> FloorSurfaceIds(ushort[] palette,
+            IEnumerable<(IReadOnlyList<Vector3> Verts, short PosSurface, bool IsPortal)> polys)
+        {
+            var result = new List<ushort>();
+            if (palette == null || polys == null) return result;
+            foreach (var (verts, posSurface, isPortal) in polys)
+            {
+                if (isPortal || posSurface < 0 || posSurface >= palette.Length) continue;
+                if (!IsWalkableFloor(verts)) continue;
+                ushort s = palette[posSurface];
+                if (!result.Contains(s)) result.Add(s);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// True when the polygon (vertices in winding order) faces up at least as steeply as
+        /// <see cref="FloorZ"/>: its Newell normal, counter-clockwise seen from above = up, has a
+        /// unit z of 0.66417 or more. Walls (z near 0), ceilings (z negative) and steep slopes
+        /// are not floor.
+        /// </summary>
+        internal static bool IsWalkableFloor(IReadOnlyList<Vector3> v)
+        {
+            if (v == null || v.Count < 3) return false;
+            double nx = 0, ny = 0, nz = 0;
+            int n = v.Count;
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 a = v[i], b = v[(i + 1) % n];
+                nx += ((double)a.Y - b.Y) * ((double)a.Z + b.Z);
+                ny += ((double)a.Z - b.Z) * ((double)a.X + b.X);
+                nz += ((double)a.X - b.X) * ((double)a.Y + b.Y);
+            }
+            double len = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+            return len > 1e-9 && nz / len >= FloorZ;
+        }
+
         private List<MapCell> LoadDungeonMapCells(uint landblockKey)
         {
             var result = new List<MapCell>();
@@ -313,7 +428,8 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                             CellY     = envCell.PosY + globalOffsetY,
                             CellZ     = envCell.PosZ,
                             IsPortal  = poly.IsPortal,
-                            CellId    = cellId
+                            CellId    = cellId,
+                            PolyKey   = poly.Key,
                         });
                     }
                 }
@@ -499,6 +615,9 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
             public uint CellStructureIndex;
             public float PosX, PosY, PosZ;
             public float RotW, RotX, RotY, RotZ;
+            // The cell's surface palette: Surface (0x08) file ids, low 16 bits. A CellStruct
+            // polygon's PosSurface indexes this list.
+            public ushort[] Surfaces = Array.Empty<ushort>();
         }
 
         private EnvCellHeader ParseEnvCellHeader(byte[] data)
@@ -516,7 +635,9 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                     byte numPortals = reader.ReadByte();
                     ushort numVisibleCells = reader.ReadUInt16();
 
-                    ms.Seek(numSurfaces * 2, SeekOrigin.Current);
+                    var surfaces = new ushort[numSurfaces];
+                    for (int i = 0; i < numSurfaces; i++)
+                        surfaces[i] = reader.ReadUInt16();
 
                     ushort envIdShort = reader.ReadUInt16();
                     ushort cellStructure = reader.ReadUInt16();
@@ -525,6 +646,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                     {
                         EnvironmentId = 0x0D000000u | envIdShort,
                         CellStructureIndex = cellStructure,
+                        Surfaces = surfaces,
                         PosX = reader.ReadSingle(),
                         PosY = reader.ReadSingle(),
                         PosZ = reader.ReadSingle(),
@@ -551,6 +673,10 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         {
             public List<Vector3> Vertices = new List<Vector3>();
             public bool IsPortal;
+            // Index into the EnvCell's surface palette for the polygon's front (positive) side;
+            // -1 when it has none (physics polygons carry -1).
+            public short PosSurface = -1;
+            public ushort Key;   // the polygon's key in its CellStruct
         }
 
         private CellGeometry GetCellGeometry(uint environmentId, uint cellStructIndex)
@@ -716,7 +842,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                     var poly = renderPolygons[i];
                     if (poly.VertexIds == null || poly.VertexIds.Count < 3) continue;
 
-                    var cellPoly = new CellPolygon { IsPortal = portalIndices.Contains(poly.Key) };
+                    var cellPoly = new CellPolygon { IsPortal = portalIndices.Contains(poly.Key), PosSurface = poly.PosSurface, Key = poly.Key };
                     foreach (var vid in poly.VertexIds)
                     {
                         if (vertices.ContainsKey(vid))
@@ -749,7 +875,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                         foreach (var poly in physicsPolys)
                         {
                             if (poly.VertexIds == null || poly.VertexIds.Count < 3) continue;
-                            var cellPoly = new CellPolygon();
+                            var cellPoly = new CellPolygon { PosSurface = poly.PosSurface, Key = poly.Key };
                             foreach (var vid in poly.VertexIds)
                             {
                                 if (vertices.ContainsKey(vid))
@@ -1022,7 +1148,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
 
                 if (numPts == 0 || numPts > 50) return polys;
 
-                var poly = new ParsedPolygon { Key = polyKey, VertexIds = new List<ushort>() };
+                var poly = new ParsedPolygon { Key = polyKey, PosSurface = posSurf, VertexIds = new List<ushort>() };
 
                 for (int v = 0; v < numPts; v++)
                 {
@@ -1053,6 +1179,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         private class ParsedPolygon
         {
             public ushort Key;
+            public short PosSurface;
             public List<ushort> VertexIds;
         }
 
@@ -1064,6 +1191,7 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                 _mapCache.Clear();
                 _mapCellCache.Clear();
                 _floorPolyCache.Clear();
+                _floorSurfaceCache.Clear();
                 _envCache.Clear();
                 _renderEnvCache.Clear();
             }

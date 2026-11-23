@@ -29,6 +29,24 @@ internal sealed class CombatStallWatchdog
     /// real stalls ran 12-49 s.</summary>
     public const double StallMs = 6000;
 
+    /// <summary>Melee that is plainly stuck - attacks sent, no swing playing, the character
+    /// standing still (CombatManager.SampleMeleeQuiet) - gets step 1 after this instead (Drakkon
+    /// 2026-10-12: the server's move-to the target stalled 2 m short; the cancel 6 s later fixed
+    /// it at once every time, so most of the 7-9 s per stall was the wait).</summary>
+    public const double QuietStallMs = 2500;
+
+    /// <summary>
+    /// The stall time for a missile attack at point blank (target within
+    /// <see cref="PointBlankMissileM"/>). Silentkelpie 2026-10-14: 22 of 40 missile stalls were
+    /// at 1.5-2.5 m, and step 1 (re-issue) brought the swings back within half a second in most
+    /// of them, so the 6 s wait was the whole cost. A bow or crossbow there shows a hit or miss
+    /// every 1.5-2 s.
+    /// </summary>
+    public const double PointBlankStallMs = 3500;
+
+    /// <summary>Missile targets this close (metres) use <see cref="PointBlankStallMs"/>.</summary>
+    public const double PointBlankMissileM = 3.0;
+
     /// <summary>Time allowed for each step to show a swing before the next one.</summary>
     public const double StepMs = 3000;
 
@@ -47,6 +65,7 @@ internal sealed class CombatStallWatchdog
     private DateTime _lastStepAt    = DateTime.MinValue;
     private DateTime _cooldownUntil = DateTime.MinValue;
     private int      _step;          // steps fired in the current episode (0 = none)
+    private DateTime _prevStepAt    = DateTime.MinValue;   // _lastStepAt before the newest Fire (for Unfire)
     private DateTime _stallRef      = DateTime.MinValue;   // last swing (or episode start) before the stall
 
     /// <summary>Episodes where the watchdog acted (diagnostics / status).</summary>
@@ -55,15 +74,22 @@ internal sealed class CombatStallWatchdog
     public int Recoveries { get; private set; }
     /// <summary>The last step fired in the current episode (0 = none).</summary>
     public int CurrentStep => _step;
+    /// <summary>The episode's step 1 fired on <see cref="QuietStallMs"/> rather than <see cref="StallMs"/>.</summary>
+    public bool LastFireWasEarly { get; private set; }
     public static int StepCount => 4;
 
     /// <summary>
     /// Advance the watchdog. <paramref name="eligible"/> is the full precondition set;
-    /// <paramref name="lastEvidenceAt"/> the last hit, miss or kill. Returns the step to
-    /// carry out now (or Recovered / GaveUp for logging), with the stalled time.
+    /// <paramref name="lastEvidenceAt"/> the last hit, miss or kill. <paramref name="quiet"/>:
+    /// the caller sees no swing playing and the character standing still (step 1 after
+    /// <see cref="QuietStallMs"/>). <paramref name="stallAfterMs"/>: how long without evidence
+    /// starts an episode otherwise (0 = <see cref="StallMs"/>). Returns the step to carry out now
+    /// (or Recovered / GaveUp for logging), with the stalled time.
     /// </summary>
-    public StallAction Tick(DateTime now, bool eligible, DateTime lastEvidenceAt, out double stalledMs)
+    public StallAction Tick(DateTime now, bool eligible, DateTime lastEvidenceAt, out double stalledMs,
+                            bool quiet = false, double stallAfterMs = 0)
     {
+        if (stallAfterMs <= 0) stallAfterMs = StallMs;
         stalledMs = 0;
         bool gap = _lastTick != DateTime.MinValue
                    && (now - _lastTick).TotalMilliseconds > TickGapResetMs;
@@ -96,7 +122,9 @@ internal sealed class CombatStallWatchdog
 
         if (_step == 0)
         {
-            if (stalledMs < StallMs) return StallAction.None;
+            bool early = quiet && stalledMs >= QuietStallMs;
+            if (stalledMs < stallAfterMs && !early) return StallAction.None;
+            LastFireWasEarly = stalledMs < stallAfterMs;
             Episodes++;
             _stallRef = refAt;
             return Fire(now);
@@ -119,9 +147,14 @@ internal sealed class CombatStallWatchdog
     /// step still settling (the step-4 re-wield), so the hold isn't read as a tick gap.</summary>
     public void Hold(DateTime now) => _lastTick = now;
 
+    /// <summary>The stall is explained and dealt with (a target it can't reach): the next target
+    /// starts from step 1, not from where this one left the ladder.</summary>
+    public void EndEpisode() => ResetEpisode();
+
     private StallAction Fire(DateTime now)
     {
         _step++;
+        _prevStepAt = _lastStepAt;
         _lastStepAt = now;
         return _step switch
         {
@@ -130,6 +163,16 @@ internal sealed class CombatStallWatchdog
             3 => StallAction.ToggleMode,
             _ => StallAction.Rewield,
         };
+    }
+
+    /// <summary>Take back the step just returned because the caller could not carry it out (the engine refused the mode change):
+    /// a refusal spends no ladder step. The ladder returns to where it was, so the step fires again on the next tick.</summary>
+    public void Unfire()
+    {
+        if (_step <= 0) return;
+        _step--;
+        _lastStepAt = _prevStepAt;
+        if (_step == 0 && Episodes > 0) Episodes--;
     }
 
     private void ResetEpisode()

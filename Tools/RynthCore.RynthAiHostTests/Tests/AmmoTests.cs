@@ -37,6 +37,94 @@ internal static class AmmoTests
         r.Add("ammo: no flip-flop back to the bow after a swap", NoFlipFlop);
         r.Add("ammo: a launcher's element is its ammo's (prismatic takes the launcher's)", ElementFromAmmo);
         r.Add("ammo: thrown weapons, melee and magic lists are untouched", ThrownMeleeMagicUntouched);
+        r.Add("ammo: Prismatic is universal damage (the target's weakest element)", PrismaticUniversal);
+        r.Add("ammo: a swap abandoned after the ammo came off reloads the launcher in hand", AbandonedSwapReloads);
+        r.Add("ammo: the Universal Quiver charm shoots from the empty slot (no quarrels needed, nothing wielded)", UniversalQuiver);
+    }
+
+    // ACECustom 2026-11-11 (#603): with the Universal Quiver charm on and the ammunition slot empty, the server fires
+    // Infinite Deadly Prismatic ammo for any bow, crossbow or atlatl.
+    private static void UniversalQuiver()
+    {
+        var rig = new Rig(quarrels: false);
+        rig.C.UniversalQuiverOverride = () => true;
+        rig.Store.SetManualWeapon(Wcid, Crossbow);
+        var plan = rig.C.PlanFor(rig.Target, null);
+        Check.Eq(unchecked((uint)plan.WeaponId), Crossbow, "no quarrels, but the quiver: the crossbow is the plan");
+
+        Check.False(rig.Tick(), "tick 1: the arrows go into the pack (the slot must be empty for the quiver)");
+        Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0] == (Arrows, Pack, 120), "the arrow stack moved");
+        Rig.Unwield(Arrows);
+        rig.Tick();                                           // the crossbow wield
+        Check.Eq(FakeHost.Uses.LastOrDefault(), Crossbow, "the crossbow is wielded");
+        rig.Landed(Crossbow, Bow);
+        Check.True(rig.Tick(), "crossbow in hand, empty slot: ready to shoot");
+        Check.Eq(FakeHost.Uses.Count(u => u == Arrows || u == Quarrels), 0, "no ammo wielded");
+        Check.False(FakeHost.Chat.Any(l => l.Contains("No quarrels")), "no 'no ammo' in chat");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Universal Quiver")), "the quiver's shot is logged once");
+
+        var off = new Rig(quarrels: false);
+        off.C.UniversalQuiverOverride = () => false;
+        off.Store.SetManualWeapon(Wcid, Crossbow);
+        Check.Eq(unchecked((uint)off.C.PlanFor(off.Target, null).WeaponId), Bow, "the charm off: as before, no swap to a launcher without ammo");
+    }
+
+    // 2026-10-19 (Silentkelpie, 15:24-16:55): the darts went into the pack for an atlatl -> crossbow
+    // swap, the target died, and the next one wanted the atlatl still in hand. Nothing wielded the
+    // darts again, so combat held a target in peace mode with no attack for 90 minutes.
+    private static void AbandonedSwapReloads()
+    {
+        // Upstream's ammo step (merged 2026-11-10) wields ammo whenever the launcher in hand has none
+        // it can shoot, once our own dequip for the other launcher's swap is over: the clock is moved
+        // past it here (the test-branch ReloadFromPack is gone, the ammo step does it).
+        DateTime now = DateTime.Now;
+        RynthClock.TestNow = () => now;
+        try
+        {
+            var rig = new Rig();
+            rig.Store.SetManualWeapon(Wcid, Crossbow);
+            Check.False(rig.Tick(), "tick 1: the arrows go into the pack for the crossbow");
+            Check.True(FakeHost.Moves.Count == 1 && FakeHost.Moves[0] == (Arrows, Pack, 120), "the arrow stack moved");
+            Rig.Unwield(Arrows);                                  // the arrows landed in the pack
+
+            rig.Store.SetManualWeapon(Wcid, Bow);                 // the next target wants the bow still in hand
+            rig.List(Bow, Crossbow);                              // a new list: the plan is worked out again
+            Check.Eq(unchecked((uint)rig.C.PlanFor(rig.Target, null).WeaponId), Bow, "the plan: the bow in hand");
+
+            now = now.AddSeconds(4);                              // the crossbow's dequip is long over
+            Check.False(rig.Tick(), "bow in hand, empty quiver: not ready");
+            rig.Tick();
+            Check.Eq(FakeHost.Uses.Count(u => u == Arrows), 1, "the arrows are wielded again from the pack");
+            Check.Eq(FakeHost.Uses.Count(u => u == Crossbow), 0, "the abandoned crossbow isn't wielded");
+            rig.Tick();
+            Check.Eq(FakeHost.Uses.Count(u => u == Arrows), 1, "one ammo wield in flight: not sent again");
+
+            Rig.Wield(Arrows, AmmoSlot);                          // the arrows are on
+            Check.True(rig.Tick(), "bow and arrows: ready to shoot");
+        }
+        finally { RynthClock.TestNow = null; }
+    }
+
+    // 2026-10-19 (owner): prismatic ammo deals every damage type, so it does what the target is
+    // weakest to; the Items panel offers "Prismatic" for missile weapons and ammo.
+    private static void PrismaticUniversal()
+    {
+        var weak = new List<List<string>> { new() { "Acid" }, new() { "Fire" }, new() { "Pierce", "Slash" } };
+        Check.Eq(MissileAmmo.BestElement("", weak), "Acid", "best element: the weakest");
+        Check.Eq(MissileAmmo.BestElement("Cold", weak), "Cold", "best element: a Monsters rule's damage type wins");
+        Check.Eq(MissileAmmo.BestElement("", null), "", "nothing known: none");
+        var prism = new AmmoCandidate(1, "Prismatic Arrow", 1, "", true, 1, -1, false);
+        Check.Eq(MissileAmmo.EffectiveElement(prism, "Fire", "Acid"), "Acid", "prismatic does the target's weakest element, over the bow's");
+        Check.Eq(MissileAmmo.EffectiveElement(prism, "Fire"), "Fire", "nothing known about the target: the bow's, as before");
+        var acid = new AmmoCandidate(2, "Acid Arrow", 1, "Acid", false, 1, -1, false);
+        Check.Eq(MissileAmmo.EffectiveElement(acid, "", "Fire"), "Acid", "elemental ammo keeps its own element");
+        var deadlyFire = new AmmoCandidate(3, "Deadly Fire Arrow", 1, "Fire", false, 400, -1, false);
+        var rank = MissileAmmo.RankBy("", weak);
+        Check.Eq(MissileAmmo.Choose(1, "", new List<AmmoCandidate> { deadlyFire, prism }, rank, "Acid")?.Id, 1,
+                 "weak to Acid: prismatic (Acid) beats better fire arrows");
+        Check.True(MissileAmmo.IsUniversal("Prismatic") && MissileAmmo.IsUniversal(" prismatic ") && !MissileAmmo.IsUniversal("Pierce"),
+                   "the Items panel's Prismatic is the universal marker");
+        Check.Eq(WeaponElements.Normalize("Prismatic"), "", "Prismatic isn't an element of its own");
     }
 
     // ── Pure rules ────────────────────────────────────────────────────────────
@@ -120,6 +208,7 @@ internal static class AmmoTests
             InHand = unchecked((int)Bow);
             C.InHandOverride = () => InHand;
             C.OpenPackOverride = () => unchecked((int)Pack);
+            C.AmmoOffSettleMs = 0;                            // the ticks here don't wait on the wall clock
             Target = new WorldObject(unchecked((int)Monster), "Test Dummy", AcObjectClass.Monster);
             List(Bow, Crossbow);
         }
@@ -172,7 +261,11 @@ internal static class AmmoTests
         Check.Eq(FakeHost.Uses.Count, 0, "nor the crossbow before the arrows are off");
 
         Rig.Unwield(Arrows);                                  // the arrows are in the pack
-        Check.False(rig.Tick(), "tick 3: the crossbow wield is sent");
+        rig.C.AmmoOffSettleMs = 60_000;
+        Check.False(rig.Tick(), "arrows just read off: the settle");
+        Check.Eq(FakeHost.Uses.Count, 0, "no crossbow inside the settle");
+        rig.C.AmmoOffSettleMs = 0;
+        Check.False(rig.Tick(), "settled: the crossbow wield is sent");
         Check.Eq(FakeHost.Uses.Count, 1, "one UseObject");
         Check.Eq(FakeHost.Uses.LastOrDefault(), Crossbow, "for the crossbow");
 

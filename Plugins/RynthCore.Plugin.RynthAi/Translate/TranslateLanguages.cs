@@ -2,6 +2,7 @@
 // Providers that use other codes (DeepL upper-case, LibreTranslate "zh") are mapped in TranslateClient.
 using System;
 using ImGuiNET;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.Translate;
 
@@ -86,7 +87,7 @@ internal static class TranslateLanguages
             }
             ImGui.EndCombo();
         }
-        if (ImGui.IsItemHovered() && current > 0) ImGui.SetTooltip(Names[current]);
+        if (ImGui.IsItemHovered() && current > 0) SafeImGui.SetTooltip(Names[current]);
         return changed;
     }
 }

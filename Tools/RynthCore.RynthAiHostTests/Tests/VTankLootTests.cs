@@ -26,7 +26,9 @@ internal static class VTankLootTests
         r.Add("loot vtank: string value match", StringValueMatch);
         r.Add("loot vtank: long keys LE/GE/E/NE and flag, at the boundary", LongKeys);
         r.Add("loot vtank: Decal's Type key (0x0D000000) is the WCID - 'loot everything that isn't retail'", WcidKey);
+        r.Add("loot vtank: Decal's long keys (MaxDamage, Coverage, EquipType, IconOverlay) read the game property", DecalLongKeys);
         r.Add("loot vtank: double keys LE/GE", DoubleKeys);
+        r.Add("loot vtank: VTank's 0x0A0000xx double keys (AttackBonus, DamageBonus, Variance) read 62/63/22", VTankDoubleKeys);
         r.Add("loot vtank: object class", ObjectClass);
         r.Add("loot vtank: value and workmanship requirements", ValueAndWorkmanship);
         r.Add("loot vtank: damage nodes (min, median, missile, tinked, percent)", DamageNodes);
@@ -45,6 +47,8 @@ internal static class VTankLootTests
         r.Add("loot keep#: counts whole stacks of what the rule matches", KeepCapCountsStacks);
         r.Add("loot keep#: pending approvals and merged stacks", KeepCapPending);
         r.Add("loot keep#: the cap boundary, zero and missing counts", KeepCapBoundary);
+        r.Add("loot keep#: a pack stack is judged by one unit's value and burden", KeepCapOneUnit);
+        r.Add("loot keep#: the one-unit view of a stack", KeepCapOneUnitView);
     }
 
     private static VTankLootCondition C(int node, params string[] data) => new(node, "0", data);
@@ -165,6 +169,33 @@ internal static class VTankLootTests
         Check.True(M(retail, C(N.LongValKeyE, "20646", type)), "an exact WCID match works too");
     }
 
+    // 2026-10-07: LootSnobV4's "(2H) Cleaving MAX 350" (Buffed Long Key >= on 218103842) never kept
+    // anything: Decal's synthetic keys were read as STypeInt ids no object has. 336 of its rules
+    // use MaxDamage, 109 Coverage, 83 IconOverlay.
+    private static void DecalLongKeys()
+    {
+        var axe = new Item("Greataxe", AcObjectClass.MeleeWeapon).Int(44, 30).Int(51, 5).Int(48, 41);
+        Check.True(M(axe, C(N.BuffedLongValKeyGE, "25", "218103842")), "MaxDamage 30 >= 25");
+        Check.False(M(axe, C(N.BuffedLongValKeyGE, "31", "218103842")), "MaxDamage 30 < 31");
+        Check.True(M(axe, C(N.LongValKeyGE, "30", "218103842")), "plain Long Key too");
+        Check.True(M(axe, C(N.LongValKeyE, "5", "218103823")), "EquipType = CombatUse (5, two-handed)");
+        Check.True(M(axe, C(N.LongValKeyE, "41", "218103840")), "EquipSkill = WeaponSkill");
+        var shirt = new Item("Shirt", AcObjectClass.Clothing).Int(4, 0x1A);
+        Check.True(M(shirt, C(N.LongValKeyFlagExists, "2", "218103821")), "Coverage flag reads ClothingPriority");
+        Check.False(M(shirt, C(N.LongValKeyFlagExists, "1", "218103821")), "a flag it lacks");
+        Check.Eq(new Item("Stick").Wo.Values(218103820, -7), -7, "an unmapped Decal key (Monarch) answers the default");
+
+        FakeHost.Reset();
+        var host = FakeHost.Create();
+        var cache = new WorldObjectCache(host);
+        const uint Rare = 0x80001101;
+        FakeHost.DataIds[(Rare, 50)] = 0x06006C38;
+        var rare = new WorldObject(unchecked((int)Rare), "Pearl of Blood Drinking", AcObjectClass.Misc) { Cache = cache };
+        Check.Eq(rare.Values(218103849, 0), 27704, "IconOverlay is the overlay's portal index, as Decal gives it");
+        Check.True(M(rare, C(N.LongValKeyE, "27704", "218103849")), "an IconOverlay rule matches");
+        Check.Eq(rare.Values(218103850, -1), -1, "no underlay: the default");
+    }
+
     private static void DoubleKeys()
     {
         var item = new Item("x").Dbl(29, 1.25);
@@ -173,6 +204,27 @@ internal static class VTankLootTests
         Check.True(M(item, C(N.DoubleValKeyLE, "1.25", "29")), "LE equal");
         Check.False(M(item, C(N.DoubleValKeyLE, "1.24", "29")), "LE below");
         Check.True(M(item, C(N.DoubleValKeyGE, "1e0", "29")), "exponent notation parses");
+    }
+
+    // VTank's editor writes the weapon profile's attack/damage mods under Decal's synthetic keys
+    // (uTank2 LootPlugins.DoubleValueKey AttackBonus 0x0A00000C, DamageBonus 0x0A00000E,
+    // Variance 0x0A00000B). LootSnobV4's "(H) Axe (AT +8)" rules are BuffedDoubleValKeyGE
+    // 1.31 on 167772172; read raw the key was never set, so they could not match.
+    private static void VTankDoubleKeys()
+    {
+        var axe = new Item("Axe").Dbl(62, 1.31).Dbl(63, 1.2).Dbl(22, 0.4);
+        const string attack = "167772172", damage = "167772174", variance = "167772171";
+        Check.True(M(axe, C(N.BuffedDoubleValKeyGE, "1.31", attack)), "LootSnob AT rule: attack 1.31 >= 1.31");
+        Check.False(M(axe, C(N.BuffedDoubleValKeyGE, "1.32", attack)), "attack just above");
+        Check.True(M(axe, C(N.DoubleValKeyGE, "1.2", damage)), "DamageBonus reads DamageMod 63");
+        Check.False(M(axe, C(N.DoubleValKeyGE, "1.21", damage)), "not WeaponOffense");
+        Check.True(M(axe, C(N.DoubleValKeyLE, "0.4", variance)), "Variance reads DamageVariance 22");
+        Check.False(M(axe, C(N.DoubleValKeyLE, "0.39", variance)), "variance below");
+        Check.False(M(new Item("Stick"), C(N.DoubleValKeyGE, "0.1", attack)), "no attack mod: reads 0");
+
+        var armor = new Item("Coat").Dbl(13, 1.6).Dbl(19, 0.8);
+        Check.True(M(armor, C(N.DoubleValKeyGE, "1.6", "167772160")), "SlashProt reads ArmorModVsSlash 13");
+        Check.True(M(armor, C(N.DoubleValKeyLE, "0.8", "167772164")), "LightningProt reads ArmorModVsElectric 19");
     }
 
     private static void ObjectClass()
@@ -199,23 +251,31 @@ internal static class VTankLootTests
 
     private static void DamageNodes()
     {
-        var sword = new Item("Sword").Int(54, 40).Dbl(22, 0.5);   // min 20, median 30
+        var sword = new Item("Sword").Int(44, 40).Dbl(22, 0.5);   // min 20, median 30
         Check.True(M(sword, C(N.MinDamageGE, "20")), "min 20");
         Check.False(M(sword, C(N.MinDamageGE, "20.5")), "min above");
         Check.True(M(sword, C(N.BuffedMedianDamageGE, "30")), "median 30");
         Check.False(M(sword, C(N.BuffedMedianDamageGE, "30.1")), "median above");
-        Check.True(M(sword, C(N.CalcdBuffedTinkedDamageGE, "40")), "tinked damage reads max damage");
+        // No material: it can't be tinked, so the damage over time is max + Blood Drinker's 24,
+        // 10% crits at double: (40 + 24) x (0.9 x 1.5 / 2 + 0.2) = 56
+        Check.True(M(sword, C(N.CalcdBuffedTinkedDamageGE, "56")), "tinked damage: no material, no tinks");
+        Check.False(M(sword, C(N.CalcdBuffedTinkedDamageGE, "56.01")), "tinked damage just above");
         Check.False(M(sword, C(N.DamagePercentGE, "0")), "damage percent always fails (as VTank)");
         var nodmg = new Item("Stick");
         Check.False(M(nodmg, C(N.MinDamageGE, "0")), "no max damage: min damage fails even at 0");
         Check.False(M(nodmg, C(N.BuffedMedianDamageGE, "0")), "no max damage: median fails");
-        Check.False(M(nodmg, C(N.BuffedMissileDamageGE, "0")), "no max damage: missile fails");
+        Check.False(M(nodmg, C(N.BuffedMissileDamageGE, "0")), "no damage modifier (not a launcher): missile fails");
 
-        var bow = new Item("Bow").Int(54, 50).Dbl(152, 1.2);
-        Check.True(M(bow, C(N.BuffedMissileDamageGE, "60")), "50 * elemental 1.2 = 60");
-        Check.False(M(bow, C(N.BuffedMissileDamageGE, "60.1")), "just above");
-        var weakBow = new Item("Bow").Int(54, 50).Dbl(152, 0.5);
-        Check.True(M(weakBow, C(N.BuffedMissileDamageGE, "50")), "an elemental bonus below 1 counts as 1");
+        // Missile damage = max damage + (damage mod - 1) x 100 / 3 + elemental bonus (204); a
+        // launcher has no max damage. VTank's own example: a 50 max damage bow with mod 1.15 is 55.
+        var bow = new Item("Bow").Int(44, 50).Dbl(63, 1.15);
+        Check.True(M(bow, C(N.BuffedMissileDamageGE, "55")), "50 + 15/3 = 55");
+        Check.False(M(bow, C(N.BuffedMissileDamageGE, "55.01")), "just above");
+        var xbow = new Item("Crossbow").Dbl(63, 2.65).Int(204, 22);
+        Check.True(M(xbow, C(N.BuffedMissileDamageGE, "77")), "a 385 crossbow: 165/3 + 22 = 77");
+        Check.False(M(xbow, C(N.BuffedMissileDamageGE, "77.01")), "and no more");
+        var noElem = new Item("Crossbow").Dbl(63, 2.2);
+        Check.True(M(noElem, C(N.BuffedMissileDamageGE, "40")), "no elemental bonus reads 0: 120/3 = 40");
     }
 
     private static void BuffedKeysAndRatings()
@@ -236,7 +296,7 @@ internal static class VTankLootTests
         Check.True(M(item, C(N.AnySimilarColor, "1", "2", "3", "4", "5")), "any similar colour passes");
         Check.True(M(item, C(N.SimilarColorArmorType, "1", "2", "3", "4", "5", "6")), "armor-type colour passes");
         Check.True(M(item, C(N.SlotSimilarColor, "1", "2", "3", "4", "5", "6")), "slot colour passes");
-        Check.False(M(item, C(N.CalcedBuffedTinkedTargetMeleeGE, "1", "1", "1")), "tinked target melee is not implemented: fails");
+        Check.False(M(item, C(N.CalcedBuffedTinkedTargetMeleeGE, "1", "1", "1")), "tinked target melee: no max damage, fails");
     }
 
     private static void SpellNodesNoContext()
@@ -303,6 +363,7 @@ internal static class VTankLootTests
     {
         FakeHost.Reset();
         FakeHost.Skills[(Player, 34)] = (Buffed: 400, Training: 3);
+        FakeHost.SkillLevels[(Player, 34, 1)] = 320;   // base (no enchantments)
         FakeHost.Ints[(Player, 25)] = 275;   // LEVEL
         var ctx = new VTankLootContext(FakeHost.Create(), Player);
         var item = new Item("x");
@@ -310,9 +371,11 @@ internal static class VTankLootTests
         Check.True(MC(item, ctx, C(N.CharacterSkillGE, "400", "34")), "skill 400 >= 400");
         Check.False(MC(item, ctx, C(N.CharacterSkillGE, "401", "34")), "skill 400 < 401");
         Check.False(MC(item, ctx, C(N.CharacterSkillGE, "1", "33")), "a skill the host has no value for reads 0");
-        // "Base skill" is checked against the training class (2 trained, 3 specialized).
-        Check.True(MC(item, ctx, C(N.CharacterBaseSkill, "34", "3", "3")), "specialized in [3,3]");
-        Check.False(MC(item, ctx, C(N.CharacterBaseSkill, "34", "0", "2")), "not in [0,2]");
+        // "Base skill" is the unbuffed skill level (it was the training class, 2 or 3, until 2026-10-31,
+        // so LootSnob's "Heavy Weapon 300" = base heavy in [300, 999] never matched).
+        Check.True(MC(item, ctx, C(N.CharacterBaseSkill, "34", "300", "999")), "base 320 in [300,999]");
+        Check.False(MC(item, ctx, C(N.CharacterBaseSkill, "34", "330", "999")), "base 320 not in [330,999] (buffed is 400)");
+        Check.False(MC(item, ctx, C(N.CharacterBaseSkill, "34", "3", "3")), "not the training class any more");
         Check.True(MC(item, ctx, C(N.CharacterLevelGE, "275")), "level GE at the value");
         Check.False(MC(item, ctx, C(N.CharacterLevelGE, "276")), "level GE above");
         Check.True(MC(item, ctx, C(N.CharacterLevelLE, "275")), "level LE at the value");
@@ -514,5 +577,74 @@ internal static class VTankLootTests
         // Note the cap compares what the player has BEFORE the new item: with 4 of 5, a stack of 10 is still looted.
         Check.True(LootKeepCap.UnderCap(4, 5) && LootKeepCap.StackOf(new Item("Healing Kit").Int(12, 10)) == 10,
             "a whole stack is taken while under the cap, even if it overshoots");
+    }
+
+    private static void KeepCapOneUnit()
+    {
+        // A sellables rule: Keep # 25 of anything worth over 10,000 that weighs under 400. A stack's
+        // value is the whole stack's, so a pack of pyreals and components used to read as "have
+        // 25128/25" with none of the rule's items in it; each stack is now judged by one unit.
+        var sellables = Rule("Sellables", VTankLootAction.KeepUpTo,
+            C(N.LongValKeyGE, "10001", "19"), C(N.LongValKeyLE, "399", "5"));
+        sellables.KeepCount = 25;
+        bool Sells(WorldObject wo) => VTankLootEvaluator.Match(sellables, wo);
+
+        var pyreals = new Item("Pyreal", AcObjectClass.Money).Int(12, 25000).Int(19, 25000).Int(5, 0);
+        var tapers  = new Item("Prismatic Taper", AcObjectClass.SpellComponent).Int(12, 1500).Int(19, 15000).Int(5, 300);
+        var notes   = new Item("Trade Note (250,000)", AcObjectClass.TradeNote).Int(12, 3).Int(19, 750000).Int(5, 6);
+        var pack = new List<WorldObject>
+        {
+            pyreals,                                                                        // 1 each
+            tapers,                                                                         // 10 each
+            notes,                                                                          // 250,000 each
+            new Item("Leather Gauntlets", AcObjectClass.Armor).Int(19, 12000).Int(5, 350),  // one, worth 12,000
+            new Item("Leather Gauntlets", AcObjectClass.Armor).Int(19, 900).Int(5, 350),    // too cheap
+            new Item("Leather Gauntlets", AcObjectClass.Armor).Int(19, 15000).Int(5, 500),  // too heavy
+        };
+        Check.True(Sells(pyreals) && Sells(tapers), "as whole stacks, the pyreals and tapers pass the rule");
+        Check.Eq(LootKeepCap.CountHave(pack, Sells, NoPending, _ => true), 4, "3 notes + 1 pair of gauntlets; no pyreals, no tapers");
+        Check.True(LootKeepCap.UnderCap(LootKeepCap.CountHave(pack, Sells, NoPending, _ => true), sellables.KeepCount ?? 0),
+            "4 of 25: the rule loots again");
+
+        // A rule by name still counts every unit of the stack.
+        Check.Eq(LootKeepCap.CountHave(pack, wo => wo.Name == "Prismatic Taper", NoPending, _ => true), 1500, "Keep # tapers by name: 1500");
+        Check.Eq(LootKeepCap.CountHave(pack, wo => wo.ObjectClass == AcObjectClass.Money, NoPending, _ => true), 25000, "by class: the whole stack");
+
+        // A value floor a single unit still clears counts the whole stack.
+        var cheap = Rule("Notes", VTankLootAction.KeepUpTo, C(N.ObjectClass, "15"), C(N.LongValKeyGE, "100000", "19"));
+        Check.Eq(LootKeepCap.CountHave(pack, wo => VTankLootEvaluator.Match(cheap, wo), NoPending, _ => true), 3, "three 250,000 notes");
+
+        // Approved items not in the pack yet are counted as before (they were judged on the corpse).
+        var pending = new Dictionary<int, int> { [0x7000AAAA] = 2 };
+        Check.Eq(LootKeepCap.CountHave(pack, Sells, pending, _ => true), 6, "4 in the pack + 2 on the way");
+    }
+
+    private static void KeepCapOneUnitView()
+    {
+        var single = new Item("Leather Gauntlets", AcObjectClass.Armor).Int(19, 12000).Int(5, 350);
+        Check.True(ReferenceEquals(LootKeepCap.OneUnit(single), single.Wo), "a single item is itself");
+        var unpriced = new Item("Prismatic Taper", AcObjectClass.SpellComponent).Int(12, 40);
+        Check.True(ReferenceEquals(LootKeepCap.OneUnit(unpriced), unpriced.Wo), "a stack with no value or burden is itself");
+
+        var stack = new Item("Prismatic Taper", AcObjectClass.SpellComponent, id: 0x7000BBBB)
+            .Int(12, 1500).Int(19, 15000).Int(5, 1500).Int(105, 3).Str(16, "A taper.");
+        var unit = LootKeepCap.OneUnit(stack);
+        Check.False(ReferenceEquals(unit, stack.Wo), "a stack gets a view");
+        Check.Eq(unit.Id, 0x7000BBBB, "same id");
+        Check.Eq(unit.Name, "Prismatic Taper", "same name");
+        Check.Eq((int)unit.ObjectClass, (int)AcObjectClass.SpellComponent, "same class");
+        Check.Eq(unit.Values(19, 0), 10, "value of one");
+        Check.Eq(unit.Values(5, 0), 1, "burden of one");
+        Check.Eq(unit.Values(LongValueKey.StackCount, 0), 1500, "stack size kept");
+        Check.Eq(unit.Values(105, 0), 3, "other keys kept");
+        Check.Eq(unit.Values((StringValueKey)16, ""), "A taper.", "strings kept");
+        Check.Eq(unit.Values(131, -7), -7, "a key the item doesn't have still reads the default");
+        Check.Eq(stack.Wo.Values(19, 0), 15000, "the pack item itself is unchanged");
+
+        var valueOnly = LootKeepCap.OneUnit(new Item("Pyreal", AcObjectClass.Money).Int(12, 100).Int(19, 100));
+        Check.Eq(valueOnly.Values(19, 0), 1, "value divided");
+        Check.Eq(valueOnly.Values(5, -1), -1, "no burden stays absent");
+        var rounding = LootKeepCap.OneUnit(new Item("x").Int(12, 3).Int(19, 10));
+        Check.Eq(rounding.Values(19, 0), 3, "rounds down, as UB's Value / Stack");
     }
 }

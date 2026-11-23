@@ -8,8 +8,10 @@
 //     the Inventory Management settings (ImGui Advanced Settings, the Avalonia Settings
 //     panel) or "/ra huds".
 //   * The same Mini Remote inside the engine's RynthAi dashboard (its Mini Remote drawer,
-//     RynthPluginRenderEmbed "miniremote"): RenderEmbedded. Data polling runs while either
-//     the floating window or the drawer shows it (MiniRemoteActive).
+//     RynthPluginRenderEmbed "miniremote") and inside the engine's Mini Remote window
+//     ("miniremote-window"): RenderEmbedded. Data polling runs while any of them shows it
+//     (MiniRemoteActive); the floating window stays hidden while the engine's window shows it
+//     (MiniRemoteInEngineWindow), so there is one Mini Remote on screen.
 // Every HUD is an ordinary ImGui window, so it can be docked into / undocked from other
 // ImGui windows and dragged outside the game window (multi-viewport).
 //
@@ -20,7 +22,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using RynthCore.Plugin.RynthAi.IltHub;
+using RynthCore.Plugin.RynthAi.MiniRemote;
 using RynthCore.Plugin.RynthAi.LegacyUi;
 using RynthCore.PluginSdk;
 
@@ -81,7 +83,7 @@ internal sealed class HudController
     private volatile string _assignCandidate = string.Empty;
 
     public HudController(RynthCoreHost host, string charFolder, Func<WorldObjectCache?> cache,
-        LegacyDashboardRenderer dashboard, Func<IltHubController?> hub, HudIconCache icons, Func<int> attackTargetId)
+        LegacyDashboardRenderer dashboard, Func<MiniRemoteController?> remote, HudIconCache icons, Func<int> attackTargetId)
     {
         _host = host;
         _cache = cache;
@@ -89,7 +91,7 @@ internal sealed class HudController
         State = _store.Load();
         Icons = icons;
         Dashboard = dashboard;
-        Hub = hub;
+        Remote = remote;
         _itemHud = new ItemCountHud(this);
         _miniRemote = new MiniRemoteHud(this);
         _setup = new HudSetupUi(this);
@@ -99,8 +101,14 @@ internal sealed class HudController
     public HudState State { get; }
     public HudIconCache Icons { get; }
     public LegacyDashboardRenderer Dashboard { get; }
-    public Func<IltHubController?> Hub { get; }
+    public Func<MiniRemoteController?> Remote { get; }
     public RynthCoreHost Host => _host;
+
+    /// <summary>The Mini Remote's session stats (the same SessionStats code as RynthTracker); null if it failed to start.</summary>
+    public RynthCore.Plugin.Shared.SessionStatsTracker? SessionStats { get; init; }
+
+    /// <summary>Opens or closes the Monster Stats window (the Session Stats view's "Monster stats" button); null without one.</summary>
+    public Action? ToggleMonsterStats { get; init; }
 
     /// <summary>Latest pack view (render thread safe).</summary>
     public HudPackSnapshot Pack => _pack;
@@ -120,6 +128,20 @@ internal sealed class HudController
     /// <summary>Queues work for the next pump tick (safe from the render thread).</summary>
     public void Post(Action action) => _posted.Enqueue(action);
 
+    /// <summary>
+    /// Runs a RynthCore "/rc ..." command through the engine's chat dispatcher on the next pump
+    /// tick (any thread). Says so in chat when this RynthCore can't run it.
+    /// </summary>
+    public void RunEngineCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return;
+        Post(() =>
+        {
+            if (_host.HasInvokeChatParser && _host.InvokeChatParser(command)) return;
+            Chat($"[Mini Remote] {command} needs RynthCore's ImGui layer; type it in chat to see why.");
+        });
+    }
+
     private static long NowMs => Environment.TickCount64;
 
     /// <summary>
@@ -128,12 +150,22 @@ internal sealed class HudController
     /// </summary>
     private const long EmbeddedVisibleMs = 1500;
 
-    /// <summary>When the Mini Remote last drew in the dashboard drawer (TickCount64); written on the render thread.</summary>
+    /// <summary>When the Mini Remote last drew in an engine surface (TickCount64); written on the render thread.</summary>
     private long _embeddedDrawnAt = long.MinValue / 2;
 
-    /// <summary>The Mini Remote is on screen: the floating window or the dashboard drawer. Any thread.</summary>
+    /// <summary>When the engine's Mini Remote window last drew it (TickCount64); written on the render thread.</summary>
+    private long _windowDrawnAt = long.MinValue / 2;
+
+    /// <summary>The Mini Remote is on screen: the floating window or an engine surface. Any thread.</summary>
     public bool MiniRemoteActive =>
         State.ShowMiniRemote || NowMs - System.Threading.Interlocked.Read(ref _embeddedDrawnAt) < EmbeddedVisibleMs;
+
+    /// <summary>
+    /// The engine's Mini Remote window is showing the remote: the floating copy stays hidden
+    /// meanwhile, so there is one Mini Remote on screen. Any thread.
+    /// </summary>
+    public bool MiniRemoteInEngineWindow =>
+        NowMs - System.Threading.Interlocked.Read(ref _windowDrawnAt) < EmbeddedVisibleMs;
 
     // ── Pump thread ─────────────────────────────────────────────────────────
 
@@ -179,6 +211,14 @@ internal sealed class HudController
         _combat.OnLogout();
     }
 
+    /// <summary>
+    /// What the character carries, from a walk of the client's own pack contents (the loot step's
+    /// Keep # count reads the same). The cache's inventory set, kept up from object events, drifts over
+    /// a long session: after 10+ hours of macro the HUD showed 1 healing kit of 4 and 4 mana stones of
+    /// 6 (report R-20261103-125252-251c, 2026-11-03).
+    /// </summary>
+    private static IEnumerable<WorldObject> Carried(WorldObjectCache cache) => cache.GetDirectInventory();
+
     /// <summary>Aggregates the pack by item name and refreshes pinned entries' icon / WCID.</summary>
     private void RebuildPack()
     {
@@ -187,7 +227,7 @@ internal sealed class HudController
 
         var byName = new Dictionary<string, HudPackRow>(StringComparer.OrdinalIgnoreCase);
         var seen = new HashSet<int>();
-        foreach (var wo in cache.GetInventory())
+        foreach (var wo in Carried(cache))
         {
             if (wo == null || string.IsNullOrWhiteSpace(wo.Name)) continue;
             seen.Add(wo.Id);
@@ -238,7 +278,7 @@ internal sealed class HudController
         if (entry.IsEmpty) return;
         var cache = _cache();
         if (cache == null || !_host.HasUseObject) return;
-        var inv = cache.GetInventory().Where(w => w != null).ToList();
+        var inv = Carried(cache).Where(w => w != null).ToList();
         var wo = inv.FirstOrDefault(w => w.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase))
                  ?? (entry.Wcid != 0 ? inv.FirstOrDefault(w => Wcid(w) == entry.Wcid) : null);
         if (wo == null) { Chat($"[RynthAi] No {entry.Name} in your pack."); return; }
@@ -248,7 +288,7 @@ internal sealed class HudController
 
     /// <summary>Carried item by object id, or null.</summary>
     private WorldObject? PackItem(int id)
-        => id == 0 ? null : _cache()?.GetInventory().FirstOrDefault(w => w != null && w.Id == id);
+        => id == 0 || _cache() is not WorldObjectCache cache ? null : Carried(cache).FirstOrDefault(w => w != null && w.Id == id);
 
     /// <summary>
     /// Remembers the last pack item selected in the game (native inventory, or the RynthCore
@@ -471,6 +511,8 @@ internal sealed class HudController
             case "remote":
             case "miniremote":
                 State.ShowMiniRemote = Resolve(mode, State.ShowMiniRemote);
+                if (State.ShowMiniRemote && MiniRemoteInEngineWindow)
+                    return "The Mini Remote is open in RynthCore's Mini Remote window (bar button, /rc miniremote); the floating copy stays hidden while that window is open.";
                 return State.ShowMiniRemote ? "Mini Remote shown." : "Mini Remote hidden.";
             default:
                 State.ShowSetup = Resolve(mode, State.ShowSetup);
@@ -478,7 +520,54 @@ internal sealed class HudController
         }
     }
 
+    /// <summary>
+    /// Puts the Mini Remote on tab <paramref name="tab"/> ("" = the remote itself, else a tab id: its own or RynthILT's
+    /// id). Modes: "show" selects it and shows the Mini Remote (the floating one, unless RynthCore's
+    /// window hosts it); "hide" goes back to the remote tab when this tab is the one selected;
+    /// "toggle" does whichever undoes the current state; "select" only switches tabs (RynthCore's
+    /// dashboard opens its own window). Any thread: plain field writes the next frame applies.
+    /// Returns the chat reply.
+    /// </summary>
+    public string HandleTabCommand(string tab, string mode)
+    {
+        tab ??= string.Empty;
+        string label = tab.Length == 0 ? "Remote" : char.ToUpperInvariant(tab[0]) + tab.Substring(1);
+        string m = (mode ?? string.Empty).ToLowerInvariant();
+        // Character / Charms / Banking left the Mini Remote (2026-10-13): open their new home.
+        if (MovedTabs.CommandFor(tab) is string moved)
+        {
+            if (string.Equals(State.MiniRemoteTab, tab, StringComparison.OrdinalIgnoreCase)) _miniRemote.RequestTab(string.Empty);
+            if (m is "hide" or "off" or "close") return $"{label} isn't a Mini Remote tab any more ({MovedTabs.HomeOf(moved)}, {moved}).";
+            RunEngineCommand(moved);
+            return $"{label} moved to {MovedTabs.HomeOf(moved)} ({moved}).";
+        }
+        bool selected = string.Equals(State.MiniRemoteTab, tab, StringComparison.OrdinalIgnoreCase);
+        // RynthCore shows the tabs as sections: open it there. Not for "select", which is how
+        // RynthCore itself falls back to this tab bar (re-sending would bounce between the two).
+        if (EngineHostsSections && m is not ("select" or "hide" or "off" or "close"))
+        {
+            RunEngineCommand(tab.Length == 0 ? "/rc miniremote section remote" : "/rc miniremote tab " + tab);
+            return $"Mini Remote (RynthCore's window): {label}.";
+        }
+        bool hide = m is "hide" or "off" or "close"
+                    || (m is not ("show" or "on" or "open" or "select") && selected && MiniRemoteActive);
+        if (hide)
+        {
+            if (selected) _miniRemote.RequestTab(string.Empty);
+            return selected ? $"Mini Remote back on its Remote tab ({label} closed)." : $"The {label} tab isn't the one showing.";
+        }
+        _miniRemote.RequestTab(tab);
+        if (m == "select") return $"Mini Remote: {label} tab.";
+        if (!MiniRemoteActive && !MiniRemoteInEngineWindow) State.ShowMiniRemote = true;
+        return MiniRemoteInEngineWindow
+            ? $"Mini Remote (RynthCore's window): {label} tab."
+            : $"Mini Remote shown on its {label} tab.";
+    }
+
     // ── Render thread ───────────────────────────────────────────────────────
+
+    /// <summary>RynthCore's Mini Remote "Session Stats" section (SectionsManifest.SessionSurface). Render thread.</summary>
+    public void RenderSessionSection() => _miniRemote.RenderSessionSection();
 
     public void Render()
     {
@@ -487,7 +576,8 @@ internal sealed class HudController
         {
             if (State.ShowSetup) _setup.Render();
             if (State.ShowItemHud) _itemHud.Render(); else _itemHud.OnHidden();
-            if (State.ShowMiniRemote) _miniRemote.Render(); else _miniRemote.OnHidden();
+            // The engine's Mini Remote window hosts the same remote: draw one, not two.
+            if (State.ShowMiniRemote && !MiniRemoteInEngineWindow) _miniRemote.Render(); else _miniRemote.OnHidden();
         }
         finally
         {
@@ -497,19 +587,36 @@ internal sealed class HudController
 
     /// <summary>
     /// Draws the Mini Remote into the engine's current ImGui window (the RynthAi dashboard's
-    /// Mini Remote drawer) and returns the content size it wants. Render thread.
+    /// Mini Remote drawer, or with <paramref name="window"/> the engine's Mini Remote window)
+    /// and returns the content size it wants. Render thread.
     /// </summary>
-    public System.Numerics.Vector2 RenderEmbedded()
+    public System.Numerics.Vector2 RenderEmbedded(bool window = false, bool tabs = true, bool popped = false)
     {
-        System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, NowMs);
+        long now = NowMs;
+        System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, now);
+        if (window) System.Threading.Interlocked.Exchange(ref _windowDrawnAt, now);
         int pushed = LegacyDashboardRenderer.PushDashboardStyle();
         try
         {
-            return _miniRemote.RenderEmbedded();
+            return _miniRemote.RenderEmbedded(window, tabs, popped);
         }
         finally
         {
             ImGuiNET.ImGui.PopStyleColor(pushed);
         }
     }
+
+    /// <summary>
+    /// RynthCore's Mini Remote window is open on one of its sections (not the remote): it is still
+    /// the one Mini Remote, so the floating copy stays hidden and the data keeps polling. Render thread.
+    /// </summary>
+    public void MarkEngineWindow()
+    {
+        long now = NowMs;
+        System.Threading.Interlocked.Exchange(ref _embeddedDrawnAt, now);
+        System.Threading.Interlocked.Exchange(ref _windowDrawnAt, now);
+    }
+
+    /// <summary>RynthCore shows the Mini Remote's tabs as its own sections (it sent their list).</summary>
+    public static bool EngineHostsSections => ServerMenuModel.Sections.Length > 0;
 }

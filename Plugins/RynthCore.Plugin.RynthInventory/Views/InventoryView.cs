@@ -8,14 +8,15 @@ namespace RynthCore.Plugin.RynthInventory.Views;
 
 /// <summary>
 /// The Global Inventory window: a search page (every character on every server, filters,
-/// totals, results, details) and a characters page (snapshot ages, forget). Recorded on the
-/// pump thread, replayed by the engine.
+/// totals, results, details), a characters page (snapshot ages, forget) and, on Infinite Leaftide
+/// only (RynthCore's active server), a Banking page with RynthILT's bank for every character
+/// (Views\BankingTab.cs). Recorded on the pump thread, replayed by the engine.
 /// </summary>
-internal sealed class InventoryView
+internal sealed partial class InventoryView
 {
-    public const int TabSearch = 0, TabCharacters = 1;
+    public const int TabSearch = 0, TabCharacters = 1, TabBanking = 2;
     private const int PageSize = 100;
-    private const float RowIcon = 18f, DetailIcon = 32f, DetailsHeight = 190f;
+    private const float RowIcon = 18f, DetailIcon = 32f, DetailsHeight = 260f;
 
     private static readonly string[] SortNames = { "Name", "Character", "Count", "Value", "Burden", "Category", "Last seen" };
 
@@ -30,10 +31,18 @@ internal sealed class InventoryView
     private string? _selectedKey;
     private string? _confirmForget;
     private string _message = string.Empty;
+    /// <summary>Pending trade quantity text (for stackable items).</summary>
+    private string _tradeQtyText = string.Empty;
 
     private InventoryResult? _result;
     private int _resultRevision = -1;
     private bool _resultDirty = true;
+    /// <summary>"Find like this" from the Inventory panel (/ginv like), or this window's checklist's, or null.</summary>
+    private LikeFilter? _like;
+    // The window's own attribute checklist (2026-10-24) and whether _like is its.
+    private readonly ChecklistFilter _checklist = new();
+    private bool _showChecklist, _likeIsChecklist;
+    private int _checklistVersion;
 
     public InventoryView(InventoryContext c) => _c = c;
 
@@ -44,6 +53,16 @@ internal sealed class InventoryView
         Tab = TabSearch;
         _page = 0;
         _resultDirty = true;
+    }
+
+    /// <summary>Opens on the search page showing only the items <paramref name="like"/> takes (null clears it).</summary>
+    public void SetLike(LikeFilter? like)
+    {
+        _like = like;
+        _likeIsChecklist = false;
+        Tab = TabSearch;
+        _selectedKey = null;
+        Invalidate();
     }
 
     private void Invalidate()
@@ -58,9 +77,29 @@ internal sealed class InventoryView
         w.SameLine();
         int chars = _c.Index?.Characters.Count ?? 0;
         w.ToggleButton($"Characters ({chars})", "tab.chars", Tab == TabCharacters, () => Tab = TabCharacters, small: true);
+        if (BankingShown)
+        {
+            w.SameLine();
+            w.ToggleButton("Banking", "tab.bank", Tab == TabBanking, () => Tab = TabBanking, small: true);
+        }
+        if (_c.TradeCommand != null)
+        {
+            w.SameLine();
+            int tradeCount = _c.Trade?.Items.Count ?? 0;
+            string tradeLabel = tradeCount > 0 ? $"Trade List ({tradeCount})" : "Trade List";
+            w.SmallButton(tradeLabel, "tab.trade", () => _c.TradeCommand.Invoke("toggle"));
+        }
         w.SameLine();
         w.TextDisabled(StatusLine());
         w.Separator();
+
+        // The bank comes from RynthILT, not the inventory files: it draws before they are read.
+        if (Tab == TabBanking)
+        {
+            if (BankingShown) DrawBanking(w);
+            else Tab = TabSearch;
+            return;
+        }
 
         if (_c.Index == null)
         {
@@ -86,7 +125,21 @@ internal sealed class InventoryView
     private void DrawSearch(UiWindow w, InventoryIndex index)
     {
         InventorySettings s = _c.Settings;
+        TakeChecklist();
+        if (_like != null) DrawLikeBar(w);
         w.InputText("Search", "q", _search, 128, v => { _search = v; Invalidate(); }, UiFormat.InputAutoSelectAll);
+        w.SameLine();
+        w.ToggleButton(_showChecklist ? "Attribute filter -" : "Attribute filter +", "cl.show", _showChecklist,
+            () => _showChecklist = !_showChecklist, small: true);
+        w.Tooltip("Filter every character's items by their attributes: the same checklist as the Inventory panel's (class, material, ratings, spells and cantrips from the standard lists...).");
+        if (_showChecklist)
+        {
+            w.BeginChild("checklist", 0f, 260f, border: true);
+            _checklist.SetIlt(_c.Ilt);
+            _checklist.Draw(w);
+            w.EndChild();
+            w.SmallButton("Clear checklist", "cl.clear", () => _checklist.Clear());
+        }
 
         // Servers: the one you're on first, the others labelled.
         w.ToggleButton("All servers", "srv.all", _server == null, () => { _server = null; _characterKey = null; Invalidate(); }, small: true);
@@ -135,6 +188,11 @@ internal sealed class InventoryView
 
         InventoryResult result = Result(index);
         w.Separator();
+        if (_like != null && result.LikeUnknown > 0)
+        {
+            w.TextColored(UiColors.Stale, $"{result.LikeUnknown.ToString("N0", CultureInfo.InvariantCulture)} more item(s) can't be judged: not identified when saved, or saved by an older RynthInventory.");
+            w.Tooltip("The filter needs what an identify tells (workmanship, ratings, spells...). Log that character in (identify the items if needed) and it is saved again with them.");
+        }
         if (result.Rows.Count == 0)
         {
             w.TextDisabled(index.Rows.Count == 0 ? "No items recorded yet. Each character is scanned when it logs in with RynthInventory loaded." : "Nothing found.");
@@ -197,10 +255,42 @@ internal sealed class InventoryView
             SearchSpells = s.SearchSpells,
             Sort = (InventorySort)Math.Clamp(s.Sort, 0, SortNames.Length - 1),
             Descending = s.Descending,
+            Like = _like == null ? null : _like.Judge,
         });
         _resultRevision = _c.IndexRevision;
         _resultDirty = false;
         return _result;
+    }
+
+    /// <summary>The checklist changed: filter with its rule (nothing ticked drops its filter).</summary>
+    private void TakeChecklist()
+    {
+        if (_checklistVersion == 0) _checklistVersion = 1;   // the empty checklist built at start
+        if (_checklist.Version == _checklistVersion) return;
+        _checklistVersion = _checklist.Version;
+        if (_checklist.Conditions.Count > 0)
+        {
+            _like = LikeFilter.From("attribute filter", _checklist.Conditions);
+            _likeIsChecklist = true;
+        }
+        else if (_likeIsChecklist)
+        {
+            _like = null;
+            _likeIsChecklist = false;
+        }
+        _selectedKey = null;
+        Invalidate();
+    }
+
+    /// <summary>The like filter's bar: what it is (its conditions on hover) and Clear.</summary>
+    private void DrawLikeBar(UiWindow w)
+    {
+        LikeFilter like = _like!;
+        w.TextColored(UiColors.Green, "Filter: " + like.Label);
+        w.Tooltip(string.Join("\n", like.Lines));
+        w.SameLine();
+        w.SmallButton("Clear filter", "like.clear", () => { if (_likeIsChecklist) _checklist.Clear(); SetLike(null); });
+        w.TextDisabled(string.Join("  ", like.Lines));
     }
 
     private static string RowKey(InventoryRow r) => r.Owner.Key + "|" + (r.Storage?.Id ?? 0).ToString(CultureInfo.InvariantCulture) + "|" + r.Item.Id.ToString(CultureInfo.InvariantCulture);
@@ -222,6 +312,17 @@ internal sealed class InventoryView
 
     private void Select(string key) => _selectedKey = _selectedKey == key ? null : key;
 
+    /// <summary>
+    /// Clicking one of the logged-in character's own items also selects it in the game (the bag and
+    /// the selection panel), as clicking it in the pack would. Another character's item can't be.
+    /// A problem report asked for this (R-20261016-213300-1737).
+    /// </summary>
+    private void SelectInGame(InventoryRow? r)
+    {
+        if (r == null || !r.Owner.IsCurrentCharacter || r.Item.Id == 0 || !_c.Host.HasSelectItem) return;
+        _c.Host.SelectItem(r.Item.Id);
+    }
+
     private void DrawRow(UiWindow w, InventoryRow r)
     {
         ItemRecord it = r.Item;
@@ -234,8 +335,14 @@ internal sealed class InventoryView
         string key = RowKey(r);
         uint? color = !r.Owner.IsCurrentServer ? UiColors.OtherServer : IsStale(r.SeenUtc) ? UiColors.Stale : null;
         if (color != null) w.PushStyleColor(UiFormat.ColText, color.Value);
-        w.Selectable(label, "r." + key, _selectedKey == key, () => Select(key), 0f, icons ? RowIcon : 0f);
+        w.Selectable(label, "r." + key, _selectedKey == key, () => { Select(key); SelectInGame(r); }, 0f, icons ? RowIcon : 0f);
         if (color != null) w.PopStyleColor();
+        // Trade: add to trade list button.
+        if (_c.Trade != null && _c.Trade.Phase == Data.TradePhase.Building)
+        {
+            w.SameLine();
+            w.SmallButton("+", "t." + key, () => AddToTrade(r));
+        }
     }
 
     private void DrawGroupRow(UiWindow w, InventoryTotal t)
@@ -245,7 +352,9 @@ internal sealed class InventoryView
         string label = $"{t.Name}  x{t.Count.ToString("N0", CultureInfo.InvariantCulture)}  -  {t.Characters} character{(t.Characters == 1 ? "" : "s")}";
         if (t.Servers > 1) label += $", {t.Servers} servers";
         string key = GroupKey(t);
-        w.Selectable(label, "g." + key, _selectedKey == key, () => Select(key), 0f, icons ? RowIcon : 0f);
+        // A total across characters: select the logged-in character's own stack, if it has one.
+        w.Selectable(label, "g." + key, _selectedKey == key,
+            () => { Select(key); SelectInGame(t.Holders.Find(h => h.Owner.IsCurrentCharacter)); }, 0f, icons ? RowIcon : 0f);
     }
 
     /// <summary>
@@ -285,6 +394,22 @@ internal sealed class InventoryView
         w.TextColored(UiColors.Gold, it.Name + StackText(it));
         w.SameLine();
         w.SmallButton("Close", "d.close", () => _selectedKey = null);
+        if (_c.Trade != null && _c.Trade.Phase == Data.TradePhase.Building)
+        {
+            if (it.MaxStack > 1)
+            {
+                // Stackable: show a quantity input.
+                w.SameLine();
+                w.InputText("Qty", "d.tradeqty", _tradeQtyText, 12, v => _tradeQtyText = v);
+                w.SameLine();
+                w.SmallButton("Add to Trade", "d.trade", () => AddToTradeWithQty(r));
+            }
+            else
+            {
+                w.SameLine();
+                w.SmallButton("Add to Trade", "d.trade", () => AddToTrade(r));
+            }
+        }
 
         string who = r.Owner.Name + " on " + r.Owner.Server;
         if (!string.IsNullOrEmpty(r.Owner.Account) && r.Owner.Account != "unknown") who += $" (account {r.Owner.Account})";
@@ -317,7 +442,53 @@ internal sealed class InventoryView
         else if (it.Spells.Length > 0) w.TextWrapped("Spells: " + string.Join(", ", Array.ConvertAll(it.Spells, x => "#" + x.ToString(CultureInfo.InvariantCulture))));
         if (!it.Identified && it.Category is ItemCategory.Weapon or ItemCategory.Armor or ItemCategory.Clothing or ItemCategory.Jewelry or ItemCategory.Caster)
             w.TextDisabled("Not identified when scanned: spells, workmanship and set may be missing.");
+        DrawAttributes(w, it);
         w.TextDisabled($"Item 0x{it.Id:X8}" + (it.Wcid != 0 ? $", class {it.Wcid}" : ""));
+    }
+
+    /// <summary>
+    /// Every attribute the item was saved with (2026-10-24), grouped as the loot checklists show
+    /// them: class, item (material, workmanship, value, set, imbue, slayer...), weapon / armor
+    /// (skills, damage, modifiers, slots, armor level), ratings, pet essence, T11 and requirements.
+    /// </summary>
+    private static void DrawAttributes(UiWindow w, ItemRecord it)
+    {
+        if (!it.HasFacts)
+        {
+            w.TextDisabled("Full attributes: saved by an older RynthInventory. Log that character in to save them.");
+            return;
+        }
+        RynthCore.Loot.Editing.LootItemFacts f = LikeFilter.Facts(it);
+        var groups = new List<(string Group, List<string> Parts)>();
+        void Add(string group, string part)
+        {
+            int i = groups.FindIndex(g => g.Group == group);
+            if (i < 0) { groups.Add((group, new List<string>())); i = groups.Count - 1; }
+            groups[i].Parts.Add(part);
+        }
+        Add(RynthCore.Loot.Editing.LootItemAttributes.GroupItem, "class " + RynthCore.Loot.Editing.LootItemRules.ClassName(f.ObjectClass));
+        foreach (RynthCore.Loot.Editing.LootItemAttribute r in RynthCore.Loot.Editing.LootItemAttributes.For(f, like: false, includeT11: false))
+        {
+            if (r.Group == RynthCore.Loot.Editing.LootItemAttributes.GroupSpells) continue;   // the spells are listed above
+            Add(r.Group, r.Label.ToLowerInvariant() + " " + r.ItemText);
+        }
+        // T11: the virtual keys saved with the item.
+        foreach (var (key, name) in RynthCore.Loot.T11.T11Keys.Names())
+        {
+            if (!f.Ints.TryGetValue(key, out int v) || v == 0 || key == RynthCore.Loot.T11.T11Keys.IsT11) continue;
+            string label = name.StartsWith("T11: ", StringComparison.Ordinal) ? name.Substring(5)
+                : name.StartsWith("T11 Mod: ", StringComparison.Ordinal) ? name.Substring(9) : name;
+            string value = RynthCore.Loot.Editing.LootRuleText.ValueName(key, v.ToString(CultureInfo.InvariantCulture)) ?? v.ToString(CultureInfo.InvariantCulture);
+            Add(RynthCore.Loot.Editing.LootItemAttributes.GroupT11, label.ToLowerInvariant() + " " + value);
+        }
+        foreach (var (group, parts) in groups)
+        {
+            w.TextColored(UiColors.Gold, group + ":");
+            w.SameLine();
+            w.TextWrapped(string.Join(", ", parts));
+        }
+        if (!it.Identified)
+            w.TextDisabled("Not identified when saved: appraisal attributes (workmanship, ratings, damage...) may be missing.");
     }
 
     private void DrawGroupDetails(UiWindow w, InventoryTotal t)
@@ -365,6 +536,37 @@ internal sealed class InventoryView
         }
         if (index.Characters.Count == 0) w.TextDisabled("No characters recorded yet.");
         w.EndChild();
+    }
+
+    // ── Trade ────────────────────────────────────────────────────────────
+
+    private void AddToTrade(InventoryRow r)
+    {
+        if (_c.Trade == null) return;
+        // Use the full stack quantity for stackable items; 0 means "the whole object".
+        int qty = r.Item.Stack > 1 ? r.Item.Stack : 0;
+        string? error = _c.Trade.Add(r, qty);
+        if (error != null) _message = error;
+        else _message = $"Added {r.Item.Name} to trade list.";
+    }
+
+    private void AddToTradeWithQty(InventoryRow r)
+    {
+        if (_c.Trade == null) return;
+        int qty;
+        string trimmed = _tradeQtyText.Trim();
+        if (trimmed.Length == 0 || !int.TryParse(trimmed, out qty) || qty <= 0)
+            qty = r.Item.Stack > 1 ? r.Item.Stack : 0; // default to full stack
+        else if (r.Item.MaxStack > 1 && qty > r.Item.Stack)
+            qty = r.Item.Stack; // clamp to available
+        string? error = _c.Trade.Add(r, qty);
+        if (error != null) _message = error;
+        else
+        {
+            string qtyText = qty > 0 ? $" x{qty:N0}" : "";
+            _message = $"Added {r.Item.Name}{qtyText} to trade list.";
+        }
+        _tradeQtyText = string.Empty;
     }
 
     private void DrawCharacter(UiWindow w, CharacterInfo ci)

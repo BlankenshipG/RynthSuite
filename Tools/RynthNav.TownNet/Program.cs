@@ -86,7 +86,10 @@ var doc = TownNetFile.Load(inPath);
 var sw = Stopwatch.StartNew();
 var world = WorldLoader.Load(doc, cellDat, portalDat, out var reachable);
 var grid = new NavGrid(world, reachable);
-var planner = new WalkPlanner(world, grid);
+// --extra <m>: the margin kept beyond the walker's body (default 0.5; a walk with no room at that margin is planned at 0.25).
+float extra = Arg("--extra") is string ex ? float.Parse(ex, CultureInfo.InvariantCulture) : WalkPlanner.DefaultExtra;
+var planner = new WalkPlanner(world, grid, extra);
+var fallbackPlanner = extra > 0.25f ? new WalkPlanner(world, grid, 0.25f) : null;
 Console.WriteLine($"{reachable.Count} cells, {grid.Nodes.Count:N0} floor samples, {world.Solids.Count:N0} solid shapes, " +
     $"{world.Portals.Count} exit portals; walker radius {world.AgentRadius:F2} m ({sw.Elapsed.TotalSeconds:F1} s)");
 foreach (var n in world.Notes) Console.WriteLine("  " + n);
@@ -111,6 +114,16 @@ if (cmd == "build")
     foreach (var a in arrivals)
     {
         var ws = planner.PlanFrom(a.Id, a.Cell, a.P, world.Portals);
+        if (fallbackPlanner != null && ws.Any(w => w.Error != null))
+        {
+            var alt = fallbackPlanner.PlanFrom(a.Id, a.Cell, a.P, world.Portals);
+            for (int i = 0; i < ws.Count; i++)
+                if (ws[i].Error != null)
+                {
+                    var better = alt.FirstOrDefault(x => x.To == ws[i].To && x.Error == null);
+                    if (better != null) { ws[i] = better; Console.WriteLine($"    {better.ExitName}: no room at {extra:0.##} m, planned at 0.25 m"); }
+                }
+        }
         walks.AddRange(ws);
         var ok = ws.Where(w => w.Error == null).ToList();
         Console.WriteLine($"{a.Id} {a.Cell:X8} ({a.P.X:F1},{a.P.Y:F1}): {ok.Count}/{ws.Count} exits, " +
@@ -130,6 +143,7 @@ if (cmd == "build")
         ["grid"] = NavGrid.Cell,
         ["walkerRadius"] = R2(world.AgentRadius),
         ["clearance"] = R2(planner.MustClear),
+        ["margin"] = R2(extra),
         ["portalClearance"] = R2(planner.MustPortal),
         ["cells"] = reachable.Count,
         ["walks"] = walks.Count,

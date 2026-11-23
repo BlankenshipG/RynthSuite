@@ -31,6 +31,7 @@ internal static class RadarSnapshotTests
         r.Add("radar kinds: undead (CreatureType 14) are monsters, not NPCs", UndeadIsMonster);
         r.Add("radar kinds: a settled kind is kept, an unreadable bitfield is asked again", KindCaching);
         r.Add("radar kinds: fellowship membership is read live", FellowLive);
+        r.Add("radar markers: objects over a landblock border show outdoors, not in a dungeon", AdjacentLandblocks);
     }
 
     // ── Marker kinds (2026-10-04) ─────────────────────────────────────────────
@@ -259,6 +260,53 @@ internal static class RadarSnapshotTests
         if (s == null) return;
         Check.Eq(s.Markers.Count, 3, "older engine still sees every marker");
         Check.Eq(s.Markers[0].Label, "Drudge Skulker", "and its label");
+    }
+
+    // ── Neighbouring landblocks (2026-10-15) ──────────────────────────────────
+
+    private static Dictionary<uint, (float X, float Y)> Positions(RynthRadarUi radar)
+    {
+        var at = new Dictionary<uint, (float X, float Y)>();
+        EngineSnapshot? s = EngineSnapshot.Parse(radar.BuildSnapshotJson(0));
+        Check.NotNull(s, "parsed");
+        if (s == null) return at;
+        foreach (var m in s.Markers) at[m.Id] = (m.X, m.Y);
+        return at;
+    }
+
+    /// <summary>
+    /// Outdoors, objects over a landblock border show at once, placed by their own landblock's origin
+    /// (they used to appear only after you crossed). In a dungeon only your own landblock counts.
+    /// </summary>
+    private static void AdjacentLandblocks()
+    {
+        var at = Setup();
+        uint lbx = (at.Cell >> 24) & 0xFF, lby = (at.Cell >> 16) & 0xFF;
+        uint same = 0x80001103, east = 0x80001101, north = 0x80001102;
+        Put(same, "Drudge Skulker", 0x10, at, 3f, 0x10);
+        Put(east, "Mosswart", 0x10, at, 3f, 0x10);
+        Put(north, "Olthoi", 0x10, at, 3f, 0x10);
+        FakeHost.Positions[east] = (at.Cell + 0x01000000u, 5f, 40f, 0f);      // the landblock to the east
+        FakeHost.Positions[north] = (at.Cell + 0x00010000u, 60f, 7f, 0f);     // and to the north
+
+        var host = FakeHost.Create(Player);
+        var radar = new RynthRadarUi(host, new LegacyUiSettings());
+        radar.SetWorldObjectCache(FakeHost.MakeCache(host, Player, new[] { same, east, north }));
+        var pos = Positions(radar);
+        Check.True(pos.ContainsKey(same), "an object in your own landblock shows");
+        Check.True(pos.TryGetValue(east, out var pe), "an object in the landblock to the east shows");
+        Check.True(pos.TryGetValue(north, out var pn), "an object in the landblock to the north shows");
+        Check.Near(pe.X, 5f + (lbx + 1) * 192f, 1e-3, "east object: x is local + the east landblock's origin");
+        Check.Near(pe.Y, 40f + lby * 192f, 1e-3, "east object: y is local + this landblock's origin");
+        Check.Near(pn.X, 60f + lbx * 192f, 1e-3, "north object: x");
+        Check.Near(pn.Y, 7f + (lby + 1) * 192f, 1e-3, "north object: y is local + the north landblock's origin");
+
+        // In a dungeon (an interior cell of your landblock) the neighbours' objects are other places: left out.
+        FakeHost.PlayerPose = ((at.Cell & 0xFFFF0000u) | 0x0105u, at.X, at.Y, 0f);
+        FakeHost.Positions[same] = ((at.Cell & 0xFFFF0000u) | 0x0105u, 4f, 6f, 0f);
+        var indoor = Positions(radar);
+        Check.True(indoor.ContainsKey(same), "in a dungeon, an object in your landblock shows");
+        Check.False(indoor.ContainsKey(east) || indoor.ContainsKey(north), "in a dungeon, other landblocks' objects stay out");
     }
 
     /// <summary>

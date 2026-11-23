@@ -34,7 +34,58 @@ internal sealed class Jumper
     private bool _pausedNav;
     private bool _prevEnableNavigation;
 
+    // Face only (/mt face, /ub face; ub-IT's DoFace): navigation is held while turning, the turn
+    // is sent again every 100 ms until the heading is within 1 degree, and given up after 5 s.
+    private bool _faceOnly;
+    private DateTime _lastFaceTurnAt;
+    private const double FaceToleranceDeg = 1.0;
+    private static readonly TimeSpan FaceRetry = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan FaceTimeout = TimeSpan.FromSeconds(5);
+
     public bool IsBusy => _isTurning || _needToJump || _charging || _waitingForJump;
+
+    /// <summary>Turns to <paramref name="heading"/> (any degrees; normalized to 0-360), holding nav meanwhile.</summary>
+    public bool Face(double heading)
+    {
+        if (IsBusy && !_faceOnly)
+        {
+            _chat("[RynthAi] You are jumping. Try again later.");
+            return false;
+        }
+        if (!_host.HasTurnToHeading)
+        {
+            _chat("[RynthAi] TurnToHeading not available.");
+            return false;
+        }
+        _targetHeading = (float)(((heading % 360) + 360) % 360);
+        if (!_faceOnly) PauseNav();
+        _faceOnly = true;
+        _isTurning = true;
+        _turningStartedAt = _lastFaceTurnAt = DateTime.UtcNow;
+        _host.TurnToHeadingBy("Face", _targetHeading);
+        RynthLog.Write(LogCat.Jumper, $"[Jumper] Face -> {_targetHeading:F1}");
+        return true;
+    }
+
+    /// <summary>The face turn: done within <see cref="FaceToleranceDeg"/>, else turn again; nav back when done.</summary>
+    private void TickFace()
+    {
+        DateTime now = DateTime.UtcNow;
+        if (now - _lastFaceTurnAt < FaceRetry) return;
+        _lastFaceTurnAt = now;
+        bool read = PlayerCompass.TryGet(_host, out float current);
+        double off = read ? Math.Abs(((current - _targetHeading) % 360 + 540) % 360 - 180) : 0;
+        if (read && off >= FaceToleranceDeg && now - _turningStartedAt < FaceTimeout)
+        {
+            _host.TurnToHeadingBy("Face", _targetHeading);
+            return;
+        }
+        _isTurning = _faceOnly = false;
+        RestoreNav();
+        RynthLog.Write(LogCat.Jumper, read && off >= FaceToleranceDeg
+            ? $"[Jumper] Face {_targetHeading:F1}: still {off:F1} deg off after {FaceTimeout.TotalSeconds:0} s, gave up"
+            : $"[Jumper] Face {_targetHeading:F1} done (heading {(read ? current.ToString("F1") : "?")})");
+    }
 
     public Jumper(RynthCoreHost host, LegacyUiSettings settings, Action<string> chat)
     {
@@ -45,6 +96,12 @@ internal sealed class Jumper
 
     public bool Start(string directionLetters, float? faceHeading, int msToHoldDown)
     {
+        // A face still turning (a meta's "/mt face 90" then "/ub jumpw 90") gives way to the jump.
+        if (_faceOnly)
+        {
+            _faceOnly = _isTurning = false;
+            RestoreNav();
+        }
         if (IsBusy)
         {
             _chat("[RynthAi] You are already jumping. Try again later.");
@@ -77,7 +134,7 @@ internal sealed class Jumper
         }
         else
         {
-            _targetHeading = _host.TryGetPlayerHeading(out float curr) ? curr : 0f;
+            _targetHeading = PlayerCompass.TryGet(_host, out float curr) ? curr : 0f;
         }
 
         PauseNav();
@@ -101,7 +158,7 @@ internal sealed class Jumper
     public void Cancel()
     {
         RestoreNav();
-        _isTurning = _needToJump = _charging = _waitingForJump = false;
+        _isTurning = _needToJump = _charging = _waitingForJump = _faceOnly = false;
         _addW = _addX = _addZ = _addC = _addShift = false;
     }
 
@@ -111,13 +168,18 @@ internal sealed class Jumper
 
         try
         {
+            if (_faceOnly)
+            {
+                TickFace();
+                return;
+            }
             // TurnToHeading is an instant quaternion snap; the heading read
             // doesn't always reflect it immediately, so just wait a short
             // settle window rather than polling for a match.
             if (_isTurning && DateTime.UtcNow - _turningStartedAt >= TimeSpan.FromMilliseconds(150))
             {
                 _isTurning = false;
-                if (_host.TryGetPlayerHeading(out float current))
+                if (PlayerCompass.TryGet(_host, out float current))
                     RynthLog.Write(LogCat.Jumper, $"[Jumper] Turn done heading={current:F1}");
             }
 

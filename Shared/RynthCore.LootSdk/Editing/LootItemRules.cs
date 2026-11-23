@@ -32,11 +32,35 @@ public sealed class LootItemFacts
     /// <see cref="T11ItemInfo.None"/> for an item that isn't T11 gear.
     /// </summary>
     public T11ItemInfo? T11 { get; set; }
+    /// <summary>The plugin knows it for a summoning essence (by WCID, icon, use requirement; added 2026-10-18).</summary>
+    public bool IsPetEssence { get; set; }
 
     public bool Stackable => MaxStackSize > 1 || StackSize > 1;
 
-    public int Int(int key) => Ints.TryGetValue(key, out int v) ? v : 0;
-    public double Double(int key) => Doubles.TryGetValue(key, out double v) ? v : 0;
+    public int Int(int key)
+    {
+        if (key != ImbuedEffectKey)
+        {
+            if (Ints.TryGetValue(key, out int v)) return v;
+            // A virtual T11 / card key the scan didn't store: read it from the item's text.
+            return T11Keys.IsVirtual(key) && T11 != null && T11Keys.TryGetValue(T11, key, null, out int t) ? t : 0;
+        }
+        // Every imbue: ImbuedEffect and ImbuedEffect2..5 ORed, as ACE's GetImbuedEffects (2026-11-07).
+        int all = 0;
+        foreach (int k in ImbuedEffectKeys) if (Ints.TryGetValue(k, out int b)) all |= b;
+        return all;
+    }
+
+    public const int ImbuedEffectKey = 179;
+    /// <summary>ImbuedEffect (179) and ImbuedEffect2..5 (303-306).</summary>
+    public static readonly int[] ImbuedEffectKeys = { 179, 303, 304, 305, 306 };
+    public double Double(int key)
+    {
+        if (Doubles.TryGetValue(key, out double v) && (v != 0 || key != SlayerText.SlayerDamageBonusKey)) return v;
+        // The server never sends the slayer bonus (float 138); the weapon's text has it ("Shadow Slayer: 1.5x Damage").
+        if (key == SlayerText.SlayerDamageBonusKey && T11 is { SlayerDamagePercent: > 0 } t) return t.SlayerDamagePercent / 100.0;
+        return 0;
+    }
 }
 
 /// <summary>How the rule recognises the item.</summary>
@@ -57,6 +81,18 @@ public sealed class LootItemRuleOptions
     public VTankLootAction? Action { get; set; }
     /// <summary>Keep # count; null: one full stack.</summary>
     public int? KeepCount { get; set; }
+    /// <summary>BuildBlank makes a loot rule (the Loot Editor's Add rule), not a filter: its default name is the action and the conditions.</summary>
+    public bool BlankRule { get; set; }
+    /// <summary>
+    /// On Infinite Leaftide (ACECustom; 2026-11-07): the T11, weapon-card and pet rows. False elsewhere:
+    /// those rows aren't offered (a rule that has them keeps them as written).
+    /// </summary>
+    public bool Ilt { get; set; } = true;
+    /// <summary>
+    /// Conditions kept as written after the checklist's (editing a rule: what no checklist row can say,
+    /// LootItemAttributes.ChoicesFromRule's leftovers; 2026-11-07).
+    /// </summary>
+    public List<VTankLootCondition>? KeepConditions { get; set; }
     /// <summary>Null or blank: "Keep Copper Pea" and the like.</summary>
     public string? RuleName { get; set; }
     /// <summary>
@@ -64,6 +100,15 @@ public sealed class LootItemRuleOptions
     /// slot special, Cast on Strike), each at least as good as this item's. Works with any match.
     /// </summary>
     public bool IncludeT11 { get; set; }
+    /// <summary>
+    /// The popup's attribute checklist choices (LootItemAttributes); null: every row at its
+    /// default, which is the rule "items like this" and IncludeT11 always made.
+    /// </summary>
+    public IReadOnlyList<LootEditItemChoice>? Choices { get; set; }
+    /// <summary>Spells and cantrips added from the standard lists (2026-10-24).</summary>
+    public IReadOnlyList<LootEditItemExtra>? Extras { get; set; }
+    /// <summary>The spell table's families, so an added spell lists its level VII / VIII names (null: a name pattern).</summary>
+    public LootSpellCatalog? Spells { get; set; }
 }
 
 /// <summary>A built rule, ready to preview and insert.</summary>
@@ -76,6 +121,8 @@ public sealed class LootItemRuleDraft
     public string DefaultName { get; init; } = string.Empty;
     /// <summary>Things the player should know (a broad rule, spells left out...).</summary>
     public List<string> Notes { get; init; } = new();
+    /// <summary>The item's checklist rows as the rule used them (the popup shows them).</summary>
+    public List<LootItemAttribute> Attributes { get; init; } = new();
 }
 
 public static class LootItemRules
@@ -86,10 +133,9 @@ public static class LootItemRules
     public const int KeyElementalDamageMod = 152;
     /// <summary>The ratings TotalRatingsGE adds up (same list as both evaluators).</summary>
     public static readonly int[] RatingKeys = { 370, 371, 372, 373, 374, 375, 376, 379 };
-    /// <summary>The int properties a "like this" rule can use: what RynthAi reads into LootItemFacts.</summary>
-    public static readonly int[] IntKeys =
-        { KeyArmorLevel, KeyEquipSlots, KeyDamage, KeyWeaponSkill, KeyWorkmanship, KeyMaterial, KeyWieldSkill, 370, 371, 372, 373, 374, 375, 376, 379 };
-    public static readonly int[] DoubleKeys = { KeyElementalDamageMod };
+    /// <summary>The int properties a rule from an item can use: what RynthAi reads into LootItemFacts.</summary>
+    public static int[] IntKeys => LootItemAttributes.IntKeys;
+    public static int[] DoubleKeys => LootItemAttributes.DoubleKeys;
 
     /// <summary>Spell conditions a "like this" rule takes at most (all must match: more makes it narrower).</summary>
     public const int MaxSpells = 4;
@@ -109,16 +155,17 @@ public static class LootItemRules
     /// A name as an exact, case-insensitive regex: ^name$ with the regex
     /// metacharacters escaped (spaces left alone, unlike Regex.Escape, so it reads well).
     /// </summary>
-    public static string ExactPattern(string name)
+    public static string ExactPattern(string name) => "^" + EscapeText(name) + "$";
+
+    /// <summary>Text with the regex metacharacters escaped (spaces left alone), for a pattern's middle.</summary>
+    public static string EscapeText(string text)
     {
-        var sb = new StringBuilder(name.Length + 8);
-        sb.Append('^');
-        foreach (char ch in name)
+        var sb = new StringBuilder(text.Length + 8);
+        foreach (char ch in text)
         {
             if ("\\*+?|{}[]()^$.#".IndexOf(ch) >= 0) sb.Append('\\');
             sb.Append(ch);
         }
-        sb.Append('$');
         return sb.ToString();
     }
 
@@ -189,139 +236,123 @@ public static class LootItemRules
                     return null;
                 }
                 rule.Conditions.Add(Cond(VTankNodeTypes.ObjectClass, Num(f.ObjectClass)));
-                likeBare = AddLikeConditions(rule, f, notes) == 0;
+                likeBare = true;
                 break;
         }
 
-        int t11Added = o.IncludeT11 ? AddT11Conditions(rule, f, notes) : 0;
-        if (likeBare && t11Added == 0)
+        // The attribute checklist: defaults for this match, then the popup's choices.
+        List<LootItemAttribute> rows = LootItemAttributes.For(f, match == LootItemMatch.Like, o.IncludeT11, o.Ilt);
+        LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
+        LootItemAttributes.Apply(rows, o.Choices, notes);
+        LootItemAttributes.FilterImbues(rows, f.ObjectClass);
+        int added = LootItemAttributes.AddConditions(rule, rows);
+        AddRowNotes(f, o, rows, match, notes);
+        if (likeBare && added == 0)
             notes.Add($"Nothing but the class to go on: this rule matches every {ClassName(f.ObjectClass)}."
                 + (f.Ints.Count == 0 ? " (Assess the item first for its material, workmanship and stats.)" : string.Empty));
 
         string defaultName = DefaultRuleName(name.Length > 0 ? name : ClassName(f.ObjectClass), action, keep, match);
         string ruleName = OneLine(o.RuleName).Trim();
         rule.Name = ruleName.Length > 0 ? ruleName : defaultName;
-        return new LootItemRuleDraft { Rule = rule, Match = match, Action = action, KeepCount = keep, DefaultName = defaultName, Notes = notes };
-    }
-
-    /// <summary>The "like this" conditions for the item's kind; how many it added.</summary>
-    private static int AddLikeConditions(VTankLootRule rule, LootItemFacts f, List<string> notes)
-    {
-        int n = rule.Conditions.Count;
-        var cls = (AcObjectClass)f.ObjectClass;
-        void LongE(int key) { int v = f.Int(key); if (v != 0) rule.Conditions.Add(Cond(VTankNodeTypes.LongValKeyE, Num(v), Num(key))); }
-        void LongGE(int key) { int v = f.Int(key); if (v > 0) rule.Conditions.Add(Cond(VTankNodeTypes.LongValKeyGE, Num(v), Num(key))); }
-        void DoubleGE(int key)
+        return new LootItemRuleDraft
         {
-            double v = f.Double(key);
-            if (v > 0) rule.Conditions.Add(Cond(VTankNodeTypes.DoubleValKeyGE, v.ToString("0.####", CultureInfo.InvariantCulture), Num(key)));
-        }
-
-        LongE(KeyMaterial);
-        LongGE(KeyWorkmanship);
-        switch (cls)
-        {
-            case AcObjectClass.MeleeWeapon:
-                if (f.Int(KeyWieldSkill) != 0) LongE(KeyWieldSkill); else LongE(KeyWeaponSkill);
-                LongGE(KeyDamage);
-                break;
-            case AcObjectClass.MissileWeapon:
-                if (f.Int(KeyWieldSkill) != 0) LongE(KeyWieldSkill); else LongE(KeyWeaponSkill);
-                break;
-            case AcObjectClass.WandStaffOrb:
-                if (f.Int(KeyWieldSkill) != 0) LongE(KeyWieldSkill);
-                DoubleGE(KeyElementalDamageMod);
-                break;
-            case AcObjectClass.Armor:
-            case AcObjectClass.Clothing:
-                LongE(KeyEquipSlots);
-                LongGE(KeyArmorLevel);
-                break;
-            case AcObjectClass.Jewelry:
-                LongE(KeyEquipSlots);
-                break;
-        }
-
-        int ratings = 0;
-        foreach (int k in RatingKeys) ratings += Math.Max(0, f.Int(k));
-        if (ratings > 0) rule.Conditions.Add(Cond(VTankNodeTypes.TotalRatingsGE, Num(ratings)));
-
-        int spells = 0;
-        foreach (string s in f.Spells)
-        {
-            string sn = OneLine(s).Trim();
-            if (sn.Length == 0) continue;
-            if (spells == MaxSpells)
-            {
-                notes.Add($"The item has more than {MaxSpells} spells; the rule checks the first {MaxSpells}.");
-                break;
-            }
-            rule.Conditions.Add(Cond(VTankNodeTypes.SpellNameMatch, ExactPattern(sn)));
-            spells++;
-        }
-        return rule.Conditions.Count - n;
+            Rule = rule, Match = match, Action = action, KeepCount = keep, DefaultName = defaultName, Notes = notes, Attributes = rows,
+        };
     }
 
     /// <summary>
-    /// The T11 conditions, on RynthAi's virtual T11 keys: Is T11, then tier (the server's
-    /// stamped tier when sent), weapon grade, damage %, gear grade, every catalogued modifier,
-    /// slot special and Cast on Strike count, each at least this item's. Left out on purpose:
-    /// Can Wield (the character, not the item), Zone Locked (where it was appraised), the wield
-    /// gates (they follow from the tier), the modifier count / rating total / roll % (they
-    /// follow from the per-modifier values), and the property slots and Tainted (bag state,
-    /// not quality). How many it added.
+    /// A filter rule without an item (2026-10-24): the blank checklist (every attribute,
+    /// <see cref="LootItemAttributes.ForBlank"/>) with the player's choices and added spells.
+    /// Only the ticked rows become conditions; nothing ticked matches every item.
     /// </summary>
-    private static int AddT11Conditions(VTankLootRule rule, LootItemFacts f, List<string> notes)
+    public static LootItemRuleDraft BuildBlank(LootItemRuleOptions o)
     {
+        var notes = new List<string>();
+        List<LootItemAttribute> rows = LootItemAttributes.ForBlank(o.Ilt);
+        LootItemAttributes.AddExtras(rows, o.Extras, o.Spells);
+        LootItemAttributes.Apply(rows, o.Choices, notes);
+        LootItemAttributes.FilterImbues(rows, LootItemAttributes.TickedClass(rows));
+        VTankLootAction action = o.Action ?? VTankLootAction.Keep;
+        if (!LootRuleText.IsKnownAction((int)action)) action = VTankLootAction.Keep;
+        int keep = Math.Max(0, o.KeepCount ?? 1);
+        var rule = new VTankLootRule
+        {
+            CustomExpression = string.Empty, Action = action,
+            KeepCount = action == VTankLootAction.KeepUpTo ? keep : null,
+        };
+        int added = LootItemAttributes.AddConditions(rule, rows);
+        if (o.KeepConditions != null)
+            foreach (VTankLootCondition k in o.KeepConditions)
+            {
+                rule.Conditions.Add(new VTankLootCondition(k.NodeType, k.LengthCode, k.DataLines));
+                if (k.NodeType != VTankNodeTypes.DisabledRule)
+                {
+                    added++;
+                    notes.Add("Kept as written: " + LootRuleText.Condition(k));
+                }
+            }
+        if (added == 0) notes.Add("Nothing ticked yet: tick what the items must have.");
+        string defaultName = o.BlankRule ? BlankRuleName(rule, action, keep) : "Filter";
+        rule.Name = OneLine(o.RuleName).Trim().Length > 0 ? OneLine(o.RuleName).Trim() : defaultName;
+        return new LootItemRuleDraft
+        {
+            Rule = rule, Match = LootItemMatch.Like, Action = action, KeepCount = keep, DefaultName = defaultName, Notes = notes, Attributes = rows,
+        };
+    }
+
+    /// <summary>
+    /// A new rule's name from the checklist (2026-11-07, the Loot Editor's Add rule): the action and
+    /// the first conditions in words, "Keep: Class is Jewelry, Workmanship >= 7"; "Keep (new rule)" with none.
+    /// </summary>
+    public static string BlankRuleName(VTankLootRule rule, VTankLootAction action, int keep)
+    {
+        string verb = action == VTankLootAction.KeepUpTo
+            ? "Keep " + keep.ToString(CultureInfo.InvariantCulture)
+            : LootRuleText.ActionName(action);
+        var parts = new List<string>();
+        foreach (VTankLootCondition c in rule.Conditions)
+        {
+            if (c.NodeType == VTankNodeTypes.DisabledRule) continue;
+            parts.Add(OneLine(LootRuleText.Condition(c)).Trim());
+            if (parts.Count == 2) break;
+        }
+        if (parts.Count == 0) return verb + " (new rule)";
+        string name = verb + ": " + string.Join(", ", parts);
+        return name.Length <= 64 ? name : name.Substring(0, 61).TrimEnd() + "...";
+    }
+
+    /// <summary>
+    /// What the player should know about the rows: spells "like this" left unticked, a T11 item
+    /// not identified yet, T11 modifiers RynthAi has no key for, T11 asked of a non-T11 item.
+    /// </summary>
+    private static void AddRowNotes(LootItemFacts f, LootItemRuleOptions o, List<LootItemAttribute> rows, LootItemMatch match, List<string> notes)
+    {
+        if (match == LootItemMatch.Like && o.Choices == null && LootItemAttributes.SpellRowCount(rows) > MaxSpells)
+            notes.Add($"The item has more than {MaxSpells} spells; the rule checks the first {MaxSpells} (the Add to loot profile popup can tick the rest).");
+
+        bool t11Asked = o.IncludeT11 || rows.Exists(r => r.On && LootItemAttributes.IsT11Row(r));
+        if (!t11Asked) return;
         T11ItemInfo? t = f.T11;
         if (t == null || !t.IsT11)
         {
             notes.Add("Not a T11 item, so there are no T11 attributes to add.");
-            return 0;
+            return;
         }
-
-        int n = rule.Conditions.Count;
-        void Equal(int key, int v) => rule.Conditions.Add(Cond(VTankNodeTypes.LongValKeyE, Num(v), Num(key)));
-        void AtLeast(int key, int v) { if (v > 0) rule.Conditions.Add(Cond(VTankNodeTypes.LongValKeyGE, Num(v), Num(key))); }
-
-        Equal(T11Keys.IsT11, 1);
         if (!t.HasText)
         {
             notes.Add("The item hasn't been identified, so only \"Is T11\" could be added. Assess it and preview again for its tier, grade and modifiers.");
-            return rule.Conditions.Count - n;
+            return;
         }
-
-        AtLeast(T11Keys.EstimatedTier, t.Tier);
-        AtLeast(T11Keys.WeaponGrade, t.GradeRank);
-        AtLeast(T11Keys.DamagePercent, t.DamagePercent);
-        AtLeast(T11Keys.GearGrade, t.GearGradeRank);
-
-        bool valuelessSpecial = false;
-        var unknown = new List<string>();
-        foreach (T11Modifier m in t.Modifiers)
-        {
-            if (T11Catalog.ModifierByKey(m.Key) == null)
-            {
-                unknown.Add(m.Name);
-                continue;
-            }
-            // A modifier's key reads 0 when it is absent, so a value-less one can't be required by value.
-            if (m.Value > 0) AtLeast(T11Keys.ForModifier(m.Key), m.Value);
-            else if (m.IsSlotSpecial) valuelessSpecial = true;
-        }
-        if (valuelessSpecial) Equal(T11Keys.HasSlotSpecial, 1);
-        AtLeast(T11Keys.CastOnStrikeCount, t.Procs.Count);
-
+        List<string> unknown = LootItemAttributes.UnknownT11Modifiers(f);
         if (unknown.Count > 0)
             notes.Add("Left out (RynthAi has no loot key for these modifiers yet): " + string.Join(", ", unknown) + ".");
-        return rule.Conditions.Count - n;
     }
 
     private static VTankLootCondition Cond(int type, params string[] lines) => new(type, "0", lines);
 
     private static string Num(int v) => v.ToString(CultureInfo.InvariantCulture);
 
-    private static string OneLine(string? s) =>
+    internal static string OneLine(string? s) =>
         string.IsNullOrEmpty(s) ? string.Empty : s.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
 
     // =====================================================================

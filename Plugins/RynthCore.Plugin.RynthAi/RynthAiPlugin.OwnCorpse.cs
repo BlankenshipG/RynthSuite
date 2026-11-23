@@ -171,7 +171,7 @@ public sealed partial class RynthAiPlugin
     {
         if (items.Count == 0)
         {
-            if (openAge < Math.Max(200, settings.LootEmptyCorpseMs))
+            if (openAge < Math.Max(200, settings.LootEmptyCorpseMs) || LastPickupSettling(now))
                 return;
             if (_ownRecoveryCorpseId != corpseId)
                 BeginOwnCorpseRecovery(corpseId, 0);
@@ -197,6 +197,8 @@ public sealed partial class RynthAiPlugin
             // Every item was tried. Let the last confirmed move leave the corpse's list first.
             if (_lastLootActionAt != 0 && now - _lastLootActionAt < OwnCorpseSettleMs)
                 return;
+            if (LastPickupSettling(now))
+                return; // the last pickup's Return still plays: close after it
             FinishOwnCorpseRecovery(corpseId, items);
             return;
         }
@@ -206,11 +208,24 @@ public sealed partial class RynthAiPlugin
         if (_busyCount > 0 && _lastLootActionAt != 0 && now - _lastLootActionAt < OwnCorpseBusyWaitMs)
             return;
 
+        // Still animating: right after a pickup's answer that is its Return, and ACE queues one
+        // move that arrives then (see TickOpenCorpseLooting); anything else, wait.
+        bool pipelined = false;
+        if (PickupAnimating(now))
+        {
+            if (!CanPipelinePickup(now))
+                return;
+            pipelined = true;
+            _pipelinedAfterItemId = _settlingLootItemId;
+        }
+
         string name = string.IsNullOrWhiteSpace(next.Name) ? $"0x{(uint)next.Id:X8}" : next.Name;
         _currentLootItemId = next.Id;
         Host.SelectItem(unchecked((uint)next.Id));
         LootDiag($"[RynthAi] Own corpse: taking 0x{(uint)next.Id:X8} '{name}' ({remaining} left on 0x{(uint)corpseId:X8}).");
 
+        int errSeqAtSend = LastWeenieErrorSeq();
+        bool stackable = IsStackAtSend(next.Id);
         LootPickupResult pickup = SendLootPickup(next.Id, name, corpseId);
         if (pickup == LootPickupResult.NoRoom || pickup == LootPickupResult.Refused)
             return;   // SendLootPickup paused the corpse / left the item
@@ -228,7 +243,11 @@ public sealed partial class RynthAiPlugin
 
         _currentLootItemMovePending     = true;
         _currentLootItemMoveRequestedAt = now;
-        _currentLootItemMoveAttempts    = 1;
+        _currentLootItemMoveAttempts    = pipelined ? 0 : 1;
+        _currentLootItemPipelined       = pipelined;
+        _currentLootItemStackable       = stackable;
+        _currentLootItemErrSeqAtSend    = errSeqAtSend;
+        NoteLootMoveSent();
         _currentLootItemActionLabel     = "Recover";
         _currentLootItemName            = name;
         _currentLootItemIsSalvage       = false;   // never salvage your own things
@@ -436,13 +455,14 @@ public sealed partial class RynthAiPlugin
         string sub = parts.Length >= 3 ? parts[2].Trim().ToLowerInvariant() : string.Empty;
         if (sub == "stop")
         {
-            if (_ownCorpseTravel == OwnCorpseTravelState.None) ChatLine("[RynthAi] Own corpse: not travelling.");
+            if (_ownCorpseTravel == OwnCorpseTravelState.None) ReplyOk("[RynthAi] Own corpse: not travelling.");
             else EndOwnCorpseTravel("stopped by /ra owncorpse stop");
             return;
         }
         if (sub == "go")
         {
-            StartOwnCorpseTravel(manual: true);
+            if (s == null) { ReplyFail("[RynthAi] Own corpse: settings not ready (log in first)."); return; }
+            StartOwnCorpseTravel(manual: true);   // says where it goes, or why not
             return;
         }
 
@@ -662,7 +682,7 @@ public sealed partial class RynthAiPlugin
         string line = $"[RynthAi] Own corpse: travel back ended: {why}.";
         if (sayInChat) OwnCorpseSay(line); else Log(line);
         // RynthAi's own nav carries on from the nearest waypoint, not one from before the death.
-        _navigationEngine?.ResumeFromNearestWaypoint();
+        _navigationEngine?.ResumeFromNearestWaypoint(always: true);
     }
 
     private bool SendRynthNav(string command)

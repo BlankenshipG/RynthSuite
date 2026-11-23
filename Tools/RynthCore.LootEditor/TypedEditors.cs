@@ -366,15 +366,7 @@ internal static class TypedEditors
         RynthCore.Loot.Editing.LootRuleText.LongKeys;
 
     public static readonly (int Id, string Name)[] DoubleKeys =
-    {
-        (5,   "ApproachDistance"),
-        (22,  "DamageVariance"),
-        (29,  "WeaponLength"),
-        (62,  "WeaponDefense"),
-        (63,  "WeaponOffense"),
-        (152, "ElementalDamageVsMonsters"),
-        (167, "ManaRate"),
-    };
+        RynthCore.Loot.Editing.LootRuleText.DoubleKeys;
 
     public static readonly (int Id, string Name)[] StringKeys =
     {

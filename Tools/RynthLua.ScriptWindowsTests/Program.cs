@@ -111,6 +111,7 @@ namespace RynthLua.ScriptWindowsTests
             Run("Lua: SetNextWindow* by ImGuiCond", LuaWindowCalls);
             Run("Lua: errors (unsupported, refused, outside a pass)", LuaErrors);
             Run("Lua: metrics and CalcTextSize", LuaMetrics);
+            Run("Lua: clipboard", LuaClipboard);
             Run("Lua: the design doc's §1.4 examples", LuaDocExamples);
             Run("Lua: the Examples folder's window scripts", ExampleScripts);
             Run("Lua: Vector2 / Vector4 / colours", LuaVectors);
@@ -1199,6 +1200,27 @@ namespace RynthLua.ScriptWindowsTests
             Check(t.G("lh").Number == 14, "GetTextLineHeight works outside a pass");
         }
 
+        private static void LuaClipboard()
+        {
+            string clip = "";
+            WinClipboard.SetOverride = text => { clip = text; return true; };
+            WinClipboard.GetOverride = () => clip;
+            try
+            {
+                LuaHud t = LuaHudWith("ImGui = require('imgui')");
+                Check(t.Eval("ImGui.SetClipboardText('Damage Rating: 12')").CastToBool(), "SetClipboardText works outside a pass and returns true");
+                Check(clip == "Damage Rating: 12", "the text reaches the clipboard: " + clip);
+                Check(t.Eval("ImGui.GetClipboardText()").String == "Damage Rating: 12", "GetClipboardText reads it back");
+                t.Eval("ImGui:SetClipboardText(0x8000ABCD)");
+                Check(clip == "2147527629", "a number is copied as tostring shows it: " + clip);
+                t.Eval("ImGui.SetClipboardText(nil)");
+                Check(clip == "", "nil copies empty text");
+                WinClipboard.SetOverride = _ => false;
+                Check(!t.Eval("ImGui.SetClipboardText('x')").CastToBool(), "a busy clipboard returns false");
+            }
+            finally { WinClipboard.SetOverride = null; WinClipboard.GetOverride = null; }
+        }
+
         private static unsafe void LuaMetrics()
         {
             LuaHud t = LuaHudWith("ImGui = require('imgui')");
@@ -1310,7 +1332,10 @@ namespace RynthLua.ScriptWindowsTests
         /// <summary>The three examples in design doc §1.4, verbatim, with stand-ins for game / storage.</summary>
         private static void LuaDocExamples()
         {
-            string doc = System.IO.File.ReadAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Docs", "RYNTHLUA_WINDOWS_DESIGN.md"));
+            // The release snapshots this branch merges carry no Docs folder: then there is nothing to check (2026-11-01).
+            string designPath = System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Docs", "RYNTHLUA_WINDOWS_DESIGN.md");
+            if (!System.IO.File.Exists(designPath)) { Console.WriteLine("   skipped: no Docs/RYNTHLUA_WINDOWS_DESIGN.md in this checkout"); return; }
+            string doc = System.IO.File.ReadAllText(designPath);
             int from = doc.IndexOf("### 1.4 Examples", StringComparison.Ordinal);
             int to = doc.IndexOf("### 1.5", StringComparison.Ordinal);
             Check(from > 0 && to > from, "§1.4 found in the design doc");
@@ -1621,6 +1646,19 @@ namespace RynthLua.ScriptWindowsTests
             r.Do("hud.ShowInBar = false");
             Check(!h.ShowInBar && h.PropsDirty && (h.HeaderFlags() & HudFormat.FlagShowInBar) == 0, "ShowInBar false clears the header bit");
 
+            // NoPopOut (header bit8: no ↗; the engine redocks a popped-out window when it turns on).
+            Check(!r.Eval("hud.NoPopOut").CastToBool() && (h.HeaderFlags() & HudFormat.FlagNoPopOut) == 0, "NoPopOut starts false");
+            h.PropsDirty = false;
+            r.Do("hud.NoPopOut = true");
+            Check(h.NoPopOut && h.PropsDirty && (h.HeaderFlags() & HudFormat.FlagNoPopOut) != 0 && r.Eval("hud.NoPopOut").CastToBool(), "NoPopOut true sets the header bit");
+            int rcPop = Parse(new[] { h }, out var wPop, out string errPop, out _);
+            Check(rcPop == 0 && (wPop[0].Flags & WindowFlags.NoPopOut) != 0 && HudFormat.FlagNoPopOut == WindowFlags.NoPopOut, "the engine reads NoPopOut " + errPop);
+            h.PropsDirty = false;
+            r.Do("hud.NoPopOut = true");
+            Check(!h.PropsDirty, "setting the same NoPopOut again changes nothing");
+            r.Do("hud.NoPopOut = false");
+            Check(!h.NoPopOut && h.PropsDirty && (h.HeaderFlags() & HudFormat.FlagNoPopOut) == 0, "NoPopOut false clears it");
+
             // Read-only members and the script's own fields.
             LuaFails(r, "hud.Name = 'x'", "read-only");
             LuaFails(r, "hud.LastError = 'x'", "read-only");
@@ -1798,10 +1836,13 @@ namespace RynthLua.ScriptWindowsTests
             int Renders() => (int)r.Eval("renders").Number;
             long f = System.Diagnostics.Stopwatch.Frequency;
 
+            // Each pass is timed between a stamp before and one after it, not from "now" after it: on a
+            // busy PC the gap after a pass can be longer than the 1/60 s being checked (2026-10-22).
+            long before = System.Diagnostics.Stopwatch.GetTimestamp();
             RunHudPasses(p);
+            long after = System.Diagnostics.Stopwatch.GetTimestamp();
             Check(Renders() == 1 && h.EverPassed && !h.FirstPassSinceShown && !h.PassNow, "just shown: a pass on the first tick");
-            long left = h.NextPassAt - System.Diagnostics.Stopwatch.GetTimestamp();
-            Check(left > 0 && left <= f / 20, "the next pass is one 20/s interval away");
+            Check(h.NextPassAt > before && h.NextPassAt <= after + f / 20, "the next pass is one 20/s interval away");
             RunHudPasses(p);
             Check(Renders() == 1, "no pass before the interval");
             h.NextPassAt = 0;
@@ -1815,13 +1856,14 @@ namespace RynthLua.ScriptWindowsTests
             Check(Renders() == 3 && h.NextPassAt == due + f / 20, "interval passes keep their cadence");
 
             r.Do("hud.RefreshRate = 60");
+            before = System.Diagnostics.Stopwatch.GetTimestamp();
             RunHudPasses(p);
-            left = h.NextPassAt - System.Diagnostics.Stopwatch.GetTimestamp();
-            Check(Renders() == 4 && left > 0 && left <= f / 60, "a new RefreshRate starts at once, 60/s");
+            after = System.Diagnostics.Stopwatch.GetTimestamp();
+            Check(Renders() == 4 && h.NextPassAt > before && h.NextPassAt <= after + f / 60, "a new RefreshRate starts at once, 60/s");
             r.Do("hud.RefreshRate = 1");
+            before = System.Diagnostics.Stopwatch.GetTimestamp();
             RunHudPasses(p);
-            left = h.NextPassAt - System.Diagnostics.Stopwatch.GetTimestamp();
-            Check(Renders() == 5 && left > f / 2, "1/s");
+            Check(Renders() == 5 && h.NextPassAt - before > f / 2, "1/s");
 
             // Input: a pass on the next tick whatever the rate.
             ApplyHudEvents(p, Ev(HudFormat.EvClicked, 1, h.Hash, Fnv("B", h.Hash), 1, 0));
@@ -2064,10 +2106,16 @@ namespace RynthLua.ScriptWindowsTests
             var functions = im.Table.Pairs.Where(p => p.Value.Type == DataType.ClrFunction).Select(p => p.Key.String).OrderBy(n => n).ToList();
             Check(functions.Count >= 40, $"the imgui module has its functions ({functions.Count})");
 
-            string doc = System.IO.File.ReadAllText(RepoPath("Docs", "RYNTHLUA.md"));
             string types = System.IO.File.ReadAllText(RepoPath("Plugins", "RynthCore.Plugin.RynthLua", "Types", "rynthlua.d.lua"));
-            var undocumented = functions.Where(f => !doc.Contains("`" + f + "(", StringComparison.Ordinal)).ToList();
-            Check(undocumented.Count == 0, "every imgui function is in RYNTHLUA.md: missing " + string.Join(", ", undocumented));
+            // The release snapshots this branch merges carry no Docs folder: the doc table is checked only when it is here.
+            string docPath = RepoPath("Docs", "RYNTHLUA.md");
+            if (System.IO.File.Exists(docPath))
+            {
+                string doc = System.IO.File.ReadAllText(docPath);
+                var undocumented = functions.Where(f => !doc.Contains("`" + f + "(", StringComparison.Ordinal)).ToList();
+                Check(undocumented.Count == 0, "every imgui function is in RYNTHLUA.md: missing " + string.Join(", ", undocumented));
+            }
+            else Console.WriteLine("   skipped the RYNTHLUA.md table: no Docs folder in this checkout");
             var untyped = functions.Where(f => !types.Contains("function ImGui." + f + "(", StringComparison.Ordinal)).ToList();
             Check(untyped.Count == 0, "every imgui function is in rynthlua.d.lua: missing " + string.Join(", ", untyped));
             var declared = System.Text.RegularExpressions.Regex.Matches(types, @"function ImGui\.(\w+)\(").Select(m => m.Groups[1].Value).ToList();

@@ -8,6 +8,7 @@ using System.Threading;
 using RynthCore.Loot;
 using RynthCore.Plugin.RynthAi;
 using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.Shared;
 using RynthCore.PluginCore;
 using RynthCore.PluginSdk;
 using RynthCore.RynthAiHostTests.Fakes;
@@ -44,12 +45,33 @@ internal static class LootCorpseTests
         r.Add("corpse: a corpse named late (stored nameless) becomes a Corpse on access", CorpseNamedLateOnAccess);
         r.Add("loot chain: own corpse appears -> claimed -> opened -> item moved into the pack", FullLootChain);
         r.Add("loot chain: 'My Kills Only' loots your kill and skips another player's", OwnershipModes);
+        r.Add("loot chain: an item the cache never saw created is found in the corpse's contents and looted", UnseenItemRescued);
+        r.Add("loot chain: without GetContainerContents an unseen item stays unseen (no crash)", UnseenItemOldEngine);
+        r.Add("loot chain (11-14): an item the client lists but can't read yet holds the finish, and is looted once it reads", UnreadItemHoldsFinish);
+        r.Add("loot chain (11-14): an item that never reads holds the finish only UnreadContentsWaitMs", UnreadItemHoldIsCapped);
         r.Add("loot starvation: a corpse waiting behind far-off combat gets a turn, a close monster keeps combat", LootStarvation);
+        r.Add("loot starvation (R-20261115-165857-1de7): a starved open waits for combat's first attack at a fresh lock, at most 3 s", StarvedOpenWaitsForFirstAttack);
         r.Add("loot logging: a corpse held by combat is logged once, with the reason", HeldByCombatLoggedOnce);
+        r.Add("boost loot: our kill holds the next target until its corpse is looted (one kill, one loot)", BoostLootOneKillOneLoot);
+        r.Add("boost loot: the wait ends after BoostLootKillWaitMs, for a close monster, and with Boost Loot off", BoostLootHoldLimits);
+        r.Add("boost loot: looting the kill's corpse ends the wait; an older corpse does not", BoostLootWaitEndsOnKillCorpse);
+        r.Add("death wait (11-08, R-20261115-165857-1de7): the learned death + 1 s keeps nav off; a monster in range is locked at once", DeathWaitUsesLearnedTime);
+        r.Add("death wait (11-08): not learned yet: 2.5 s + 1 s; the corpse's coming is timed and learned", DeathWaitDefaultAndLearns);
+        r.Add("death wait (11-08): looting the kill's corpse ends it at once; a corpse the rules don't take ends it soon after it came", DeathWaitEndsOnLoot);
+        r.Add("death wait (11-08): no corpse in the time: it carries on; a close attacker is fought; Looting off changes nothing", DeathWaitLimits);
+        r.Add("monster ignore: a close Priority 0 monster neither holds combat nor starves the corpse", IgnoredMonsterDoesNotHoldLoot);
+        r.Add("loot gate (R-20261025 727b): a predicted kill still alive holds the corpse; after its window combat has it again", PredictedKillHoldsCorpse);
+        r.Add("loot gate (R-20261025 727b): the kill notice, health 0 or a hit after the swap settle a predicted kill at once", PredictedKillSettled);
         r.Add("corpse close: a finished corpse is closed once (CloseContainer, API v76)", FinishedCorpseClosedOnce);
         r.Add("corpse close: an engine without CloseContainer leaves it to the next open (no close)", FinishedCorpseNotClosedOnOldEngine);
         r.Add("corpse close: an abandoned open corpse is closed once", AbandonedCorpseClosed);
         r.Add("corpse close: stopping the macro mid-loot closes the open corpse, not marked completed", MacroStopClosesCorpse);
+        r.Add("loot pacing: a pickup waits for the last bend-down, and no retry is timed while it plays", PickupWaitsForAnimation);
+        r.Add("loot: the main pack, the only place loot can go, takes none of an item's tries: judged full, the item given up, and one item's mark goes with it", RefusingPackIsLeftOut);
+        r.Add("loot pacing: no pickup (first or retry) while the server owes an answer to a cast; it goes on the UseDone", PickupWaitsForCastAnswer);
+        r.Add("corpse close: not while the last item is between the corpse and the pack - it closes once the item is in the inventory", CloseWaitsForInventory);
+        r.Add("loot pacing: an item merged into a stack in the pack is confirmed without the 4 s arrival wait", MergedPickupConfirmedQuickly);
+        r.Add("loot pacing: each item taken restarts the corpse timeout, so a corpse with many keeps is looted to the end", ManyKeepsBeatTheTimeout);
     }
 
     // ── World set-up ──────────────────────────────────────────────────────────
@@ -181,6 +203,7 @@ internal static class LootCorpseTests
         {
             typeof(RynthPluginBase).GetMethod("Attach", Any)!.Invoke(P, new object[] { FakeHost.LastApi });
             var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+            typeof(LegacyDashboardRenderer).GetField("_profileLoaded", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(dash, true);   // a stand-in with its profile in memory
             typeof(LegacyDashboardRenderer).GetField("_settings", Any)!.SetValue(dash, S);
             Set("_dashboard", dash);
             Cache = new WorldObjectCache(host);
@@ -241,6 +264,108 @@ internal static class LootCorpseTests
         Check.False(FakeHost.Uses.Contains(Gem), "never used (a use can wield)");
     }
 
+    // 2026-10-11, Silentkelpie: a Necrolytic Extract on his own kill, a Keep rule for it, left on
+    // the corpse with no [LootEval] line. The cache never processed a create for it, so it was
+    // in neither the inventory nor the landscape set and GetContainedItems never returned it.
+    private static void UnseenItemRescued()
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.ContentsCalls = true;
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        Check.True(bot.HasLootWork(), "looting wants the tick");
+        bot.Tick(BotActivity.Looting);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), unchecked((int)Corpse), "the corpse is claimed");
+
+        // The gem is in the corpse but its create never reaches the cache.
+        bot.P.OnViewObjectContents(Corpse);
+        Check.False(bot.Cache.GetContainedItems(unchecked((int)Corpse)).Any(), "the cache has nothing for the corpse (the bug's state)");
+
+        for (int i = 0; i < 100 && !FakeHost.ExternalMoves.Any(m => m.Id == Gem); i++)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.True(FakeHost.Logs.Any(l => l.Contains("the object cache had missed") && l.Contains("Black Opal")), "the rescue is logged with the item");
+        Check.True(FakeHost.ExternalMoves.Contains((Gem, Player, 0)), "the unseen gem is looted");
+    }
+
+    // 2026-11-14, Silentkelpie missed two Necrolytic Extracts: the corpses were finished 130 and 230 ms after they
+    // opened, from the items the cache already had ("cache pre-populated ... skipping inv-wait"). The extract the
+    // client listed in each was never judged; the cache reported it DELETE-BEFORE-CLASSIFY (no create seen).
+    private static Bot CorpseWithUnreadItem()
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.ContentsCalls = true;
+        FakeHost.Ints[(Gem, 11)] = 100; FakeHost.Ints[(Gem, 12)] = 1;
+        FakeHost.Containers[Gem2] = Corpse;   // listed in the corpse; no name or position yet
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.LootCorpseTimeoutMs = 60_000;
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        bot.Cache.OnCreateObject(Gem);       // the cache has the gem, not the second item
+        bot.Cache.Tick();
+        FakeHost.GroundContainer = Corpse;
+        bot.P.OnViewObjectContents(Corpse);
+        return bot;
+    }
+
+    private static bool Finished(Bot bot) =>
+        bot.Get<Dictionary<int, long>>("_completedCorpses").ContainsKey(unchecked((int)Corpse));
+
+    private static void UnreadItemHoldsFinish()
+    {
+        var bot = CorpseWithUnreadItem();
+        LootWithMerges(bot, 2000, wantMoves: 99);   // past the empty-corpse wait (1.5 s), short of the hold's cap
+        Check.True(FakeHost.ExternalMoves.Any(m => m.Id == Gem), "the gem the cache had is looted");
+        Check.False(Finished(bot), "the corpse isn't finished while the client lists an item that can't be read");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("can't be read yet")), "the hold is logged");
+
+        FakeHost.Names[Gem2] = "Black Opal";
+        FakeHost.ItemTypes[Gem2] = ItemTypeGem;
+        FakeHost.Appraised.Add(Gem2);
+        FakeHost.Ints[(Gem2, 11)] = 100; FakeHost.Ints[(Gem2, 12)] = 1;
+        LootWithMerges(bot, 3000, wantMoves: 2);
+        Check.True(FakeHost.ExternalMoves.Any(m => m.Id == Gem2), "once it reads, it is found and looted");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("the object cache had missed") && l.Contains("0x80261102")), "the rescue names it");
+    }
+
+    private static void UnreadItemHoldIsCapped()
+    {
+        var bot = CorpseWithUnreadItem();
+        long start = Environment.TickCount64;
+        while (!Finished(bot) && Environment.TickCount64 - start < 6000)
+        {
+            foreach (var m in FakeHost.ExternalMoves) FakeHost.Containers[m.Id] = 0;
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        long took = Environment.TickCount64 - start;
+        Check.True(Finished(bot), "the corpse is finished in the end");
+        Check.True(took >= CorpseOpenControllerHold() - 200 && took < CorpseOpenControllerHold() + 2000,
+            $"after about {CorpseOpenControllerHold()} ms (took {took} ms)");
+    }
+
+    private static long CorpseOpenControllerHold() => RynthCore.Plugin.RynthAi.RynthAiPlugin.UnreadContentsWaitMs;
+
+    private static void UnseenItemOldEngine()
+    {
+        BaseWorld(corpsePositioned: true);
+        var host = FakeHost.Create(Player);   // no GetContainerContents
+        var bot = new Bot(host);
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        bot.P.OnViewObjectContents(Corpse);
+        for (int i = 0; i < 20; i++) { bot.Tick(BotActivity.Looting); Thread.Sleep(5); }
+        Check.False(FakeHost.ExternalMoves.Any(m => m.Id == Gem), "nothing to find it with: not looted");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("the object cache had missed")), "no rescue line");
+    }
+
     private static void OwnershipModes()
     {
         BaseWorld(corpsePositioned: true);
@@ -262,7 +387,7 @@ internal static class LootCorpseTests
         Check.True(Loot(Other), "All Corpses: anyone's kill is looted");
     }
 
-    private static Bot StarvationWorld(float monsterMeters, out CombatManager combat)
+    private static Bot StarvationWorld(float monsterMeters, out CombatManager combat, Action<LegacyUiSettings>? configure = null)
     {
         BaseWorld(corpsePositioned: true);
         FakeHost.Names[Monster] = "Ancient Water Elemental";
@@ -272,6 +397,7 @@ internal static class LootCorpseTests
         var bot = new Bot(host);
         bot.S.EnableCombat = true;
         bot.S.MonsterRange = 50;
+        configure?.Invoke(bot.S);
         bot.Cache.OnCreateObject(Corpse);
         _ = bot.Cache[unchecked((int)Monster)];
         bot.Cache.OnUpdateHealth(Monster, 1f);
@@ -324,6 +450,463 @@ internal static class LootCorpseTests
         Check.False((bool)close.Call("IsLootStarvedTurn", true, true)!, "close monster: no loot turn, combat keeps the tick");
         var buffing = new ArbiterInputs(true, true, true, true, false, true, lootStarved: true);
         Check.Eq(ActivityArbiter.Decide(in buffing), BotActivity.Buffing, "buffing still outranks a starved corpse");
+    }
+
+    // 2026-11-15, R-20261115-165857-1de7: a corpse claimed with nothing about, then a monster locked at
+    // 15.5 m. The starved turn kept Looting and the open went out 0.3 s after the lock, ahead of the
+    // first cast; the server didn't answer it for 5 s and combat stood behind it ("Combat" showing).
+    private static void StarvedOpenWaitsForFirstAttack()
+    {
+        DateTime now = new(2026, 11, 15, 11, 57, 33);
+        RynthClock.TestNow = () => now;
+        try
+        {
+            var bot = StarvationWorld(15f, out var combat);
+            AgeCorpse(bot, RynthAiPlugin.LootStarveMs + 1000);
+            Check.True(bot.HasLootWork(), "the corpse is lootable");
+            Check.True((bool)bot.Call("IsLootStarvedTurn", true, true)!, "starved, nothing within 5 yd: a loot turn");
+            combat.HandleCombatTrigger();
+            Check.Eq(combat.activeTargetId, unchecked((int)Monster), "combat locks the monster (15 m)");
+            Check.True(combat.FirstAttackPendingMs >= 0, "its first attack hasn't gone out");
+
+            bot.Set("_lootStarveTurn", true);
+            bot.Tick(BotActivity.Looting);
+            Check.Eq(bot.Get<int>("_targetCorpseId"), unchecked((int)Corpse), "the starved corpse is claimed");
+            Check.False(FakeHost.Uses.Contains(Corpse), "but not opened ahead of the fight's first attack");
+            Check.True(FakeHost.Logs.Any(l => l.Contains($"open of 0x{Corpse:X8} waits for combat's first attack")), "and says so");
+
+            // The first cast goes out ([CombatLatency]'s engagement): the open follows.
+            object latency = typeof(CombatManager).GetField("_latency", Any)!.GetValue(combat)!;
+            latency.GetType().GetMethod("OnAttack")!.Invoke(latency, new object?[] { combat.activeTargetId, (double)Environment.TickCount64, "Magic", null });
+            Check.Eq(combat.FirstAttackPendingMs, -1.0, "attacked: nothing pending");
+            bot.Tick(BotActivity.Looting);
+            Check.True(FakeHost.Uses.Contains(Corpse), "now the corpse is opened");
+            Check.True(FakeHost.Logs.Any(l => l.Contains($"attempting open for 0x{Corpse:X8} (d=") && l.Contains("combat locked on")),
+                       "the open line gives the distance and the fight: " + FakeHost.Logs.LastOrDefault(l => l.Contains("attempting open")));
+
+            // A lock that can't attack doesn't stop the starved turn for good.
+            var stuck = StarvationWorld(15f, out var combat2);
+            AgeCorpse(stuck, RynthAiPlugin.LootStarveMs + 1000);
+            stuck.HasLootWork();
+            combat2.HandleCombatTrigger();
+            stuck.Set("_lootStarveTurn", true);
+            stuck.Tick(BotActivity.Looting);
+            Check.False(FakeHost.Uses.Contains(Corpse), "held while the lock is fresh");
+            now = now.AddMilliseconds(RynthAiPlugin.StarvedOpenYieldsMs + 1);
+            stuck.Tick(BotActivity.Looting);
+            Check.True(FakeHost.Uses.Contains(Corpse), "past StarvedOpenYieldsMs the open goes");
+        }
+        finally { RynthClock.TestNow = null; }
+    }
+
+    private static void IgnoredMonsterDoesNotHoldLoot()
+    {
+        // The same close (2 m) Water Elemental that keeps combat in charge above, with its rule at Priority 0.
+        var bot = StarvationWorld(2f, out var combat, s => s.MonsterRules = new List<MonsterRule>
+        {
+            new MonsterRule { Name = "Default", Priority = 1 },
+            new MonsterRule { Name = "Water Elemental", Priority = 0 },
+        });
+        Check.False(combat.HasTargets, "an ignored monster is not a target");
+        Check.False(combat.HasNearbyMonsters, "and not a monster nearby");
+        Check.False(combat.HasCloseThreat(RynthAiPlugin.LootStarveCloseYards), "nor a close threat that keeps the starved corpse waiting");
+        Check.False(combat.HasEngageableTarget, "combat does not want the tick");
+        AgeCorpse(bot, RynthAiPlugin.LootStarveMs + 1000);
+        Check.True(bot.HasLootWork(), "the corpse is lootable");
+        var inputs = new ArbiterInputs(true, false, combat.HasEngageableTarget, true, false, true, combatEngaged: combat.HasEngageableTarget);
+        Check.Eq(ActivityArbiter.Decide(in inputs), BotActivity.Looting, "so looting has the tick without needing a starved turn");
+    }
+
+    // ── A predicted kill that is still alive (report R-20261025-183343-727b, Conquest) ─────────
+    // The bot swapped off a Curator of Torment as a predicted kill (34% health left), the Rynthid it
+    // locked next died at once, and with the Curator kept out of the scan HasTargets went false:
+    // "Corpse loot: claimed corpse target", 4.6 s of looting with the live Curator 1.9 m away.
+
+    /// <summary>The Water Elemental 2 m away fought, then swapped off as a predicted kill (dropped,
+    /// out of the scan), with combat's target clock at <paramref name="now"/>.</summary>
+    private static Bot PredictedKillWorld(out CombatManager combat, Func<DateTime> now)
+    {
+        var bot = StarvationWorld(2f, out combat);
+        FakeHost.Wcids[Monster] = 40030;
+        combat.TargetClock = now;
+        combat.SetDamageStores(null, new RynthCore.Plugin.RynthAi.CreatureData.MonsterDamageStore());
+        combat.EngageForTest(unchecked((int)Monster));
+        combat.CastAndPredictForTest(0x8008AB76, "Fire", 8);   // one cast at it (the kill notice credits it)
+        combat.PredictedSwapForTest();
+        Rescan(combat);
+        return bot;
+    }
+
+    private static void Rescan(CombatManager combat)
+    {
+        typeof(CombatManager).GetField("_lastScanTime", Any)?.SetValue(combat, DateTime.MinValue);
+        combat.ScanNearbyTargets();
+    }
+
+    private static void PredictedKillHoldsCorpse()
+    {
+        DateTime now = new(2026, 10, 25, 19, 32, 58);
+        var bot = PredictedKillWorld(out var combat, () => now);
+        int mob = unchecked((int)Monster);
+        Check.Eq(combat.activeTargetId, 0, "the swap dropped it");
+        Check.False(combat.ScannedTargets.Any(t => t.Id == mob), "and the scan is kept off it (its death animation)");
+        Check.True(combat.HasTargets, "but it still counts as a target in range (corpse gates, nav hold)");
+        Check.True(combat.HasCloseThreat(RynthAiPlugin.LootStarveCloseYards), "and as a close threat (no starved loot turn)");
+        Check.True(combat.HasEngageableTarget, "so combat keeps the tick");
+
+        Check.True(bot.HasLootWork(), "the corpse is lootable");
+        bot.Tick(BotActivity.Combat);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), 0, "no corpse claimed while combat holds the tick");
+        Check.True(FakeHost.Logs.Any(l => l.Contains($"corpse 0x{Corpse:X8} waits for combat")), "the corpse waits for combat, and says so");
+        bot.Tick(BotActivity.Looting);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), 0, "nor with the Looting tick (the claim gate holds too)");
+        Check.False(FakeHost.Uses.Contains(Corpse), "the corpse is not opened");
+        AgeCorpse(bot, RynthAiPlugin.LootStarveMs + 1000);
+        bot.HasLootWork();
+        Check.False((bool)bot.Call("IsLootStarvedTurn", true, true)!, "a long-waiting corpse gets no starved turn past it either");
+
+        // Its window passes with no word of its death: it is a target again at once.
+        now = now.AddSeconds(2.1);
+        Rescan(combat);
+        Check.True(combat.ScannedTargets.Any(t => t.Id == mob), "after the window it is scanned again");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("not confirmed 2.1 s after the swap and it is still alive: it is a target again")),
+                   "said once the window ends");
+        combat.HandleCombatTrigger();
+        Check.Eq(combat.activeTargetId, mob, "and combat locks it again");
+    }
+
+    private static void PredictedKillSettled()
+    {
+        DateTime now = new(2026, 10, 25, 19, 32, 58);
+        int mob = unchecked((int)Monster);
+
+        // The kill notice confirms it: the corpse may be looted.
+        var bot = PredictedKillWorld(out var combat, () => now);
+        combat.OnKillNotification("You killed the Ancient Water Elemental!");
+        Check.False(combat.HasTargets, "kill notice: dead, nothing in range");
+        Check.False(combat.HasEngageableTarget, "combat lets the tick go");
+        Check.True(combat.IsKillSuppressed(mob), "the scan stays off it while its corpse forms");
+        bot.HasLootWork();
+        bot.Tick(BotActivity.Looting);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), unchecked((int)Corpse), "the corpse is claimed");
+
+        // Health 0 from the server: dead too.
+        bot = PredictedKillWorld(out combat, () => now);
+        Check.True(combat.HasTargets, "pending");
+        bot.Cache.OnUpdateHealth(Monster, 0f);   // the bot's cache is combat's world filter
+        Check.False(combat.HasTargets, "health 0: dead, nothing in range");
+
+        // A damage line on it after the swap (a killing blow sends none): alive, back in the scan now.
+        PredictedKillWorld(out combat, () => now);
+        combat.HandleChatForDamage("You singe Ancient Water Elemental for 7883 points with Incantation of Flame Bolt.", 7);
+        Check.False(combat.IsKillSuppressed(mob), "the hit lifts the suppression");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("took a 7883-point hit after the swap")), "and says so");
+        Rescan(combat);
+        Check.True(combat.ScannedTargets.Any(t => t.Id == mob), "scanned again before the window ends");
+        combat.HandleCombatTrigger();
+        Check.Eq(combat.activeTargetId, mob, "combat goes back to it at once");
+    }
+
+    // ── Boost Loot Priority: one kill, one loot (2026-10-14, Kelpie: the next target was locked
+    //    6 ms after each kill, the corpse came 3 s later, and corpses were looted in batches) ──
+
+    /// <summary>
+    /// A monster <paramref name="monsterMeters"/> away, Boost Loot Priority on, and combat's
+    /// HoldNewTarget wired to the plugin. The corpse is created only with <paramref name="withCorpse"/>.
+    /// </summary>
+    private static Bot BoostWorld(float monsterMeters, bool withCorpse, out CombatManager combat, bool boost = true)
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.Names[Monster] = "Ancient Water Elemental";
+        FakeHost.ItemTypes[Monster] = ItemTypeCreature;
+        FakeHost.Positions[Monster] = (Me0.Cell, Me0.X + monsterMeters, Me0.Y + 0.5f, Me0.Z);
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.EnableCombat = true;
+        bot.S.MonsterRange = 50;
+        bot.S.BoostLootPriority = boost;
+        if (withCorpse) bot.Cache.OnCreateObject(Corpse);
+        _ = bot.Cache[unchecked((int)Monster)];
+        bot.Cache.OnUpdateHealth(Monster, 1f);
+        bot.Cache.Tick();
+        combat = new CombatManager(host, bot.S, bot.Cache);
+        combat.SetPlayerId(Player);
+        typeof(CombatManager).GetField("_lastScanTime", Any)?.SetValue(combat, DateTime.MinValue);
+        combat.ScanNearbyTargets();
+        bot.Set("_combatManager", combat);
+        combat.HoldNewTarget = () => (bool)bot.Call("BoostLootHoldsNewTarget")!;
+        return bot;
+    }
+
+    private static void BoostLootOneKillOneLoot()
+    {
+        var bot = BoostWorld(15f, withCorpse: false, out var combat);
+        Check.False((bool)bot.Call("BoostLootHoldsNewTarget")!, "no kill, no corpse: nothing to wait for");
+
+        // The kill lands; the corpse doesn't exist yet (ACE creates it after the death animation).
+        bot.Call("NoteBoostLootKill");
+        combat.HandleCombatTrigger();
+        Check.Eq(combat.activeTargetId, 0, "the next monster (15 m) is not locked while the corpse forms");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] next target waits: Boost Loot Priority")), "said once");
+        Check.True(bot.HasLootWork(), "the forming corpse is loot work");
+        Check.False(combat.IsUnderCloseAttack, "nothing locked, nothing close: not engaged");
+        var waiting = new ArbiterInputs(true, false, combat.HasEngageableTarget, true, false, true,
+                                        combatEngaged: combat.IsUnderCloseAttack, boostLoot: true);
+        Check.Eq(ActivityArbiter.Decide(in waiting), BotActivity.Looting, "so the arbiter gives Looting the tick");
+
+        // The corpse arrives: it is claimed and opened before the next fight.
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        Check.True(bot.HasLootWork(), "the kill's corpse is lootable");
+        combat.HandleCombatTrigger();
+        Check.Eq(combat.activeTargetId, 0, "still no new target with the corpse in range");
+        bot.Tick(BotActivity.Looting);
+        Check.Eq(bot.Get<int>("_targetCorpseId"), unchecked((int)Corpse), "the corpse is claimed");
+        Check.True(FakeHost.Uses.Contains(Corpse), "and opened");
+    }
+
+    private static void BoostLootHoldLimits()
+    {
+        // The corpse never comes: the wait runs out and the next monster is locked.
+        var bot = BoostWorld(15f, withCorpse: false, out var combat);
+        bot.Call("NoteBoostLootKill");
+        bot.Set("_boostLootKillAt", Environment.TickCount64 - RynthAiPlugin.BoostLootKillWaitMs - 1);
+        Check.False((bool)bot.Call("BoostLootHoldsNewTarget")!, "past BoostLootKillWaitMs: no hold");
+        combat.HandleCombatTrigger();
+        Check.Eq(combat.activeTargetId, unchecked((int)Monster), "the next monster is locked");
+
+        // A monster within 5 yd is fought at once.
+        var close = BoostWorld(2f, withCorpse: false, out var combat2);
+        close.Call("NoteBoostLootKill");
+        combat2.HandleCombatTrigger();
+        Check.Eq(combat2.activeTargetId, unchecked((int)Monster), "a monster at 2 m: locked, the corpse waits");
+
+        // Boost Loot off: the old order (combat first) is unchanged.
+        var off = BoostWorld(15f, withCorpse: false, out var combat3, boost: false);
+        off.Call("NoteBoostLootKill");
+        Check.False(off.HasLootWork(), "no forming-corpse loot work without Boost Loot");
+        combat3.HandleCombatTrigger();
+        Check.Eq(combat3.activeTargetId, unchecked((int)Monster), "the next monster is locked at once");
+
+        // Rare-only looting: most kills leave nothing to wait for.
+        var rare = BoostWorld(15f, withCorpse: false, out var combat4);
+        rare.S.LootOnlyRareCorpses = true;
+        rare.Call("NoteBoostLootKill");
+        combat4.HandleCombatTrigger();
+        Check.Eq(combat4.activeTargetId, unchecked((int)Monster), "Loot Only Rare Corpses: no wait");
+
+        // Loot Mode rares (rares and needed mana stones only): the same.
+        var raresMode = BoostWorld(15f, withCorpse: false, out var combat5);
+        raresMode.S.LootMode = RynthCore.Plugin.RynthAi.Loot.LootModes.Rares;
+        raresMode.Call("NoteBoostLootKill");
+        combat5.HandleCombatTrigger();
+        Check.Eq(combat5.activeTargetId, unchecked((int)Monster), "Loot Mode rares: no wait");
+    }
+
+    private static void BoostLootWaitEndsOnKillCorpse()
+    {
+        var bot = BoostWorld(15f, withCorpse: false, out _);
+        var waiting = bot.Get<Dictionary<int, long>>("_corpseWaitingSince");
+        const int Older = 0x0BADC0DE, Fresh = 0x0BADF00D;
+
+        bot.Call("NoteBoostLootKill");
+        long kill = bot.Get<long>("_boostLootKillAt");
+        waiting[Older] = kill - 5000;
+        bot.Call("EndBoostLootKillWait", Older);
+        Check.Eq(bot.Get<long>("_boostLootKillAt"), kill, "a corpse from an earlier kill doesn't end the wait");
+
+        waiting[Fresh] = kill + 1500;
+        bot.Call("EndBoostLootKillWait", Fresh);
+        Check.Eq(bot.Get<long>("_boostLootKillAt"), 0L, "the kill's corpse (first seen after it) ends the wait");
+        Check.False((bool)bot.Call("BoostLootHoldsNewTarget")!, "so combat goes on at once");
+    }
+
+    // ── The death wait (2026-11-08, Tom: the bot ran off from its kill, then turned round and ran back
+    //    when the corpse came after the death animation) ──
+
+    private const string Elemental = "Ancient Water Elemental";
+
+    /// <summary>BoostWorld with Boost Loot off and combat's hold wired to both holds, on a clock the test moves.</summary>
+    private static Bot DeathWorld(float monsterMeters, out CombatManager combat, Func<long> clock)
+    {
+        RynthAiPlugin.CorpseClock = clock;
+        var bot = BoostWorld(monsterMeters, withCorpse: false, out combat, boost: false);
+        combat.HoldNewTarget = () => (bool)bot.Call("LootHoldsNewTarget")!;
+        combat.HoldNewTargetWhy = () => (string)bot.Call("LootHoldWhy")!;
+        return bot;
+    }
+
+    private static void RestoreCorpseClock() => RynthAiPlugin.CorpseClock = static () => Environment.TickCount64;
+
+    private static BotActivity Arbiter(Bot bot, CombatManager combat)
+    {
+        bool wantLoot = bot.HasLootWork();
+        var inputs = new ArbiterInputs(true, false, combat.HasEngageableTarget, wantLoot, false, true,
+                                       combatEngaged: combat.IsUnderCloseAttack, deathWait: wantLoot && bot.Get<bool>("_deathWaitHeld"));
+        return ActivityArbiter.Decide(in inputs);
+    }
+
+    private static void DeathWaitUsesLearnedTime()
+    {
+        long now = 1_000_000;
+        try
+        {
+            var bot = DeathWorld(15f, out var combat, () => now);
+            bot.P.XpTableForTests.RecordDeath(Elemental, 1500);
+            bot.Call("StartDeathWait", Elemental);
+            Check.Eq(bot.Get<long>("_deathWaitMs"), 2500L, "the learned 1.5 s and 1 s more");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("waiting up to 2.5 s for the corpse of 'Ancient Water Elemental'") && l.Contains("learned over 1 kill")),
+                       "said once, plainly: " + FakeHost.Logs.LastOrDefault());
+            Check.Eq(Arbiter(bot, combat), BotActivity.Looting, "Looting has the tick (no nav, no hunt walk)");
+            // 2026-11-15, R-20261115-165857-1de7: the next monster was held for the death + 1 s while the
+            // looter, which claims no corpse with combat targets in range, waited for the fight: 3.6 s
+            // standing until the monster walked within 5 yd. Combat locks it at once now.
+            combat.HandleCombatTrigger();
+            Check.Eq(combat.activeTargetId, unchecked((int)Monster), "the next monster (15 m) is locked at once");
+            Check.False(FakeHost.Logs.Any(l => l.Contains("[CombatTarget] next target waits")), "nothing holds it");
+            Check.Eq(Arbiter(bot, combat), BotActivity.Combat, "and fought");
+            Check.True(bot.Get<long>("_deathWaitAt") != 0, "the wait itself goes on (for when the fight is over)");
+
+            // No fight left (the owner's case: the last kill): the wait keeps nav off for the death + 1 s.
+            BotActivity Calm()
+            {
+                bool wantLoot = bot.HasLootWork();
+                var inputs = new ArbiterInputs(true, false, false, wantLoot, false, true, deathWait: wantLoot && bot.Get<bool>("_deathWaitHeld"));
+                return ActivityArbiter.Decide(in inputs);
+            }
+            Check.Eq(Calm(), BotActivity.Looting, "nothing to fight: Looting holds the tick, nav waits");
+            now += 2400;
+            Check.Eq(Calm(), BotActivity.Looting, "still at 2.4 s");
+            now += 200;
+            Check.Eq(Calm(), BotActivity.Navigating, "at 2.6 s, no corpse: nav carries on");
+        }
+        finally { RestoreCorpseClock(); }
+    }
+
+    private static void DeathWaitDefaultAndLearns()
+    {
+        long now = 2_000_000;
+        try
+        {
+            var bot = DeathWorld(15f, out var combat, () => now);
+            bot.Set("_loginComplete", true);
+            string? killed = (string?)bot.Call("NoteMonsterStatsKill", $"You killed {Elemental}!");
+            Check.Eq(killed, Elemental, "the kill notice names it");
+            bot.Call("StartDeathWait", killed!);
+            Check.Eq(bot.Get<long>("_deathWaitMs"), RynthAiPlugin.DeathWaitDefaultMs + RynthAiPlugin.DeathWaitExtraMs, "not learned: 2.5 s + 1 s");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("isn't learned yet")), "and says so");
+            now += 2100;
+            bot.Cache.OnCreateObject(Corpse);
+            bot.Cache.Tick();
+            bot.Call("NoteCorpseCreated", Corpse);
+            Check.Eq(bot.Get<int>("_deathCorpseId"), unchecked((int)Corpse), "the kill's corpse is known");
+            Check.Near(bot.P.XpTableForTests.DeathMs(Elemental) ?? 0, 2100, 1e-9, "its death learned: 2.1 s");
+            Check.Eq(bot.P.MonsterStatsForTests.Get(Elemental)!.CorpseKills, 1, "and on the session's row");
+            Check.Eq(Arbiter(bot, combat), BotActivity.Looting, "the corpse is here and lootable: Looting");
+            bot.Set("_targetCorpseId", unchecked((int)Corpse));   // the looter claims it
+            now += 5000;   // past the 3.5 s: the corpse is being looted, so it still holds
+            Check.Eq(Arbiter(bot, combat), BotActivity.Looting, "while its corpse is claimed the wait goes on");
+        }
+        finally { RestoreCorpseClock(); }
+    }
+
+    private static void DeathWaitEndsOnLoot()
+    {
+        long now = 3_000_000;
+        try
+        {
+            var bot = DeathWorld(15f, out var combat, () => now);
+            bot.Call("StartDeathWait", Elemental);
+            now += 1500;
+            bot.Cache.OnCreateObject(Corpse);
+            bot.Cache.Tick();
+            bot.Call("NoteCorpseCreated", Corpse);
+            bot.HasLootWork();
+            bot.Call("MarkCorpseCompleted", unchecked((int)Corpse));
+            Check.Eq(bot.Get<long>("_deathWaitAt"), 0L, "looted: the wait is over at once");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("done waiting for the corpse of 'Ancient Water Elemental' after 1.5 s: its corpse is looted")),
+                       "said once: " + FakeHost.Logs.LastOrDefault());
+            combat.HandleCombatTrigger();
+            Check.Eq(combat.activeTargetId, unchecked((int)Monster), "and combat goes on");
+
+            // A corpse the rules don't take (another player's kill, My Kills Only): no longer than its coming and the look.
+            var other = DeathWorld(15f, out var combat2, () => now);
+            FakeHost.Strings[(Corpse, LongDescKey)] = "Killed by Someone Else.";
+            other.Call("StartDeathWait", Elemental);
+            now += 1500;
+            other.Cache.OnCreateObject(Corpse);
+            other.Cache.Tick();
+            other.Call("NoteCorpseCreated", Corpse);
+            Check.Eq(Arbiter(other, combat2), BotActivity.Looting, "just came: the loot rules get their look");
+            now += RynthAiPlugin.DeathWaitDecideMs + 1;
+            Check.Eq(Arbiter(other, combat2), BotActivity.Combat, "not ours: it carries on");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("the loot rules don't take it")), "and says why");
+
+            // Ours and lootable, but the looter leaves it for the fight (monsters in range): no stand-off.
+            // 2026-11-08: the wait held combat's next target while looting waited for combat; the
+            // character stood 7.8 s, then the whole loot held it (16 s for a 1.2 s death).
+            var standoff = DeathWorld(15f, out var combat3, () => now);
+            FakeHost.Strings.Remove((Corpse, LongDescKey));
+            standoff.Call("StartDeathWait", Elemental);
+            now += 1200;
+            standoff.Cache.OnCreateObject(Corpse);
+            standoff.Cache.Tick();
+            standoff.Call("NoteCorpseCreated", Corpse);
+            Check.Eq(Arbiter(standoff, combat3), BotActivity.Looting, "just came: the looter gets its moment to claim it");
+            Check.True(standoff.Get<List<int>>("_lootableInRange").Contains(unchecked((int)Corpse)), "it is lootable in range");
+            Check.Eq(standoff.Get<int>("_targetCorpseId"), 0, "but not claimed");
+            now += RynthAiPlugin.DeathWaitDecideMs + 1;
+            Check.Eq(Arbiter(standoff, combat3), BotActivity.Combat, "unclaimed a second after it came: the fight goes on");
+            combat3.HandleCombatTrigger();
+            Check.Eq(combat3.activeTargetId, unchecked((int)Monster), "and the next monster is locked");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("the looter leaves it for the fight")), "says why: " + FakeHost.Logs.LastOrDefault());
+        }
+        finally { RestoreCorpseClock(); }
+    }
+
+    private static void DeathWaitLimits()
+    {
+        long now = 4_000_000;
+        try
+        {
+            // No corpse ever: the wait ends at its time, once.
+            var bot = DeathWorld(15f, out var combat, () => now);
+            bot.Call("StartDeathWait", Elemental);
+            Check.True(bot.HasLootWork() && bot.Get<bool>("_deathWaitHeld"), "holding (nav)");
+            Check.False((bool)bot.Call("LootHoldsNewTarget")!, "but not combat's next target (2026-11-15)");
+            now += RynthAiPlugin.DeathWaitDefaultMs + RynthAiPlugin.DeathWaitExtraMs;
+            bot.HasLootWork();
+            Check.False(bot.Get<bool>("_deathWaitHeld"), "past the time: no hold");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("no corpse came in 3.5 s")), 1, "said once");
+            combat.HandleCombatTrigger();
+            Check.Eq(combat.activeTargetId, unchecked((int)Monster), "the next monster is locked");
+            bot.HasLootWork();
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("done waiting")), 1, "and not again");
+
+            // A monster 2 m away is fought whatever the wait.
+            var close = DeathWorld(2f, out var combat2, () => now);
+            close.Call("StartDeathWait", Elemental);
+            combat2.HandleCombatTrigger();
+            Check.Eq(combat2.activeTargetId, unchecked((int)Monster), "a monster at 2 m: locked");
+            Check.Eq(Arbiter(close, combat2), BotActivity.Combat, "and fought");
+
+            // Looting off: nothing changes.
+            var off = DeathWorld(15f, out var combat3, () => now);
+            off.S.EnableLooting = false;
+            off.Call("StartDeathWait", Elemental);
+            Check.Eq(off.Get<long>("_deathWaitAt"), 0L, "no wait");
+            Check.False(off.HasLootWork(), "no loot work");
+            combat3.HandleCombatTrigger();
+            Check.Eq(combat3.activeTargetId, unchecked((int)Monster), "the next monster is locked at once");
+            Check.Eq(Arbiter(off, combat3), BotActivity.Combat, "combat as before");
+
+            // Rare-only looting: as Boost Loot, nothing to wait for.
+            var rare = DeathWorld(15f, out _, () => now);
+            rare.S.LootOnlyRareCorpses = true;
+            rare.Call("StartDeathWait", Elemental);
+            Check.Eq(rare.Get<long>("_deathWaitAt"), 0L, "Loot Only Rare Corpses: no wait");
+        }
+        finally { RestoreCorpseClock(); }
     }
 
     private static void HeldByCombatLoggedOnce()
@@ -439,5 +1022,262 @@ internal static class LootCorpseTests
         // No open corpse: nothing to close.
         bot.Call("CloseOpenCorpseOnMacroStop");
         Check.Eq(FakeHost.Closes.Count, 1, "a stop with no corpse open closes nothing");
+    }
+
+    // 2026-10-07, Drakkon: picking up an item plays a bend-down, and the engine holds queued
+    // moves until it ends (about 2.2 s). RynthAi retried every 0.5 s from the send and gave up
+    // after 3 tries, so items were skipped while their first move had not even gone out.
+    private static void PickupWaitsForAnimation()
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.ServerGates = true; // GetCastBusyState
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        Check.True(FakeHost.Uses.Contains(Corpse), "the corpse is opened");
+
+        // The last pickup is still animating when the corpse's contents arrive.
+        FakeHost.CastBusy = 1;
+        bot.Cache.OnCreateObject(Gem);
+        bot.Cache.Tick();
+        bot.P.OnViewObjectContents(Corpse);
+        TickFor(bot, 500);
+        Check.False(FakeHost.ExternalMoves.Any(m => m.Id == Gem), "no pickup sent while the character animates");
+
+        FakeHost.CastBusy = 0;
+        for (int i = 0; i < 100 && !FakeHost.ExternalMoves.Any(m => m.Id == Gem); i++)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the pickup goes out once the character is still");
+
+        // The bot's Loot Retry Timeout (the LootBaseline default).
+        int retryWindowMs = bot.S.LootRetryTimeoutMs;
+
+        // Its own bend-down plays for longer than 3 retry windows: no retry, no give-up.
+        FakeHost.CastBusy = 1;
+        TickFor(bot, retryWindowMs * 3 + 300);
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "no retry while the pickup animates");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("pickup failed")), "the item is not given up on");
+
+        // Still again and the item still on the corpse: the retry window starts now.
+        FakeHost.CastBusy = 0;
+        TickFor(bot, retryWindowMs / 2);
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the retry window counts from when the character is still");
+        // (Also past the 4 s answer wait from the send by now: R-20261029-122319-321f.)
+        TickFor(bot, retryWindowMs);
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 2, "then one retry");
+    }
+
+    // 2026-10-15, Drakkon: every item went to one pack the server wouldn't take loot into (its
+    // contents unknown to the client), 3 tries each, and every item on every corpse was skipped.
+    // A pack that takes none of an item's tries now counts as full for a while: the item gets one
+    // more round into another pack, and with none left looting stops with the pack-full message.
+    // 2026-10-29 (R-20261029-122319-321f): only the server's refusals mark a pack full, so the
+    // refusals are given here (unanswered tries: LootRetryTimingTests).
+    private static void RefusingPackIsLeftOut()
+    {
+        var refusals = new RynthCore.Plugin.RynthAi.Loot.PackRefusals();
+        refusals.Refuse(7, 1000);
+        Check.True(refusals.IsRefused(7, 1000 + RynthCore.Plugin.RynthAi.Loot.PackRefusals.HoldMs - 1), "refused for the hold");
+        Check.False(refusals.IsRefused(7, 1000 + RynthCore.Plugin.RynthAi.Loot.PackRefusals.HoldMs), "then tried again");
+        refusals.Refuse(8, 0);
+        refusals.Accepted(8);
+        Check.False(refusals.IsRefused(8, 1), "an item landing there ends the hold");
+
+        BaseWorld(corpsePositioned: true);
+        FakeHost.WeenieErrorCalls = true;   // the server's refusals (2026-10-29: only they mark a pack full)
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        bot.Cache.OnCreateObject(Gem);
+        bot.Cache.Tick();
+        bot.P.OnViewObjectContents(Corpse);
+
+        // The main pack (the only destination here) never takes the gem: it stays on the corpse,
+        // and the server refuses each move once its pickup has run (~0.8 s: "Unable to put X into
+        // container" + InventoryServerSaveFailed with no error code).
+        int seen = 0;
+        var refuseAt = new List<long>();
+        long end = Environment.TickCount64 + 6000;
+        while (Environment.TickCount64 < end && !FakeHost.Logs.Any(l => l.Contains("pickup failed")))
+        {
+            for (; seen < FakeHost.ExternalMoves.Count; seen++)
+                if (FakeHost.ExternalMoves[seen].Id == Gem) refuseAt.Add(Environment.TickCount64 + 800);
+            while (refuseAt.Count > 0 && Environment.TickCount64 >= refuseAt[0])
+            {
+                refuseAt.RemoveAt(0);
+                FakeHost.WeenieError(0, 0x00A0, Gem);
+            }
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        // 2026-11-12: loot goes only to the main pack (the client takes nothing from a corpse straight
+        // into a side pack), so one item refused there may be the server refusing the item (a pickup
+        // timer), not the pack: it is given up and its mark goes with it. A second item refused
+        // there keeps the mark (LootRetryTimingTests.FullMainPackRefusals).
+        Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 3, "three tries into the main pack, each after the last one's refusal");
+        Check.True(FakeHost.ExternalMoves.Where(m => m.Id == Gem).All(m => m.Target == Player), "all into the main pack");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("the main pack took none of 3 tries") && l.Contains("treating it as full") && l.Contains("nowhere else to put it")),
+            "the refusing pack is judged full, and there is nowhere else to go, said once");
+        Check.Eq(FakeHost.Logs.Count(l => l.Contains("took none of 3 tries")), 1, "said once");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("pickup failed for")), "the gem is given up after its three tries, not sent round again");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("the only place loot can go")), "one item's refusals: its mark goes with it");
+        Check.False(bot.Get<RynthCore.Plugin.RynthAi.Loot.PackRefusals>("_packRefusals").IsRefused(unchecked((int)Player), Environment.TickCount64),
+            "so the main pack is not left out for the next item");
+    }
+
+    // A pickup sent while Bloodstone Bolt VII was unanswered came back
+    // "too busy" (ACE refuses a pickup while IsBusy); the assess-timeout path skips the busy gate.
+    private static void PickupWaitsForCastAnswer()
+    {
+        BaseWorld(corpsePositioned: true);
+        FakeHost.ServerGates = true; // GetCastBusyState, GetUseDoneSeq
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        long t = 80_000_000;
+        ActionPacer.Reset(); ActionPacer.Enabled = true; ActionPacer.NowMs = () => t;
+        try
+        {
+            bot.Cache.OnCreateObject(Corpse);
+            bot.Cache.Tick();
+            bot.Tick(BotActivity.Looting);
+            Check.True(FakeHost.Uses.Contains(Corpse), "the corpse is opened");
+            ActionPacer.Reset(); ActionPacer.Enabled = true; ActionPacer.NowMs = () => t;   // the open is answered
+
+            // A cast goes out (Combat) and has no answer yet when the contents arrive.
+            ActionPacer.Begin(host, PacedKind.Cast, 0, "Bloodstone Bolt VII", "Combat", FakeHost.UseDoneSeq);
+            bot.Cache.OnCreateObject(Gem);
+            bot.Cache.Tick();
+            bot.P.OnViewObjectContents(Corpse);
+            for (int i = 0; i < 10; i++) { t += 50; bot.Tick(BotActivity.Looting); Thread.Sleep(10); }
+            Check.False(FakeHost.ExternalMoves.Any(m => m.Id == Gem), "no pickup while the cast is unanswered");
+            Check.Eq(FakeHost.Logs.Count(l => l.Contains("pickup waits - the server still owes an answer")), 1, "the hold is logged once");
+
+            FakeHost.UseDone(0);   // the cast's answer
+            for (int i = 0; i < 100 && !FakeHost.ExternalMoves.Any(m => m.Id == Gem); i++) { t += 50; bot.Tick(BotActivity.Looting); Thread.Sleep(10); }
+            Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "the pickup goes on the cast's UseDone");
+
+            // The item stays on the corpse (no answer); the next cast is unanswered when a retry is
+            // due (after the answer wait, 2026-10-29: R-20261029-122319-321f).
+            ActionPacer.Begin(host, PacedKind.Cast, 0, "Bloodstone Bolt I", "Combat", FakeHost.UseDoneSeq);
+            TickFor(bot, (int)RynthAiPlugin.PickupAnswerWaitMinMs + bot.S.LootRetryTimeoutMs + 500);
+            Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 1, "no retry while a cast is unanswered");
+            FakeHost.UseDone(0);
+            TickFor(bot, 300);
+            Check.Eq(FakeHost.ExternalMoves.Count(m => m.Id == Gem), 2, "the retry goes once it is answered");
+        }
+        finally { ActionPacer.Enabled = false; ActionPacer.Reset(); ActionPacer.NowMs = () => Environment.TickCount64; }
+    }
+    // 2026-10-07: the client takes an item off the corpse list as soon as the move is sent; the
+    // corpse was closed then, and the character picked the item up after the corpse closed.
+    private static void CloseWaitsForInventory()
+    {
+        var bot = OpenCorpseAndSendPickup(closeSupported: true);
+        FakeHost.Containers[Gem] = 0x7FFFFFF0;   // off the corpse, not in a pack yet
+        TickFor(bot, 1500);
+        Check.Eq(FakeHost.Closes.Count, 0, "not closed while the item is on its way");
+        Check.False(Completed(bot), "not completed either");
+
+        FakeHost.Containers[Gem] = Player;       // in the main pack
+        for (int i = 0; i < 200 && FakeHost.Closes.Count == 0; i++)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        Check.Eq(FakeHost.Closes.Count, 1, "closed once the item is in the inventory");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("pickup confirmed")), "and the pickup confirmed");
+    }
+
+    // 2026-10-11, Silentkelpie: Necrolytic Extracts and Coalesced Aetheria merge into stacks
+    // already in the pack (StackableMerge). The server removes the picked object and the client
+    // keeps no container for it, so it never "arrived" in the inventory and every such item
+    // waited out PickupArriveMaxMs (4 s) before the next pickup. With the 12 s corpse timeout,
+    // a corpse with three or four keeps was closed part way through.
+    private const uint Gem2 = 0x80261102, Gem3 = 0x80261103;
+
+    private static Bot ThreeGemCorpse(int corpseTimeoutMs)
+    {
+        BaseWorld(corpsePositioned: true);
+        foreach (uint g in new[] { Gem2, Gem3 })
+        {
+            FakeHost.Names[g] = "Black Opal";
+            FakeHost.ItemTypes[g] = ItemTypeGem;
+            FakeHost.Containers[g] = Corpse;
+            FakeHost.Appraised.Add(g);
+        }
+        // Stackable, as the real merging items are: only a stack that ends up with no container
+        // counts as merged (an unknown item off the corpse with no container is still on its way).
+        foreach (uint g in new[] { Gem, Gem2, Gem3 })
+        {
+            FakeHost.Ints[(g, 11)] = 100;   // MaxStackSize
+            FakeHost.Ints[(g, 12)] = 1;     // StackCount
+        }
+        FakeHost.CloseContainerCalls = true;
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.LootCorpseTimeoutMs = corpseTimeoutMs;
+        bot.Cache.OnCreateObject(Corpse);
+        bot.Cache.Tick();
+        bot.Tick(BotActivity.Looting);
+        Check.True(FakeHost.Uses.Contains(Corpse), "the corpse is opened");
+        foreach (uint g in new[] { Gem, Gem2, Gem3 })
+            bot.Cache.OnCreateObject(g);
+        bot.Cache.Tick();
+        FakeHost.GroundContainer = Corpse;
+        bot.P.OnViewObjectContents(Corpse);
+        return bot;
+    }
+
+    /// <summary>Ticks for up to <paramref name="ms"/>; every item whose move went out merges at once.</summary>
+    private static long LootWithMerges(Bot bot, int ms, int wantMoves)
+    {
+        long start = Environment.TickCount64, end = start + ms;
+        while (Environment.TickCount64 < end && FakeHost.ExternalMoves.Select(m => m.Id).Distinct().Count() < wantMoves)
+        {
+            foreach (var m in FakeHost.ExternalMoves)
+                FakeHost.Containers[m.Id] = 0;   // merged: gone from the corpse, no container
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
+        foreach (var m in FakeHost.ExternalMoves)
+            FakeHost.Containers[m.Id] = 0;
+        return Environment.TickCount64 - start;
+    }
+
+    private static void MergedPickupConfirmedQuickly()
+    {
+        var bot = ThreeGemCorpse(corpseTimeoutMs: 60_000);
+        long took = LootWithMerges(bot, 6000, wantMoves: 2);
+        Check.Eq(FakeHost.ExternalMoves.Select(m => m.Id).Distinct().Count(), 2, "the second pickup goes out");
+        Check.True(took < 2800, $"the second pickup follows the first merge in about the settle time, not 4 s more (took {took} ms)");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("merged into a stack in the pack")), "the confirm says why");
+    }
+
+    private static void ManyKeepsBeatTheTimeout()
+    {
+        // Each merged item takes about PickupSettleMs (1 s) to confirm; three in a row take longer
+        // than this corpse timeout, which only an idle corpse should hit.
+        var bot = ThreeGemCorpse(corpseTimeoutMs: 2200);
+        LootWithMerges(bot, 8000, wantMoves: 3);
+        TickFor(bot, 1500);
+        var moved = FakeHost.ExternalMoves.Select(m => m.Id).Distinct().ToList();
+        Check.Eq(moved.Count, 3, "all three gems are taken (moved: " + string.Join(",", moved.Select(i => $"{i:X8}")) + ")");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("abandoning corpse")), "the corpse is not abandoned on the timeout");
+    }
+
+    private static void TickFor(Bot bot, int ms)
+    {
+        long end = Environment.TickCount64 + ms;
+        while (Environment.TickCount64 < end)
+        {
+            bot.Tick(BotActivity.Looting);
+            Thread.Sleep(10);
+        }
     }
 }

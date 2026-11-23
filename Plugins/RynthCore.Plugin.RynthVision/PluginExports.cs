@@ -22,7 +22,8 @@ public static unsafe class PluginExports
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginShutdown", CallConvs = new[] { typeof(CallConvCdecl) })]
     public static void Shutdown()
     {
-        Runtime.Shutdown();
+        try { Runtime.Shutdown(); }
+        catch { }
         try
         {
             // The engine copies the settings string as soon as it gets it, on
@@ -33,6 +34,60 @@ public static unsafe class PluginExports
                 Marshal.FreeHGlobal(old);
         }
         catch { }
+        try { ReleaseSections(); }
+        catch { }
+    }
+
+    // ── The Vision window (2026-10-27; RynthCore hosts it in its Vision panel's place, docs/PLUGIN_WINDOWS.md) ──
+
+    private static string? _sectionsJson;
+    private static IntPtr _sectionsPtr;
+
+    /// <summary>The sections manifest: just the Vision window, on an engine that hosts it (Ui/VisionManifest.cs).</summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginGetSectionsJson", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static IntPtr GetSectionsJson()
+    {
+        try
+        {
+            RynthVisionPlugin? plugin = Runtime.Plugin;
+            if (plugin == null) return IntPtr.Zero;
+            string json = plugin.SectionsJson;
+            if (json == _sectionsJson && _sectionsPtr != IntPtr.Zero) return _sectionsPtr;
+            _sectionsJson = json;
+            IntPtr fresh = Marshal.StringToCoTaskMemUTF8(json);
+            IntPtr old = Interlocked.Exchange(ref _sectionsPtr, fresh);
+            if (old != IntPtr.Zero) Marshal.FreeCoTaskMem(old);
+            return fresh;
+        }
+        catch { return IntPtr.Zero; }
+    }
+
+    private static void ReleaseSections()
+    {
+        IntPtr old = Interlocked.Exchange(ref _sectionsPtr, IntPtr.Zero);
+        if (old != IntPtr.Zero) Marshal.FreeCoTaskMem(old);
+        _sectionsJson = null;
+    }
+
+    /// <summary>
+    /// A window's body (AC's render thread): 1 drawn, 0 not this plugin's surface or not ready, -2 the
+    /// draw failed (RynthCore then says the window couldn't draw; docs/PLUGIN_WINDOWS.md).
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "RynthPluginRenderEmbed", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static int RenderEmbed(byte* surface, float width, float height, float* wantWidth, float* wantHeight)
+    {
+        try
+        {
+            if (surface == null) return 0;
+            string name = Marshal.PtrToStringUTF8((IntPtr)surface) ?? string.Empty;
+            if (name.EndsWith(":popout", StringComparison.Ordinal)) name = name[..^":popout".Length];
+            RynthVisionPlugin? plugin = Runtime.Plugin;
+            if (plugin == null || !plugin.RenderEmbed(name)) return 0;
+            if (wantWidth != null) *wantWidth = width;
+            if (wantHeight != null) *wantHeight = height;
+            return 1;
+        }
+        catch { return -2; }
     }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginOnLoginComplete", CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -46,10 +101,18 @@ public static unsafe class PluginExports
     // and they stay valid for as long as the module is loaded (the engine
     // copies them right after loading, before Init).
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginName", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static IntPtr GetName() => LiteralPointer("RynthVision"u8);
+    public static IntPtr GetName()
+    {
+        try { return LiteralPointer("RynthVision"u8); }
+        catch { return IntPtr.Zero; }
+    }
 
     [UnmanagedCallersOnly(EntryPoint = "RynthPluginVersion", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static IntPtr GetVersion() => LiteralPointer("0.1.0"u8);
+    public static IntPtr GetVersion()
+    {
+        try { return LiteralPointer("0.1.0"u8); }
+        catch { return IntPtr.Zero; }
+    }
 
     private static IntPtr LiteralPointer(ReadOnlySpan<byte> literal)
     {
@@ -64,6 +127,9 @@ public static unsafe class PluginExports
     public static void OnChatBarEnter(IntPtr textUtf16, IntPtr eatFlag) => Runtime.OnChatBarEnter(textUtf16, eatFlag);
 
     // ── Settings bridge for the engine's Vision panels (UI/Data/VisionData.cs) ──
+    // Still used: the engine's own Vision panel on an engine that doesn't host
+    // RynthVision's window, and the Avalonia twin. RynthVision's own window
+    // doesn't go through here (RynthVisionPlugin.Ui.cs).
     // The engine calls these on the plugin pump thread (UiDataHub). The
     // pointer swap (alloc-new → swap → free-old) keeps the previous buffer
     // alive until the next call; the engine copies it immediately.

@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
+    <ProjectReference Include="..\..\Shared\RynthCore.LootSdk\RynthCore.LootSdk.csproj" />
     <!-- The engine parser's whitelists use ImGui.NET's enums. -->
     <PackageReference Include="ImGui.NET" Version="1.91.6.1" />
   </ItemGroup>
@@ -29,6 +30,11 @@
   <ItemGroup>
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthInventory\**\*.cs" Exclude="..\..\Plugins\RynthCore.Plugin.RynthInventory\obj\**;..\..\Plugins\RynthCore.Plugin.RynthInventory\bin\**" Link="RynthInventory\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\..\..\RynthCore\src\RynthCore.Engine\UI\ScriptWindows\DisplayListParser.cs" Link="Engine\DisplayListParser.cs" />
+    <!-- The plugin links this one from Plugins/Shared (the glob above only covers the plugin's folder). -->
+    <Compile Include="..\..\Plugins\Shared\StorageFeed.cs" Link="Shared\StorageFeed.cs" />
+    <Compile Include="..\..\Plugins\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\RynthServers\Plugins\Shared\RynthIltDataApi.cs" Link="Shared\RynthIltDataApi.cs" />
+    <Compile Include="..\..\Plugins\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
   <ItemGroup>

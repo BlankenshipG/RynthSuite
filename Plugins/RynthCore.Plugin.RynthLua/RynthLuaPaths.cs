@@ -10,11 +10,11 @@ namespace RynthCore.Plugin.RynthLua;
 /// </summary>
 internal static class RynthLuaPaths
 {
-    /// <summary>RynthLua's folder: Scripts\, Data\, settings.json, editor.lua.</summary>
-    public static string Root { get; set; } = @"C:\Games\RynthSuite\RynthLua";
+    /// <summary>RynthLua's folder: Scripts\, Data\, settings.json, editor.lua (&lt;SuiteDir&gt;\RynthLua, C:\Games\RynthSuite\RynthLua by default).</summary>
+    public static string Root { get; set; } = Path.Combine(RynthCore.Install.RynthInstallPaths.SuiteDir, "RynthLua");
 
     /// <summary>Where scripts lived while Lua was part of RynthAi (copied over once, then left alone).</summary>
-    public static string LegacyScripts { get; set; } = @"C:\Games\RynthSuite\RynthAi\LuaScripts";
+    public static string LegacyScripts { get; set; } = Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "LuaScripts");
 
     public static string Scripts => Path.Combine(Root, "Scripts");
     public static string Data => Path.Combine(Root, "Data");

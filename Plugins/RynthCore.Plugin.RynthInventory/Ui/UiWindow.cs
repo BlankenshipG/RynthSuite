@@ -42,6 +42,9 @@ internal sealed class UiWindow
     public string Title;
     public bool Visible;
     public bool ShowInBar = true;
+    /// <summary>With ShowInBar: the window has its own button on the RynthCore bar (title as the
+    /// tooltip) rather than a line in the Scripts menu.</summary>
+    public bool BarButton = true;
     public float DefaultWidth, DefaultHeight, MinWidth, MinHeight;
 
     /// <summary>A pass is wanted at the next chance (input arrived, it was just shown, data changed).</summary>
@@ -80,7 +83,8 @@ internal sealed class UiWindow
         Title = title;
     }
 
-    public uint Flags => (Visible ? UiFormat.FlagVisible : 0) | (ShowInBar ? UiFormat.FlagShowInBar : 0);
+    public uint Flags => (Visible ? UiFormat.FlagVisible : 0) | (ShowInBar ? UiFormat.FlagShowInBar : 0)
+        | (ShowInBar && BarButton ? UiFormat.FlagBarButton : 0);
 
     public bool HeaderDirty =>
         _sentTitle != Title || _sentFlags != Flags || _sentDw != DefaultWidth || _sentDh != DefaultHeight

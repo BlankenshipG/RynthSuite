@@ -73,6 +73,10 @@ internal sealed class SellItem
     public string RuleName { get; init; } = string.Empty;
     public string Location { get; init; } = string.Empty;
     public int SortSlot { get; init; }
+    /// <summary>The item's max stack size (0 = unknown); a stack below it is a partial.</summary>
+    public int MaxStack { get; init; }
+    /// <summary>Weenie class id (0 = unknown): only the same weenie merges.</summary>
+    public uint Wcid { get; init; }
 
     public bool IsNote => Class == AcObjectClass.TradeNote || (ItemType & AutoVendorPlanner.ItemTypePromissoryNote) != 0;
     public int UnitValue => StackSize > 1 ? Value / StackSize : Value;
@@ -96,6 +100,7 @@ internal enum PlanKind : byte
     Sell = 2,
     Split = 3,
     Fatal = 4,
+    Merge = 5,
 }
 
 internal readonly record struct BuyLine(Listing Item, int Amount);
@@ -109,12 +114,18 @@ internal sealed class VendorPlan
     public long Total { get; init; }
     public SellItem? SplitItem { get; init; }
     public int SplitAmount { get; init; }
+    /// <summary>Merge: SplitItem goes onto MergeTarget.</summary>
+    public SellItem? MergeTarget { get; init; }
     public string Message { get; init; } = string.Empty;
 
     public static VendorPlan Done() => new() { Kind = PlanKind.Done };
+    /// <summary>Done, with why a wanted item wasn't bought (empty when nothing was wanted).</summary>
+    public static VendorPlan Done(string whyNotBought) => new() { Kind = PlanKind.Done, Message = whyNotBought ?? string.Empty };
     public static VendorPlan Fatal(string msg) => new() { Kind = PlanKind.Fatal, Message = msg };
     public static VendorPlan Split(SellItem item, int amount, string why) =>
         new() { Kind = PlanKind.Split, SplitItem = item, SplitAmount = amount, Message = why };
+    public static VendorPlan Merge(SellItem source, SellItem target, string why) =>
+        new() { Kind = PlanKind.Merge, SplitItem = source, MergeTarget = target, Message = why };
 }
 
 /// <summary>What the manager read about an inventory item for UB's "safe to get rid of" checks.</summary>
@@ -170,6 +181,9 @@ internal static class AutoVendorPlanner
     /// <summary>What you pay for one created stack worth <paramref name="stackValue"/>.</summary>
     public static long PlayerPays(VendorView v, bool isNote, long stackValue)
     {
+        // A vendor rate of exactly 0 is a free vendor (a storage vault): it costs 0, no 1-per-stack floor,
+        // as the engine prices it (RynthCore VendorRatePolicy, AwfulWaffle's PR #10).
+        if (v.SellRate == 0f) return 0;
         float rate = isNote ? 1.15f : v.SellRate;
         float product = rate * stackValue;
         return Math.Max(1L, (long)Math.Ceiling(product - 0.1));
@@ -178,6 +192,7 @@ internal static class AutoVendorPlanner
     /// <summary>What the vendor pays for one item (whole stack) worth <paramref name="value"/>.</summary>
     public static long VendorPays(VendorView v, bool isNote, long value)
     {
+        if (v.BuyRate == 0f) return 0;   // a free vendor pays 0 (see PlayerPays)
         float rate = isNote ? 1.0f : v.BuyRate;
         float product = rate * value;
         return Math.Max(1L, (long)Math.Floor(product + 0.1));
@@ -254,7 +269,9 @@ internal static class AutoVendorPlanner
         if (f.IsRare) return "rare";
         if (onlyFromMainPack && !f.InMainPack) return "not in main pack";
         if (f.Attuned != 0) return "attuned";
-        if (f.Bonded != 0) return "bonded";
+        // Not Bonded: on ACE it only decides what a death keeps (PropertyInt.Bonded, Player_Death);
+        // it never stops a sale. Peas, trade notes and salvage bags are bonded so a death keeps
+        // them, and AutoVendor held them all back (2026-10-07). Quest items are not sellable anyway.
         if (f.Retained) return "retained";
         if (f.TimesTinkered > 0) return "tinkered";
         if (f.Imbued != 0) return "imbued";
@@ -330,7 +347,15 @@ internal static class AutoVendorPlanner
 
     /// <param name="wants">From BuildBuyWants (already sorted).</param>
     /// <param name="sells">From SortSells.</param>
-    public static VendorPlan PlanNext(VendorView v, IReadOnlyList<BuyWant> wants, IReadOnlyList<SellItem> sells, PackState p)
+    /// <param name="spareNotes">
+    /// Loose single trade notes that passed the safety checks but no Sell rule took on their own:
+    /// usually a Keep rule written for the vendor's listing ("Value = 250,000") that a one-note stack
+    /// also matches. Notes are interchangeable, so when one note of the same kind has to be sold to
+    /// pay for a buy, one of these goes before any split. Without this a hand-split single (or the
+    /// stack the last split made) was never sold and every plan split another note off (2026-11-01).
+    /// </param>
+    public static VendorPlan PlanNext(VendorView v, IReadOnlyList<BuyWant> wants, IReadOnlyList<SellItem> sells, PackState p,
+                                      IReadOnlyList<SellItem>? spareNotes = null)
     {
         // ── Buy first ──
         var buys = new List<BuyLine>();
@@ -421,14 +446,11 @@ internal static class AutoVendorPlanner
                 if (!PyrealsFit(p, unit))
                     return VendorPlan.Fatal($"AutoVendor Fatal - No inventory room to sell {item.Name}");
 
-                SellItem? single = null;
-                foreach (var s in sells)
-                    if (s.IsNote && s.StackSize <= 1 && string.Equals(s.Name, item.Name, StringComparison.Ordinal))
-                    { single = s; break; }
+                SellItem? single = FindSingleNote(sells, item) ?? (spareNotes != null ? FindSingleNote(spareNotes, item) : null);
                 if (single != null)
                     return new VendorPlan { Kind = PlanKind.Sell, Sells = new List<SellItem> { single }, Total = VendorPays(v, true, single.Value) };
 
-                return VendorPlan.Split(item, 1, $"one {item.Name} to afford {nextBuy.Name}");
+                return SplitClean(v, sells, item, 1, $"one {item.Name} to afford {nextBuy.Name}");
             }
 
             // Can't sell the whole stack? Split off what the pyreals will fit.
@@ -437,9 +459,14 @@ internal static class AutoVendorPlanner
                 if (chosen.Count < 1)
                 {
                     int newStack = unit > 0 ? (int)Math.Floor((p.FreeMainSlots - 2) * (double)Math.Max(1, p.PyrealStackSize) / unit) : 0;
+                    // A partial sold whole frees its own slot for the pyreals, so it may be one slot's worth
+                    // bigger than a split: the stack a split just made took a slot, and judged against the
+                    // split's own margin it no longer fitted, was merged back, and the split came again
+                    // until the 8-try stop left the last stack of peas unsold (2026-11-05).
+                    int sellWholeUpTo = unit > 0 ? (int)Math.Floor((p.FreeMainSlots - 1) * (double)Math.Max(1, p.PyrealStackSize) / unit) : 0;
                     newStack = Math.Min(newStack, stack - 1);
                     if (newStack > 0)
-                        return VendorPlan.Split(item, newStack, "the pyreals for the whole stack won't fit");
+                        return SplitClean(v, sells, item, newStack, "the pyreals for the whole stack won't fit", sellWholeUpTo);
                     return VendorPlan.Fatal($"AutoVendor Fatal - No inventory room to sell {item.Name}");
                 }
                 break;
@@ -452,8 +479,120 @@ internal static class AutoVendorPlanner
         if (chosen.Count > 0)
             return new VendorPlan { Kind = PlanKind.Sell, Sells = chosen, Total = totalValue };
 
-        return VendorPlan.Done();
+        return VendorPlan.Done(ExplainUnmetBuy(v, wants, sells, p, spareNotes));
     }
+
+    private static SellItem? FindSingleNote(IReadOnlyList<SellItem> list, SellItem like)
+    {
+        foreach (var s in list)
+            if (s.IsNote && s.StackSize <= 1 && (SameItem(s, like) || string.Equals(s.Name, like.Name, StringComparison.Ordinal)))
+                return s;
+        return null;
+    }
+
+    /// <summary>
+    /// The session ends with a want still unbought: one line saying why, for chat and the log. A
+    /// session that bought nothing and said nothing looked like AutoVendor ignoring the vendor
+    /// (Prismatic Tapers at Master Raiden Stormcaller, 2026-11-01). Empty when nothing is wanted.
+    /// </summary>
+    internal static string ExplainUnmetBuy(VendorView v, IReadOnlyList<BuyWant> wants, IReadOnlyList<SellItem> sells, PackState p,
+                                           IReadOnlyList<SellItem>? spareNotes = null)
+    {
+        // A Keep rule buys "all you can afford": running out of money is how it ends, not a failure.
+        // Only a Keep # count still short is worth a line.
+        BuyWant? w = null;
+        foreach (var x in wants)
+            if (x.Amount != int.MaxValue) { w = x; break; }
+        if (w == null) return string.Empty;
+        Listing item = w.Item;
+        string what = $"{w.Amount.ToString("n0", CultureInfo.InvariantCulture)}x {item.Name}";
+        string currency = v.UsesAltCurrency ? "currency" : "pyreals";
+        long price = UnitPrice(v, item);
+        string rule = string.IsNullOrEmpty(w.RuleName) ? string.Empty : $" (rule '{w.RuleName}')";
+
+        bool fits = item.NeedsContainerSlot ? p.FreeContainerSlots > 0 : p.FreeMainSlots > (item.IsNote ? 0 : 1);
+        if (!fits)
+            return item.NeedsContainerSlot
+                ? $"can't buy {what}{rule}: no free container slot"
+                : $"can't buy {what}{rule}: only {p.FreeMainSlots} free main-pack slot(s), one stays free";
+
+        if (price > p.Funds)
+        {
+            string head = string.Format(CultureInfo.InvariantCulture, "can't buy {0}{1}: {2:n0} {3} each, you have {4:n0}",
+                                        what, rule, price, currency, p.Funds);
+            if (v.UsesAltCurrency) return head + " (selling can't pay an alt-currency vendor)";
+            if (item.IsNote) return head + " (notes are never sold to buy notes)";
+            bool anyNote = false, anyOther = false;
+            foreach (var s in sells) { if (s.IsNote) anyNote = true; else anyOther = true; }
+            if (!anyNote && spareNotes is { Count: > 0 })
+                return head + $", and no Sell rule matches a note stack here: the loose {spareNotes[0].Name} ({spareNotes[0].RuleName}) stays";
+            if (!anyNote && !anyOther) return head + ", and nothing the profile sells is here to pay for it";
+            return head;
+        }
+        return $"can't buy {what}{rule}";
+    }
+
+    /// <summary>
+    /// A split lands on another partial stack of the same item when there is one, instead of making
+    /// a new stack (the stack split from doesn't count), so the split-off amount never shows up to be
+    /// sold. Drakkon's Gold Peas looped split-wait-split for good once two partial stacks existed
+    /// (2026-10-19). So: first merge partials down to one; with one partial left, sell it whole if it
+    /// fits, else split from it (nothing else partial for the new stack to join); with none, split as
+    /// asked. An unknown max stack size keeps the old plain split.
+    /// </summary>
+    /// <param name="sellWholeUpTo">The biggest partial that can be sold whole (its own slot counted free; at
+    /// least <paramref name="amount"/>), else <paramref name="amount"/>.</param>
+    internal static VendorPlan SplitClean(VendorView v, IReadOnlyList<SellItem> sells, SellItem item, int amount, string why,
+                                          int sellWholeUpTo = -1)
+    {
+        if (item.MaxStack <= 1)
+            return VendorPlan.Split(item, amount, why);
+
+        var partials = sells
+            .Where(s => SameItem(s, item) && s.StackSize > 0 && s.StackSize < item.MaxStack)
+            .OrderByDescending(s => s.StackSize)
+            .ToList();
+
+        // A partial that fits is sold whole first: the stack a split just made, or any leftover. (Merging
+        // it back instead looped split-merge-split three times a second, 2026-10-19.)
+        int wholeUpTo = Math.Max(amount, sellWholeUpTo);
+        SellItem? fits = partials.FirstOrDefault(s => s.StackSize <= wholeUpTo);
+        if (fits != null)
+            return new VendorPlan { Kind = PlanKind.Sell, Sells = new List<SellItem> { fits }, Total = VendorPays(v, fits.IsNote, fits.Value) };
+
+        // Every partial is too big to sell whole: merge them down to one before splitting.
+        if (partials.Count >= 2)
+            return VendorPlan.Merge(partials[^1], partials[0], $"one partial {item.Name} stack, so the split makes a new stack");
+
+        if (partials.Count == 1 && partials[0].Id != item.Id)
+            return VendorPlan.Split(partials[0], amount, why);
+
+        return VendorPlan.Split(item, amount, why);
+    }
+
+    /// <summary>
+    /// The unit value to trust for one item: one read off a stack the server just made (a split's new
+    /// stack) wins, since every older stack's Value may be stale; else <see cref="MostCarriedUnit"/>.
+    /// </summary>
+    internal static int TrueUnit(IReadOnlyDictionary<int, long> unitsByValue, int freshUnit) =>
+        freshUnit > 0 ? freshUnit : MostCarriedUnit(unitsByValue);
+
+    /// <summary>The unit value carrying the most units (ties: the higher value, the safe side for a vendor's max).</summary>
+    internal static int MostCarriedUnit(IReadOnlyDictionary<int, long> unitsByValue)
+    {
+        int best = 0;
+        long bestUnits = -1;
+        foreach (var (unit, units) in unitsByValue)
+            if (units > bestUnits || (units == bestUnits && unit > best))
+            {
+                best = unit;
+                bestUnits = units;
+            }
+        return best;
+    }
+
+    private static bool SameItem(SellItem a, SellItem b) =>
+        a.Wcid != 0 && b.Wcid != 0 ? a.Wcid == b.Wcid : string.Equals(a.Name, b.Name, StringComparison.Ordinal);
 
     // ── /ub vendor addsell (UB AddItemToSellList) ────────────────────────────
 

@@ -20,7 +20,7 @@ internal sealed class VoidDot
     /// <summary>Cast while Surge of Destruction was up (shown highlighted).</summary>
     public bool Destruction;
 
-    /// <summary>ConquestAC scales void DoT duration by the caster's augs (1.0 elsewhere).</summary>
+    /// <summary>A server's own rule scales void DoT duration (Conquest's, from RynthConquest's profile; 1.0 elsewhere).</summary>
     public double DurationScale = 1.0;
 
     /// <summary>Corrosion 15 s, Corruption and Destructive Curse 30 s (upstream's retail values), times the server's scale.</summary>

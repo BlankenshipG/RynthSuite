@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using ImGuiNET;
 using RynthCore.Plugin.RynthAi.ItemInfo;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthAi.LegacyUi;
 
@@ -13,12 +14,16 @@ namespace RynthCore.Plugin.RynthAi.LegacyUi;
 /// </summary>
 internal sealed class LegacyItemInfoUi
 {
+    // Where the player left the window, per character (Plugins/Shared/SavedWindow.cs).
+    private readonly SavedWindow _spot = new("RynthAi.ItemInfo");
+
     private readonly LegacyUiSettings _settings;
 
     // Supplied by RynthAiPlugin (it owns the host + object cache).
     private Func<string?>? _describeSelected; // selected item's line (no prefix) or null when nothing is selected
     private Action? _printSelected;           // same path as /ra iteminfo (requests an ID when needed)
     private Action<int>? _testChatType;       // prints a sample line with the given chat type
+    private Action? _testPartColors;          // prints a sample one-line with every part in its colour
 
     // Preview is rebuilt on a timer or when an output option changes, not every frame.
     private const long PreviewRefreshMs = 500;
@@ -30,11 +35,12 @@ internal sealed class LegacyItemInfoUi
 
     public LegacyItemInfoUi(LegacyUiSettings settings) => _settings = settings;
 
-    public void SetHooks(Func<string?> describeSelected, Action printSelected, Action<int> testChatType)
+    public void SetHooks(Func<string?> describeSelected, Action printSelected, Action<int> testChatType, Action? testPartColors = null)
     {
         _describeSelected = describeSelected;
         _printSelected = printSelected;
         _testChatType = testChatType;
+        _testPartColors = testPartColors;
     }
 
     public void Render()
@@ -44,8 +50,10 @@ internal sealed class LegacyItemInfoUi
         if (!s.ShowWindow) return;
 
         ImGui.SetNextWindowSize(new Vector2(560, 600), ImGuiCond.FirstUseEver);
+        _spot.Apply();
         if (ImGui.Begin("RynthAi Item Info##ItemInfoSettings", ref s.ShowWindow))
         {
+            _spot.Track();
             RenderPreview(s);
             RenderWhen(s);
             RenderFields(s);
@@ -87,7 +95,13 @@ internal sealed class LegacyItemInfoUi
         if (string.IsNullOrEmpty(_previewText))
             ImGui.TextDisabled("Select an item to preview its info line.");
         else
-            ImGui.TextWrapped(s.Prefix + _previewText);
+        {
+            // In the Info text colour when one is set, as RynthCore's chat will draw it.
+            bool tinted = s.TextColor.Length > 0;
+            if (tinted) ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(MagItemInfoCatalog.TextColorRgb(s.TextColor), 1f));
+            SafeImGui.TextWrapped(s.Prefix + _previewText);
+            if (tinted) ImGui.PopStyleColor();
+        }
         ImGui.EndChild();
 
         if (ImGui.Button("Print to chat##iiPrint")) _printSelected?.Invoke();
@@ -126,6 +140,29 @@ internal sealed class LegacyItemInfoUi
             s.Sanitize();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("How long to wait for an unidentified item's appraisal\nbefore printing what is already known.");
+
+        RenderLootChat(s, "##iiLoot");
+    }
+
+    /// <summary>
+    /// "Describe looted items in chat" + "Include salvage". Shared with Advanced Settings → Looting,
+    /// so <paramref name="idSuffix"/> keeps the ImGui ids unique per window.
+    /// </summary>
+    public static void RenderLootChat(MagItemInfoSettings s, string idSuffix)
+    {
+        ImGui.Checkbox("Describe looted items in chat" + idSuffix, ref s.LootChat);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "The \"Looted\" line of an item a loot rule took names the rule and\n" +
+                "the item's details, in one line, with the fields chosen here:\n" +
+                "  Looted [Keep] Blunt Crossbow (rule \"Xbow\"): Gold, Pierce Crossbow, +22, ...\n" +
+                "Pyreals, trade notes, spell components and other stacks keep the short line.");
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!s.LootChat);
+        ImGui.Checkbox("Include salvage" + idSuffix + "Salv", ref s.LootChatSalvage);
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Describe items taken for salvage too, short: material and workmanship.\nOff: a corpse full of salvage keeps its short lines.");
     }
 
     /// <summary>
@@ -155,8 +192,8 @@ internal sealed class LegacyItemInfoUi
         if (ImGui.Combo("Layout" + idSuffix, ref s.Layout, MagItemInfoCatalog.Layouts, MagItemInfoCatalog.Layouts.Length))
             s.Sanitize();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Pet-style lines (like the ILT Hub pet roster):\n" +
+            SafeImGui.SetTooltip(
+                "Pet-style lines (like the Mini Remote's Pets roster):\n" +
                 "  1  Name (type mastery), set, AL, tinks, applied, craft\n" +
                 "  2  imbues, slayer, damage, variance, %a / %md / %mc\n" +
                 "  3  [ratings]  wield / activation / diff, value\n" +
@@ -191,7 +228,7 @@ internal sealed class LegacyItemInfoUi
                 if (ImGui.Checkbox($"{f.Label}##iiF{(int)f.Field}", ref shown))
                     s.SetHidden(f.Field, !shown);
                 ImGui.TableNextColumn();
-                ImGui.TextColored(ExampleColor, f.Example);
+                SafeImGui.TextColored(ExampleColor, f.Example);
             }
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
@@ -254,26 +291,139 @@ internal sealed class LegacyItemInfoUi
 
         RenderLayout(s, "##iiLayout");
 
-        ChatTypeCombo("Chat type / colour##iiChat", ref s.ChatType, allowSameAsHeader: false);
+        ChatTypeCombo("Chat type##iiChat", ref s.ChatType, allowSameAsHeader: false);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("The chat type picks where the lines go (the chat tab, AC's own chat\n" +
+                             "windows) and their colour, unless Info text colour below sets one.");
         ImGui.SameLine();
         if (ImGui.Button("Test##iiChatTest")) _testChatType?.Invoke(s.ChatType);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Print a sample line with this chat type to see its colour.");
+            ImGui.SetTooltip("Print a sample line with this chat type to see where it goes and its colour.");
 
         // Pet-style only: the roster draws its detail lines in a second colour.
         ImGui.BeginDisabled(s.Layout != MagItemInfoSettings.LayoutPetLines);
-        ChatTypeCombo("Detail lines colour##iiChatDetail", ref s.DetailChatType, allowSameAsHeader: true);
+        ChatTypeCombo("Detail lines chat type##iiChatDetail", ref s.DetailChatType, allowSameAsHeader: true);
         ImGui.SameLine();
         if (ImGui.Button("Test##iiChatDetailTest"))
             _testChatType?.Invoke(s.DetailChatType == MagItemInfoSettings.SameAsHeader ? s.ChatType : s.DetailChatType);
         ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip("Chat type for lines 2-4 of the pet-style layout\n(the name line uses the colour above).");
+            ImGui.SetTooltip("Chat type for lines 2-4 of the pet-style layout\n(the name line uses the chat type above).");
+
+        ImGui.BeginDisabled(!s.LootChat);
+        ChatTypeCombo("Loot lines chat type##iiChatLoot", ref s.LootChatType, allowSameAsHeader: true);
+        ImGui.SameLine();
+        if (ImGui.Button("Test##iiChatLootTest")) _testChatType?.Invoke(LootChatLine.ChatTypeOf(s));
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Chat type of a described \"Looted\" line\n(\"Same as name line\": the chat type above).");
+
+        RenderTextColor(s);
+        RenderPartColors(s);
 
         ImGui.SetNextItemWidth(220);
         ImGui.InputText("Line prefix##iiPrefix", ref s.Prefix, 32);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Text put in front of every item info line (may be empty).");
+    }
+
+    private const string PartColorsTip =
+        "One-line layout: the name, set, armour / damage, spells, ratings, requirements,\n" +
+        "workmanship, value / burden ... each in its own colour in RynthCore's chat\n" +
+        "(the colours are listed below). The rest of the line (the prefix, the commas)\n" +
+        "keeps the Info text colour, else the chat type's. A RynthCore from before this\n" +
+        "shows the line in that one colour. AC's own chat window shows the chat type's colour.\n" +
+        "Also: /ra iteminfo parts on|off.";
+
+    /// <summary>
+    /// "Colour each part": the one-line layout's parts in their own colours (ItemInfoPartColors),
+    /// a Test line that shows every part, and the colours as a legend while it is on.
+    /// </summary>
+    private void RenderPartColors(MagItemInfoSettings s)
+    {
+        bool oneLine = s.Layout == MagItemInfoSettings.LayoutOneLine;
+        ImGui.BeginDisabled(!oneLine);
+        ImGui.Checkbox("Colour each part (one-line layout)##iiPartColors", ref s.PartColors);
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(oneLine ? PartColorsTip : PartColorsTip + "\nSwitch the layout to the one-line Mag style to use it.");
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!oneLine || !s.PartColors);
+        if (ImGui.Button("Test##iiPartColorsTest")) _testPartColors?.Invoke();
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Print a sample line with every part in its colour.");
+
+        if (!oneLine || !s.PartColors) return;
+        // The legend: each part's name in its colour, wrapped to the window.
+        ImGui.Indent();
+        float right = ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X;
+        bool firstItem = true;
+        foreach (var (_, label, color) in ItemInfoPartColors.Defaults)
+        {
+            float w = ImGui.CalcTextSize(label).X;
+            if (!firstItem)
+            {
+                ImGui.SameLine(0, 12);
+                if (ImGui.GetCursorPosX() + w > right) ImGui.NewLine();
+            }
+            firstItem = false;
+            SafeImGui.TextColored(new Vector4(MagItemInfoCatalog.TextColorRgb(color), 1f), label);
+        }
+        ImGui.Unindent();
+    }
+
+    private const string TextColorTip =
+        "The colour of every item info line in RynthCore's chat: the name line, the\n" +
+        "detail lines, a described \"Looted\" line and your own ratings. The lines keep\n" +
+        "their chat type, so they stay in the same chat tab.\n" +
+        "\"Chat type's own colour\": as before, the chat type decides the colour.\n" +
+        "AC's own chat window can only show the chat type's colour.\n" +
+        "Also: /ra iteminfo color allegiance|fellowship|...|#RRGGBB|default.";
+
+    /// <summary>
+    /// "Info text colour": the chat type's own colour (""), a named chat colour, or any colour from
+    /// the picker beside it. A new choice shows on the next line printed (Test prints one).
+    /// </summary>
+    private void RenderTextColor(MagItemInfoSettings s)
+    {
+        string current = s.TextColor.Length == 0 ? MagItemInfoCatalog.TextColors[0].Label : "Custom " + s.TextColor;
+        foreach (var (_, label, color) in MagItemInfoCatalog.TextColors)
+            if (color.Length > 0 && string.Equals(color, s.TextColor, StringComparison.OrdinalIgnoreCase)) { current = label; break; }
+
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.BeginCombo("Info text colour##iiTextColor", current))
+        {
+            float swatch = ImGui.GetTextLineHeight();
+            foreach (var (word, label, color) in MagItemInfoCatalog.TextColors)
+            {
+                if (color.Length > 0)
+                {
+                    ImGui.ColorButton("##iiTcSw" + word, new Vector4(MagItemInfoCatalog.TextColorRgb(color), 1f),
+                        ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoPicker, new Vector2(swatch, swatch));
+                    ImGui.SameLine();
+                }
+                else
+                {
+                    ImGui.Dummy(new Vector2(swatch, swatch));
+                    ImGui.SameLine();
+                }
+                if (ImGui.Selectable(label + "##iiTc" + word, string.Equals(color, s.TextColor, StringComparison.OrdinalIgnoreCase)))
+                    s.TextColor = color;
+            }
+            ImGui.EndCombo();
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(TextColorTip);
+
+        ImGui.SameLine();
+        Vector3 rgb = MagItemInfoCatalog.TextColorRgb(s.TextColor);
+        if (ImGui.ColorEdit3("##iiTextColorPick", ref rgb, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.NoLabel))
+            s.TextColor = MagItemInfoCatalog.TextColorFromRgb(rgb);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Pick any colour for the item info lines.");
+
+        ImGui.SameLine();
+        if (ImGui.Button("Test##iiTextColorTest")) _testChatType?.Invoke(s.ChatType);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Print a sample line in this colour (and the chat type above).");
     }
 
     /// <summary>Chat type picker; <paramref name="allowSameAsHeader"/> adds the "same as name line" entry (-1).</summary>

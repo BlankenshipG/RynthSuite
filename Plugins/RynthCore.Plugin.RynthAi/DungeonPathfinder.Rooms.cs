@@ -55,7 +55,9 @@ internal static partial class DungeonPathfinder
     // castles most approach/exit points in short bend and junction cells sat on the bend's
     // outer wall (Rithwic Crypt: 440 of 488 under 0.25 m), and a dead end's look-in point is
     // its cell origin, which is inside the end cap.
-    internal const double WallClearance = 1.0;
+    // The patrol's is a setting (DungeonPatrolOptions.WallClearance, Settings "Distance From
+    // Walls"); this default is what dunnav paths and recovery detours always use.
+    internal const double WallClearance = DungeonPatrolOptions.WallClearanceDefault;
     // How far a point may be pushed off where its rule put it to get that clearance.
     private const double DoorwayPushMax = 2.0, CornerPushMax = 1.5, MiddlePushMax = 4.5;
 
@@ -71,6 +73,8 @@ internal static partial class DungeonPathfinder
 
     private static uint _geoLandblock;
     private static DungeonGeometry? _cachedGeometry;
+    // The graph instance whose ledges are closed (CloseLedgesOf).
+    private static Dictionary<uint, DungeonNavNode>? _ledgesClosedOn;
 
     /// <summary>
     /// The openings, floors and walls of the landblock's dungeon (cached per landblock), from
@@ -79,7 +83,13 @@ internal static partial class DungeonPathfinder
     public static DungeonGeometry? GetGeometry(uint landblockKey, DatDatabase cellDat, DungeonLOS? los)
     {
         if (los == null) return null;
-        if (_cachedGeometry != null && _geoLandblock == landblockKey) return _cachedGeometry;
+        if (_cachedGeometry != null && _geoLandblock == landblockKey)
+        {
+            // The graph may have been built again since (another landblock in between): its ledges too.
+            var g = GetGraph(landblockKey, cellDat);
+            if (!ReferenceEquals(_ledgesClosedOn, g)) { CloseMapBlocksOf(landblockKey, g, _cachedGeometry); _ledgesClosedOn = g; }
+            return _cachedGeometry;
+        }
         var graph = GetGraph(landblockKey, cellDat);
         var portals = new List<(uint, Vector3[])>();
         var walls   = new List<(uint, Vector3[])>();
@@ -100,6 +110,9 @@ internal static partial class DungeonPathfinder
         }
         _cachedGeometry = DungeonGeometry.Build(graph, portals, floors, walls);
         _geoLandblock   = landblockKey;
+        // Doorways placed objects stand across (a spider web: DungeonPathfinder.Blocked.cs), then ledges
+        // (DungeonPathfinder.Ledges.cs): closed in the cached graph, so every walk goes round them.
+        if (ReferenceEquals(graph, _cachedGraph)) { CloseMapBlocksOf(landblockKey, graph, _cachedGeometry); _ledgesClosedOn = graph; }
         return _cachedGeometry;
     }
 
@@ -113,8 +126,11 @@ internal static partial class DungeonPathfinder
     /// the same origin) into rooms. A cell in
     /// <paramref name="excluded"/> (a hazard) never merges: it stays a room of its own.
     /// </summary>
+    /// <param name="mergeSamePieces">False for a building: AC gives several walled rooms and corridors
+    /// one origin there, and read as one open room their openings got no doorway points, so a route
+    /// cut the corners into the walls between them (2026-11-06, Outdoor Hunt, B470).</param>
     internal static DungeonRooms BuildRooms(Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo,
-                                            IReadOnlySet<uint>? excluded = null)
+                                            IReadOnlySet<uint>? excluded = null, bool mergeSamePieces = true)
     {
         var parent = new Dictionary<uint, uint>(graph.Count);
         foreach (uint c in graph.Keys) parent[c] = c;
@@ -137,7 +153,8 @@ internal static partial class DungeonPathfinder
                 // Pieces of one junction: AC builds a crossing or a corner from several cells
                 // with the same origin (0x6544 has clusters of three). Their openings to each
                 // other are inside the junction; kept apart, the patrol looped round them.
-                bool samePiece = Math.Abs(node.NS - other.NS) * 240.0 < SamePieceMeters
+                bool samePiece = mergeSamePieces
+                              && Math.Abs(node.NS - other.NS) * 240.0 < SamePieceMeters
                               && Math.Abs(node.EW - other.EW) * 240.0 < SamePieceMeters
                               && Math.Abs(node.Z - other.Z) < SamePieceMeters;
                 if (!wide && !samePiece) continue;
@@ -176,32 +193,14 @@ internal static partial class DungeonPathfinder
     /// </summary>
     private static NavRouteParser? BuildRoomPatrol(
         Dictionary<uint, DungeonNavNode> graph, uint startCell, HashSet<uint> mainRoute,
-        IReadOnlySet<uint>? hazardCells, DungeonGeometry geo)
+        IReadOnlySet<uint>? hazardCells, DungeonGeometry geo, DungeonPatrolOptions o)
     {
         var rooms = BuildRooms(graph, geo, hazardCells);
         var patrolRooms = new HashSet<int>();
         foreach (uint c in mainRoute)
             if (rooms.RoomOf.TryGetValue(c, out int r)) patrolRooms.Add(r);
 
-        var adj = new Dictionary<int, List<RoomEdge>>();
-        var edges = new HashSet<ulong>();
-        foreach (int r in patrolRooms)
-        {
-            foreach (uint c in rooms.Cells[r])
-            {
-                if (hazardCells != null && hazardCells.Contains(c)) continue;
-                if (!graph.TryGetValue(c, out var cn)) continue;
-                foreach (uint nb in cn.Neighbors)
-                {
-                    if (!rooms.RoomOf.TryGetValue(nb, out int rn) || rn == r || !patrolRooms.Contains(rn)) continue;
-                    if (hazardCells != null && hazardCells.Contains(nb)) continue;
-                    if (!graph.TryGetValue(nb, out var nbn) || IsDropEdge(cn, nbn)) continue;
-                    if (!adj.TryGetValue(r, out var list)) adj[r] = list = new List<RoomEdge>();
-                    list.Add(new RoomEdge(rn, EdgeKey(c, nb), c, nb));
-                    edges.Add(EdgeKey(c, nb));
-                }
-            }
-        }
+        var adj = RoomAdjacency(graph, rooms, patrolRooms, hazardCells, out var edges);
         if (edges.Count == 0) return null;
 
         // Start in the player's room if it has a doorway on the patrol, else the nearest that does.
@@ -255,8 +254,39 @@ internal static partial class DungeonPathfinder
         var steps = new List<Step>(walk.Count);
         foreach (var e in walk) steps.Add(new Step(e.From, e.To, e.Key));
         var route = new NavRouteParser { RouteType = NavRouteType.Circular };
-        route.Points.AddRange(EmitSteps(graph, geo, rooms, steps, closed: true, null, 0, null, 0, out _));
+        route.Points.AddRange(EmitSteps(graph, geo, rooms, steps, closed: true, null, 0, null, 0, o, out _));
         return route;
+    }
+
+    /// <summary>
+    /// The doorways between <paramref name="among"/>'s rooms, both ways round (a step from cell From in
+    /// one room to cell To in the next): none into or out of a lava/acid cell, none down a drop.
+    /// <paramref name="edges"/>: every doorway once.
+    /// </summary>
+    private static Dictionary<int, List<RoomEdge>> RoomAdjacency(
+        Dictionary<uint, DungeonNavNode> graph, DungeonRooms rooms, HashSet<int> among,
+        IReadOnlySet<uint>? hazardCells, out HashSet<ulong> edges)
+    {
+        var adj = new Dictionary<int, List<RoomEdge>>();
+        edges = new HashSet<ulong>();
+        foreach (int r in among)
+        {
+            foreach (uint c in rooms.Cells[r])
+            {
+                if (hazardCells != null && hazardCells.Contains(c)) continue;
+                if (!graph.TryGetValue(c, out var cn)) continue;
+                foreach (uint nb in cn.Neighbors)
+                {
+                    if (!rooms.RoomOf.TryGetValue(nb, out int rn) || rn == r || !among.Contains(rn)) continue;
+                    if (hazardCells != null && hazardCells.Contains(nb)) continue;
+                    if (!graph.TryGetValue(nb, out var nbn) || IsDropEdge(cn, nbn)) continue;
+                    if (!adj.TryGetValue(r, out var list)) adj[r] = list = new List<RoomEdge>();
+                    list.Add(new RoomEdge(rn, EdgeKey(c, nb), c, nb));
+                    edges.Add(EdgeKey(c, nb));
+                }
+            }
+        }
+        return adj;
     }
 
     private static bool HasUnused(Dictionary<int, List<RoomEdge>> adj, int room, HashSet<ulong> remaining)
@@ -307,7 +337,8 @@ internal static partial class DungeonPathfinder
         IReadOnlySet<uint>? hazardCells,
         double startNS, double startEW, double startZ,
         double destNS, double destEW, double destZ,
-        out int doorways)
+        out int doorways,
+        bool mergeSamePieces = true)
     {
         doorways = 0;
         var pts = new List<NavPoint>();
@@ -322,7 +353,7 @@ internal static partial class DungeonPathfinder
             return tmp.Points;
         }
 
-        var rooms = BuildRooms(graph, geo, hazardCells);
+        var rooms = BuildRooms(graph, geo, hazardCells, mergeSamePieces);
         var steps = new List<Step>();
         for (int i = 0; i + 1 < cellPath.Count; i++)
         {
@@ -333,7 +364,8 @@ internal static partial class DungeonPathfinder
         if (cellPath.Count == 0) return pts;
         var start = WorldPoint(DungeonGeometry.NavToWorld(startEW), DungeonGeometry.NavToWorld(startNS), startZ, false);
         var dest  = WorldPoint(DungeonGeometry.NavToWorld(destEW), DungeonGeometry.NavToWorld(destNS), destZ, false);
-        return EmitSteps(graph, geo, rooms, steps, closed: false, start, cellPath[0], dest, cellPath[cellPath.Count - 1], out doorways);
+        return EmitSteps(graph, geo, rooms, steps, closed: false, start, cellPath[0], dest, cellPath[cellPath.Count - 1],
+                         DungeonPatrolOptions.Default, out doorways);
     }
 
     // ── Laying points along doorway steps ────────────────────────────────────
@@ -353,15 +385,17 @@ internal static partial class DungeonPathfinder
     /// </summary>
     private static List<NavPoint> EmitSteps(
         Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo, DungeonRooms rooms, List<Step> steps, bool closed,
-        NavPoint? start, uint startCell, NavPoint? dest, uint destCell, out int doorways)
+        NavPoint? start, uint startCell, NavPoint? dest, uint destCell, DungeonPatrolOptions o, out int doorways,
+        bool lookIn = false)
     {
         doorways = 0;
         var pts = new List<NavPoint>();
+        double wall = o.WallClearance;
 
         if (steps.Count == 0)
         {
             if (start != null && dest != null && rooms.RoomOf.TryGetValue(startCell, out int r0))
-                CrossRoom(pts, graph, geo, rooms, r0, start, startCell, dest, destCell, revisit: false);
+                CrossRoom(pts, graph, geo, rooms, r0, start, startCell, dest, destCell, revisit: false, wall);
             return pts;
         }
 
@@ -383,13 +417,15 @@ internal static partial class DungeonPathfinder
             int j = i;
             while (j + 1 < steps.Count && Continues(geo, steps[j], steps[j + 1])) j++;
 
-            RunPoints(graph, geo, rooms, steps, i, j, out var approach, out var middle, out var exit, out bool narrow);
+            RunPoints(graph, geo, rooms, steps, i, j, wall, out var approach, out var middle, out var exit, out bool narrow);
             if (narrow) doorways++;
             if (prev != null)
             {
-                // Only the patrol looks into rooms; a path to somewhere (dunnav, a detour) doesn't.
-                bool revisit = i > 0 && (closed ? LooksIn(graph, rooms, lookedInto, steps[i - 1], steps[i], prev, approach) : steps[i - 1].Key == steps[i].Key);
-                CrossRoom(pts, graph, geo, rooms, rooms.RoomOf[steps[i].From], prev, prevCell, approach, steps[i].From, revisit);
+                // Only the patrol and the explore (lookIn) look into rooms; a path to somewhere (dunnav,
+                // a detour) doesn't.
+                string? why = null;
+                bool revisit = i > 0 && (closed || lookIn ? LooksIn(graph, rooms, lookedInto, steps[i - 1], steps[i], prev, approach, o.LookInRoomMeters, out why, enterDeadEnds: lookIn && !closed) : steps[i - 1].Key == steps[i].Key);
+                CrossRoom(pts, graph, geo, rooms, rooms.RoomOf[steps[i].From], prev, prevCell, approach, steps[i].From, revisit, wall, why);
             }
             else firstApproach = approach;
             Append(pts, approach);
@@ -402,14 +438,14 @@ internal static partial class DungeonPathfinder
 
         if (closed && firstApproach != null && prev != null)
         {
-            bool revisit = LooksIn(graph, rooms, lookedInto, steps[steps.Count - 1], steps[0], prev, firstApproach);
-            CrossRoom(pts, graph, geo, rooms, rooms.RoomOf[steps[0].From], prev, prevCell, firstApproach, steps[0].From, revisit);
+            bool revisit = LooksIn(graph, rooms, lookedInto, steps[steps.Count - 1], steps[0], prev, firstApproach, o.LookInRoomMeters, out string why);
+            CrossRoom(pts, graph, geo, rooms, rooms.RoomOf[steps[0].From], prev, prevCell, firstApproach, steps[0].From, revisit, wall, why);
         }
         if (!closed && dest != null && prev != null && rooms.RoomOf.TryGetValue(destCell, out int rd))
-            CrossRoom(pts, graph, geo, rooms, rd, prev, prevCell, dest, destCell, revisit: false);
+            CrossRoom(pts, graph, geo, rooms, rd, prev, prevCell, dest, destCell, revisit: false, wall);
 
         DropCollinear(pts, closed);
-        KeepLegsOffWalls(geo, pts, closed);
+        KeepLegsOffWalls(geo, pts, closed, wall);
         return pts;
     }
 
@@ -425,19 +461,19 @@ internal static partial class DungeonPathfinder
     /// across a corner), a corner is put in: the leg's tightest spot, pushed off the wall,
     /// kept only when both new legs are clearer than the old one.
     /// </summary>
-    internal static void KeepLegsOffWalls(DungeonGeometry geo, List<NavPoint> pts, bool closed)
+    internal static void KeepLegsOffWalls(DungeonGeometry geo, List<NavPoint> pts, bool closed, double wall = WallClearance)
     {
         int budget = pts.Count / 2 + 8, perLeg = 0;
         int i = 0;
         while (i < (closed ? pts.Count : pts.Count - 1) && pts.Count >= 2)
         {
             var a = pts[i]; var b = pts[(i + 1) % pts.Count];
-            double least = LegLeast(geo, a, b, out double wx, out double wy, out double wz);
-            double target = Math.Min(LegMinClearance, Math.Min(PointClearance(geo, a), PointClearance(geo, b)));
+            double least = LegLeast(geo, a, b, wall, out double wx, out double wy, out double wz);
+            double target = Math.Min(Math.Min(LegMinClearance, wall), Math.Min(PointClearance(geo, a, wall), PointClearance(geo, b, wall)));
             if (least >= target - 0.05 || budget <= 0 || perLeg >= 3) { i++; perLeg = 0; continue; }
 
             // The corner leaving both new legs clearest, if that is clearly better.
-            NavPoint? best = BestCorner(geo, a, b, wx, wy, wz, least + 0.1, out _);
+            NavPoint? best = BestCorner(geo, a, b, wx, wy, wz, least + 0.1, wall, out _);
             if (best != null)
             {
                 pts.Insert(i + 1, Tag(best, "leg-corner"));
@@ -447,11 +483,11 @@ internal static partial class DungeonPathfinder
             // No one corner does it (a jog round two corners): a first corner the walk reaches
             // clear, then the best corner for the rest.
             bool two = false;
-            foreach (var first in CornerCandidates(geo, wx, wy, wz))
+            foreach (var first in CornerCandidates(geo, wx, wy, wz, wall))
             {
-                if (LegLeast(geo, a, first, out _, out _, out _) < target - 0.05 || TurnsBack(a, first, b)) continue;
-                double rest = LegLeast(geo, first, b, out double rx, out double ry, out double rz);
-                var second = BestCorner(geo, first, b, rx, ry, rz, Math.Max(rest, least) + 0.1, out double m2);
+                if (LegLeast(geo, a, first, wall, out _, out _, out _) < target - 0.05 || TurnsBack(a, first, b)) continue;
+                double rest = LegLeast(geo, first, b, wall, out double rx, out double ry, out double rz);
+                var second = BestCorner(geo, first, b, rx, ry, rz, Math.Max(rest, least) + 0.1, wall, out double m2);
                 if (second == null || m2 <= least + 0.1) continue;
                 pts.Insert(i + 1, Tag(first, "leg-corner"));
                 pts.Insert(i + 2, Tag(second, "leg-corner"));
@@ -467,10 +503,10 @@ internal static partial class DungeonPathfinder
     // Corners to try for a leg whose tightest spot is (wx, wy, wz): that spot pushed off the
     // wall, and the centres of the openings near it (a leg that jogs through the wrong side of a
     // junction needs the opening it skipped).
-    private static List<NavPoint> CornerCandidates(DungeonGeometry geo, double wx, double wy, double wz)
+    private static List<NavPoint> CornerCandidates(DungeonGeometry geo, double wx, double wy, double wz, double wall)
     {
         double cx = wx, cy = wy;
-        geo.PushClear(ref cx, ref cy, wz, WallClearance, LegCornerPushMax);
+        geo.PushClear(ref cx, ref cy, wz, wall, LegCornerPushMax);
         var list = new List<NavPoint> { WorldPoint(cx, cy, wz, false) };
         foreach (var d in geo.DoorwaysNear(wx, wy, wz, LegCornerSearch)) list.Add(WorldPoint(d.X, d.Y, d.Z, false));
         return list;
@@ -478,15 +514,15 @@ internal static partial class DungeonPathfinder
 
     // The candidate leaving both new legs a-corner-b clearest, if better than mustBeat.
     private static NavPoint? BestCorner(DungeonGeometry geo, NavPoint a, NavPoint b, double wx, double wy, double wz,
-                                        double mustBeat, out double bestMin)
+                                        double mustBeat, double wall, out double bestMin)
     {
         NavPoint? best = null;
         bestMin = mustBeat;
-        foreach (var corner in CornerCandidates(geo, wx, wy, wz))
+        foreach (var corner in CornerCandidates(geo, wx, wy, wz, wall))
         {
-            if (PointClearance(geo, corner) <= mustBeat) continue;
+            if (PointClearance(geo, corner, wall) <= mustBeat) continue;
             if (TurnsBack(a, corner, b)) continue;
-            double m = Math.Min(LegLeast(geo, a, corner, out _, out _, out _), LegLeast(geo, corner, b, out _, out _, out _));
+            double m = Math.Min(LegLeast(geo, a, corner, wall, out _, out _, out _), LegLeast(geo, corner, b, wall, out _, out _, out _));
             if (m > bestMin) { bestMin = m; best = corner; }
         }
         return best;
@@ -503,36 +539,54 @@ internal static partial class DungeonPathfinder
         return (ux * vx + uy * vy) / (lu * lv) < Math.Cos(120.0 * Math.PI / 180.0);
     }
 
-    private static double LegLeast(DungeonGeometry geo, NavPoint a, NavPoint b, out double wx, out double wy, out double wz)
+    private static double LegLeast(DungeonGeometry geo, NavPoint a, NavPoint b, double wall, out double wx, out double wy, out double wz)
         => geo.LegClearance(DungeonGeometry.NavToWorld(a.EW), DungeonGeometry.NavToWorld(a.NS), a.Z * 240.0,
                             DungeonGeometry.NavToWorld(b.EW), DungeonGeometry.NavToWorld(b.NS), b.Z * 240.0,
-                            WallClearance, LegEndSkip, out wx, out wy, out wz);
+                            wall, LegEndSkip, out wx, out wy, out wz);
 
-    private static double PointClearance(DungeonGeometry geo, NavPoint p)
-        => geo.ClearanceMemo(DungeonGeometry.NavToWorld(p.EW), DungeonGeometry.NavToWorld(p.NS), p.Z * 240.0, WallClearance + 0.5);
+    private static double PointClearance(DungeonGeometry geo, NavPoint p, double wall)
+        => geo.ClearanceMemo(DungeonGeometry.NavToWorld(p.EW), DungeonGeometry.NavToWorld(p.NS), p.Z * 240.0, wall + 0.5);
 
-    // A big room (its cells spread over 10 m or more) left again close to where it was entered is looked into: a
+    // A big room (its cells spread over 10 m or more by default: DungeonPatrolOptions.LookInRoomMeters,
+    // Settings "Walk Into Rooms From") left again close to where it was entered is looked into: a
     // walk to its middle and back. A straight crossing to a nearby opening would only skirt
     // it (the patrol hunts; the old cell walk went all round such rooms). Also any room left
     // by the opening it was entered by.
-    private const double LookInMinSpreadMeters = 10.0;
     private const double LookInMaxSkirtMeters = 8.0;
 
     // Once per room per lap: a hub room with many doorways was otherwise walked to its middle
     // again every time the patrol passed between two of its doorways.
     private static bool LooksIn(Dictionary<uint, DungeonNavNode> graph, DungeonRooms rooms, HashSet<int> lookedInto,
-                                Step inStep, Step outStep, NavPoint entered, NavPoint leaving)
+                                Step inStep, Step outStep, NavPoint entered, NavPoint leaving, double lookInMeters, out string why,
+                                bool enterDeadEnds = false)
     {
+        why = "cross";
         if (!rooms.RoomOf.TryGetValue(outStep.From, out int r)) return false;
-        bool big = RoomSpreadMeters(graph, rooms.Cells[r]) >= LookInMinSpreadMeters;
-        bool look = (inStep.Key == outStep.Key && (big || rooms.Cells[r].Count == 1))
-                 || (big && NavPointYd(entered, leaving) < LookInMaxSkirtMeters);
-        return look && lookedInto.Add(r);
+        double spread = RoomSpreadMeters(graph, rooms.Cells[r]);
+        bool big = spread >= lookInMeters;
+        bool sameDoor = inStep.Key == outStep.Key;
+        double skirt = NavPointYd(entered, leaving);
+        // The explore (enter and scan, 2026-11-16) walks into every dead end, small ones too: DreamWeave Thread
+        // 0x00B5's boss stood in a 6-cell dead end the walk only touched the doorway of, and was never seen.
+        bool look = (sameDoor && (big || rooms.Cells[r].Count == 1 || enterDeadEnds))
+                 || (big && skirt < LookInMaxSkirtMeters);
+        bool first = look && lookedInto.Add(r);
+        if (PointLog != null)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            string what = sameDoor && (big || rooms.Cells[r].Count == 1)
+                ? (big ? "same-doorway,big" : "same-doorway,1-cell")
+                : "big,skirt" + skirt.ToString("F1", inv) + "m";
+            why = !look ? (sameDoor ? "cross(same-doorway,small)" : "cross(" + (big ? "big," : "small,") + "other-doorway)")
+                : first ? "look-in(" + what + ",spread" + spread.ToString("F0", inv) + "m)"
+                : "cross(already-looked-in)";
+        }
+        return first;
     }
 
     // The diagonal of the box round a room's cell origins: 0 for the pieces of one junction
     // (several cells, one origin), 28 m for a 3x3 room of 10 m cells.
-    private static double RoomSpreadMeters(Dictionary<uint, DungeonNavNode> graph, List<uint> cells)
+    internal static double RoomSpreadMeters(Dictionary<uint, DungeonNavNode> graph, List<uint> cells)
     {
         double minN = double.MaxValue, maxN = double.MinValue, minE = double.MaxValue, maxE = double.MinValue;
         foreach (uint c in cells)
@@ -549,6 +603,8 @@ internal static partial class DungeonPathfinder
     // short for an exit point and the next approach point (DoorwayStandoffs[0] each) without
     // doubling back.
     private const double RunGapMeters = 8.0;
+    // cos(~93 degrees): openings at right angles (a staircase) still continue a run.
+    private const double RightAngleSlack = 0.05;
 
     private static bool Continues(DungeonGeometry geo, Step a, Step b)
     {
@@ -558,26 +614,30 @@ internal static partial class DungeonPathfinder
         if (dx * dx + dy * dy >= RunGapMeters * RunGapMeters || Math.Abs(da.Z - db.Z) >= 2.0) return false;
         // A run goes on: through the next opening no more than 90 degrees off the last. Turning
         // back (in at one opening, out at another beside it) is a visit to the room between.
+        // 90 degrees exactly counts (2026-10-14): a diagonal corridor is a staircase of square
+        // cells whose openings face north, east, north, east...; each failed the old "> 0" by a
+        // hair, got its own approach and exit point 4 m out along its facing, and the patrol
+        // walked the staircase (zig-zag) instead of the corridor's centre line.
         var (ax, ay) = da.NormalFrom(a.From);
         var (bx, by) = db.NormalFrom(b.From);
-        return ax * bx + ay * by > 0.0;
+        return ax * bx + ay * by > -RightAngleSlack;
     }
 
     // The approach point before steps[i], the exit point after steps[j], and the opening centres
     // between them when the run turns (more than 25 degrees between openings).
     private static void RunPoints(Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo, DungeonRooms rooms,
-                                  List<Step> steps, int i, int j,
+                                  List<Step> steps, int i, int j, double wall,
                                   out NavPoint approach, out List<NavPoint> middle, out NavPoint exit, out bool narrow)
     {
         middle = new List<NavPoint>();
         if (i == j)
         {
-            if (!DoorwayPoints(graph, geo, rooms, steps[i].From, steps[i].To, out approach, out exit, out narrow)) narrow = false;
+            if (!DoorwayPoints(graph, geo, rooms, steps[i].From, steps[i].To, wall, out approach, out exit, out narrow)) narrow = false;
             return;
         }
 
-        DoorwayPoints(graph, geo, rooms, steps[i].From, steps[i].To, out approach, out _, out bool n0);
-        DoorwayPoints(graph, geo, rooms, steps[j].From, steps[j].To, out _, out exit, out bool n1);
+        DoorwayPoints(graph, geo, rooms, steps[i].From, steps[i].To, wall, out approach, out _, out bool n0);
+        DoorwayPoints(graph, geo, rooms, steps[j].From, steps[j].To, wall, out _, out exit, out bool n1);
         narrow = n0 || n1;
         var doors = new List<(DungeonDoorway Door, uint From, int Step)>();
         for (int k = i; k <= j; k++)
@@ -602,10 +662,10 @@ internal static partial class DungeonPathfinder
             int prevStep = -1;
             foreach (var (d, _, k) in doors)
             {
-                var m = Tag(WorldPoint(d.X, d.Y, d.Z, !d.IsWide), "run-opening");
+                var m = Note(Tag(WorldPoint(d.X, d.Y, d.Z, !d.IsWide), "run-opening"), steps[k].From, steps[k].From, steps[k].To, "doorway-run");
                 if (prevM != null && k == prevStep + 1
                     && rooms.RoomOf.TryGetValue(steps[prevStep].To, out int ra) && rooms.RoomOf.TryGetValue(steps[k].From, out int rb) && ra == rb)
-                    PullThrough(middle, graph, geo, rooms, rooms.Cells[ra], prevM, steps[prevStep].To, m, steps[k].From);
+                    PullThrough(middle, graph, geo, rooms, rooms.Cells[ra], prevM, steps[prevStep].To, m, steps[k].From, wall);
                 Append(middle, m);
                 prevM = m;
                 prevStep = k;
@@ -623,15 +683,15 @@ internal static partial class DungeonPathfinder
     /// NavPoint.Doorway). Unknown openings fall back to the old 30% / 50% points.
     /// </summary>
     private static bool DoorwayPoints(Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo, DungeonRooms rooms,
-                                      uint a, uint b, out NavPoint approach, out NavPoint exit, out bool narrow)
+                                      uint a, uint b, double wall, out NavPoint approach, out NavPoint exit, out bool narrow)
     {
         narrow = false;
         if (geo.TryGetDoorway(a, b, out var d))
         {
             var (nx, ny) = d.NormalFrom(a);
             narrow = !d.IsWide;
-            approach = Tag(DoorwayPoint(geo, rooms, a, d, -nx, -ny, narrow), "approach");
-            exit     = Tag(DoorwayPoint(geo, rooms, b, d, nx, ny, narrow), "exit");
+            approach = Note(Tag(DoorwayPoint(geo, rooms, a, d, -nx, -ny, narrow, wall), "approach"), a, a, b, "doorway");
+            exit     = Note(Tag(DoorwayPoint(geo, rooms, b, d, nx, ny, narrow, wall), "exit"), b, a, b, "doorway");
             return true;
         }
 
@@ -639,8 +699,9 @@ internal static partial class DungeonPathfinder
         double dNS = nb.NS - na.NS, dEW = nb.EW - na.EW, dZ = nb.Z - na.Z;
         approach = Tag(new NavPoint { Type = NavPointType.Point, NS = na.NS + dNS * 0.3, EW = na.EW + dEW * 0.3, Z = (na.Z + dZ * 0.3) / 240.0 }, "cell-fallback");
         exit     = Tag(new NavPoint { Type = NavPointType.Point, NS = na.NS + dNS * 0.5, EW = na.EW + dEW * 0.5, Z = (na.Z + dZ * 0.5) / 240.0 }, "cell-fallback");
-        PushOffWalls(geo, approach, RoomCells(rooms, a), CornerPushMax);
-        PushOffWalls(geo, exit, null, CornerPushMax);   // on the line between the two rooms
+        Note(approach, a, a, b, "doorway(no-opening)"); Note(exit, 0, a, b, "doorway(no-opening)");
+        PushOffWalls(geo, approach, RoomCells(rooms, a), CornerPushMax, wall);
+        PushOffWalls(geo, exit, null, CornerPushMax, wall);   // on the line between the two rooms
         return false;
     }
 
@@ -652,12 +713,12 @@ internal static partial class DungeonPathfinder
     /// (in a corridor too narrow for the clearance, onto its middle).
     /// </summary>
     private static NavPoint DoorwayPoint(DungeonGeometry geo, DungeonRooms rooms, uint cell, DungeonDoorway d,
-                                         double dirX, double dirY, bool narrow)
+                                         double dirX, double dirY, bool narrow, double wall)
     {
         var cells = RoomCells(rooms, cell);
-        double s = PickStandoff(geo, cells, d, dirX, dirY, out double clearance);
+        double s = PickStandoff(geo, cells, d, dirX, dirY, out double clearance, wall);
         var p = WorldPoint(d.X + dirX * s, d.Y + dirY * s, d.Z, narrow);
-        if (clearance < WallClearance) PushOffWalls(geo, p, cells, DoorwayPushMax);
+        if (clearance < wall) PushOffWalls(geo, p, cells, DoorwayPushMax, wall);
         return p;
     }
 
@@ -667,7 +728,7 @@ internal static partial class DungeonPathfinder
     // The longest standoff whose point is on the floor of the cell's room with WallClearance;
     // else the one with the most clearance (the longer of near ties); else the shortest.
     internal static double PickStandoff(DungeonGeometry geo, IReadOnlyCollection<uint> cells, DungeonDoorway d,
-                                        double dirX, double dirY, out double clearance)
+                                        double dirX, double dirY, out double clearance, double wall = WallClearance)
     {
         double bestS = -1;
         clearance = 0;
@@ -675,20 +736,21 @@ internal static partial class DungeonPathfinder
         {
             double px = d.X + dirX * s, py = d.Y + dirY * s;
             if (!geo.OnFloorOfAny(cells, px, py, d.Z)) continue;
-            double c = geo.ClearanceMemo(px, py, d.Z, WallClearance + 0.5);
-            if (c >= WallClearance) { clearance = c; return s; }
+            double c = geo.ClearanceMemo(px, py, d.Z, wall + 0.5);
+            if (c >= wall) { clearance = c; return s; }
             if (bestS < 0 || c > clearance + 0.05) { bestS = s; clearance = c; }
         }
         return bestS > 0 ? bestS : DoorwayStandoffShortest;
     }
 
-    /// <summary>Moves a point (in place) to WallClearance from walls and floor edges, at most
-    /// <paramref name="maxMove"/>, staying on the floor of <paramref name="cells"/> when given.</summary>
-    private static void PushOffWalls(DungeonGeometry geo, NavPoint p, IReadOnlyCollection<uint>? cells, double maxMove)
+    /// <summary>Moves a point (in place) to <paramref name="wall"/> (the patrol's wall distance,
+    /// WallClearance by default) from walls and floor edges, at most <paramref name="maxMove"/>,
+    /// staying on the floor of <paramref name="cells"/> when given.</summary>
+    private static void PushOffWalls(DungeonGeometry geo, NavPoint p, IReadOnlyCollection<uint>? cells, double maxMove, double wall)
     {
         double x = DungeonGeometry.NavToWorld(p.EW), y = DungeonGeometry.NavToWorld(p.NS);
         double ox = x, oy = y;
-        geo.PushClear(ref x, ref y, p.Z * 240.0, WallClearance, maxMove, cells);
+        geo.PushClear(ref x, ref y, p.Z * 240.0, wall, maxMove, cells);
         if (x == ox && y == oy) return;
         p.EW = DungeonGeometry.WorldToNav(x);
         p.NS = DungeonGeometry.WorldToNav(y);
@@ -704,22 +766,28 @@ internal static partial class DungeonPathfinder
     /// </summary>
     private static void CrossRoom(List<NavPoint> pts, Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo,
                                   DungeonRooms rooms, int room, NavPoint from, uint fromCell, NavPoint to, uint toCell,
-                                  bool revisit)
+                                  bool revisit, double wall, string? why = null)
     {
         var cells = rooms.Cells[room];
         Trace?.Invoke($"cross room {room} ({cells.Count}) revisit={revisit} from={fromCell:X8} to={toCell:X8}");
         if (revisit)
         {
-            var mid = RoomMiddle(graph, geo, cells, out uint midCell);
+            var mid = RoomMiddle(graph, geo, cells, wall, out uint midCell);
             if (mid != null)
             {
-                PullThrough(pts, graph, geo, rooms, cells, from, fromCell, mid, midCell);
+                int before = pts.Count;
+                Note(mid, midCell);
+                PullThrough(pts, graph, geo, rooms, cells, from, fromCell, mid, midCell, wall);
                 Append(pts, mid);
-                PullThrough(pts, graph, geo, rooms, cells, mid, midCell, to, toCell);
+                ScanMiddles?.Add(mid);
+                PullThrough(pts, graph, geo, rooms, cells, mid, midCell, to, toCell, wall);
+                NoteCrossing(pts, before, room, why ?? "look-in");
                 return;
             }
         }
-        PullThrough(pts, graph, geo, rooms, cells, from, fromCell, to, toCell);
+        int start = pts.Count;
+        PullThrough(pts, graph, geo, rooms, cells, from, fromCell, to, toCell, wall);
+        NoteCrossing(pts, start, room, why ?? "cross");
     }
 
     internal static Action<string>? Trace;
@@ -728,9 +796,10 @@ internal static partial class DungeonPathfinder
     // line, else the room's cells string-pulled with every leg that clear. Where the room is
     // too tight for that, the crossing as before (0.5 m either side).
     private static void PullThrough(List<NavPoint> pts, Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo,
-                                    DungeonRooms rooms, List<uint> cells, NavPoint from, uint fromCell, NavPoint to, uint toCell)
+                                    DungeonRooms rooms, List<uint> cells, NavPoint from, uint fromCell, NavPoint to, uint toCell,
+                                    double wall)
     {
-        if (Clear(geo, cells, from, to, WallClearance)) return;
+        if (Clear(geo, cells, from, to, wall)) return;
 
         // Through the room's own cells: the openings between them (or cell-centre midpoints),
         // pushed off the walls like every other point.
@@ -740,26 +809,27 @@ internal static partial class DungeonPathfinder
         {
             uint a = cellPath[i], b = cellPath[i + 1];
             NavPoint corner;
-            if (geo.TryGetDoorway(a, b, out var d)) corner = Tag(WorldPoint(d.X, d.Y, d.Z, false), "pull-opening");
+            if (geo.TryGetDoorway(a, b, out var d)) corner = Note(Tag(WorldPoint(d.X, d.Y, d.Z, false), "pull-opening"), a, a, b);
             else
             {
                 var na = graph[a]; var nb = graph[b];
-                corner = Tag(new NavPoint { Type = NavPointType.Point, NS = (na.NS + nb.NS) * 0.5, EW = (na.EW + nb.EW) * 0.5, Z = (na.Z + nb.Z) * 0.5 / 240.0 }, "pull-midpoint");
+                corner = Note(Tag(new NavPoint { Type = NavPointType.Point, NS = (na.NS + nb.NS) * 0.5, EW = (na.EW + nb.EW) * 0.5, Z = (na.Z + nb.Z) * 0.5 / 240.0 }, "pull-midpoint"), a, a, b);
             }
-            PushOffWalls(geo, corner, cells, CornerPushMax);
+            PushOffWalls(geo, corner, cells, CornerPushMax, wall);
             corners.Add(corner);
         }
         corners.Add(to);
 
         var strict = new List<NavPoint>();
-        if (StringPull(strict, geo, cells, from, corners, WallClearance))
+        if (StringPull(strict, geo, cells, from, corners, wall))
         {
             foreach (var p in strict) Append(pts, p);
             return;
         }
-        if (Clear(geo, cells, from, to, CrossingClearance)) return;
+        double loosest = Math.Min(CrossingClearance, wall);
+        if (Clear(geo, cells, from, to, loosest)) return;
         var loose = new List<NavPoint>();
-        StringPull(loose, geo, cells, from, corners, CrossingClearance);
+        StringPull(loose, geo, cells, from, corners, loosest);
         foreach (var p in loose) Append(pts, p);
     }
 
@@ -822,7 +892,8 @@ internal static partial class DungeonPathfinder
 
     // The point a patrol visits to look into a room: the middle of its cell centres when that
     // is on its floor, else the cell centre nearest that middle; then pushed off the walls.
-    private static NavPoint? RoomMiddle(Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo, List<uint> cells, out uint midCell)
+    // (Also where /ra dunroute ... to room <n> and "far" end: DungeonRouteMaker.)
+    internal static NavPoint? RoomMiddle(Dictionary<uint, DungeonNavNode> graph, DungeonGeometry geo, List<uint> cells, double wall, out uint midCell)
     {
         midCell = 0;
         double sx = 0, sy = 0, sz = 0;
@@ -850,7 +921,7 @@ internal static partial class DungeonPathfinder
             ? Tag(WorldPoint(sx, sy, sz, false), "room-middle")
             : Tag(WorldPoint(DungeonGeometry.NavToWorld(nearest.EW), DungeonGeometry.NavToWorld(nearest.NS), nearest.Z, false), "room-middle-cell");
         // A one-cell dead end's origin is inside its end cap; a big room's middle can be a pillar.
-        PushOffWalls(geo, mid, cells, MiddlePushMax);
+        PushOffWalls(geo, mid, cells, MiddlePushMax, wall);
         return mid;
     }
 
@@ -861,10 +932,130 @@ internal static partial class DungeonPathfinder
     /// cell-fallback.</summary>
     internal static Dictionary<NavPoint, string>? KindLog;
 
+    /// <summary>Why one patrol point is where it is (diagnostics only; filled while
+    /// <see cref="PointLog"/> is set, never read by the route itself).</summary>
+    internal sealed class PatrolPointInfo
+    {
+        public string Kind = "";        // the rule that laid it (as KindLog)
+        public uint   Cell;             // the cell the rule put it in (0 = not known)
+        public uint   OpenFrom, OpenTo; // the opening it belongs to (doorway-type points)
+        public int    Room = -1;        // the room being crossed, for points laid while crossing one
+        public string Why = "";         // doorway / cross / look-in reason
+    }
+
+    /// <summary>Set (per thread) around a route build to record a <see cref="PatrolPointInfo"/>
+    /// for every point laid: BuildDunPatrol's waypoint log, PatrolProof "waypoints".</summary>
+    [ThreadStatic] internal static Dictionary<NavPoint, PatrolPointInfo>? PointLog;
+
+    /// <summary>GetMainRouteNodes' sizes for the last build while <see cref="PointLog"/> was set.</summary>
+    [ThreadStatic] internal static string? MainRouteNote;
+
     private static NavPoint Tag(NavPoint p, string kind)
     {
         if (KindLog != null) KindLog[p] = kind;
+        if (PointLog != null) Info(p).Kind = kind;
         return p;
+    }
+
+    private static PatrolPointInfo Info(NavPoint p)
+    {
+        if (!PointLog!.TryGetValue(p, out var info)) PointLog[p] = info = new PatrolPointInfo();
+        return info;
+    }
+
+    // Records the cell (and opening) a point was laid for, when the point log is on.
+    private static NavPoint Note(NavPoint p, uint cell, uint openFrom = 0, uint openTo = 0, string? why = null)
+    {
+        if (PointLog == null) return p;
+        var info = Info(p);
+        info.Cell = cell;
+        if (openFrom != 0) { info.OpenFrom = openFrom; info.OpenTo = openTo; }
+        if (why != null) info.Why = why;
+        return p;
+    }
+
+    // Points added to pts from index `from` on were laid crossing `room` for `why`.
+    private static void NoteCrossing(List<NavPoint> pts, int from, int room, string why)
+    {
+        if (PointLog == null) return;
+        for (int k = Math.Max(0, from); k < pts.Count; k++)
+        {
+            var info = Info(pts[k]);
+            if (info.Room < 0) { info.Room = room; info.Why = why; }
+        }
+    }
+
+    /// <summary>The cell whose floor is under a point, else the nearest cell centre.</summary>
+    internal static uint CellAt(Dictionary<uint, DungeonNavNode> graph, DungeonGeometry? geo, NavPoint p)
+    {
+        if (geo != null)
+        {
+            double x = DungeonGeometry.NavToWorld(p.EW), y = DungeonGeometry.NavToWorld(p.NS), z = p.Z * 240.0;
+            uint best = 0; double bestD = double.MaxValue;
+            foreach (var n in graph.Values)
+            {
+                if (!geo.OnCellFloor(n.CellId, x, y, z)) continue;
+                double d = Math.Abs(n.Z - z);
+                if (d < bestD) { bestD = d; best = n.CellId; }
+            }
+            if (best != 0) return best;
+        }
+        return NearestCell(graph, p.NS, p.EW, (float)(p.Z * 240.0));
+    }
+
+    /// <summary>
+    /// One line per patrol waypoint (index, world x/y/z, cell, room and its size, the rule that
+    /// laid it, the opening for doorway points, why) and a summary line, from the point log of
+    /// the build. Rooms are BuildRooms(graph, geo, hazards), as the builder used them.
+    /// Lines carry no prefix; the plugin adds "[RynthAi] DunNav-Patrol ".
+    /// </summary>
+    internal static List<string> DescribePatrol(NavRouteParser route, Dictionary<uint, DungeonNavNode> graph,
+                                                DungeonGeometry? geo, IReadOnlySet<uint>? hazards,
+                                                Dictionary<NavPoint, PatrolPointInfo>? log, int tinyMaxCells = 5)
+    {
+        var lines = new List<string>();
+        var rooms = geo != null ? BuildRooms(graph, geo, hazards) : null;
+        int tiny = 0, tinyEntered = 0, tinyLooked = 0;
+        var tinyRooms = new SortedDictionary<int, (int Cells, int Entered, int Looked)>();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        for (int i = 0; i < route.Points.Count; i++)
+        {
+            var p = route.Points[i];
+            PatrolPointInfo? info = null;
+            log?.TryGetValue(p, out info);
+            uint cell = info != null && info.Cell != 0 ? info.Cell : CellAt(graph, geo, p);
+            int room = rooms != null && rooms.RoomOf.TryGetValue(cell, out int rr) ? rr : -1;
+            int size = room >= 0 ? rooms!.Cells[room].Count : 0;
+            string kind = info?.Kind is { Length: > 0 } k ? k : "unlogged";
+            string why = info?.Why ?? "";
+            string open = "";
+            if (info != null && info.OpenFrom != 0)
+            {
+                string w = geo != null && geo.TryGetDoorway(info.OpenFrom, info.OpenTo, out var d)
+                    ? (d.IsWide ? " wide " : " narrow ") + d.Width.ToString("F1", inv) + "m" : "";
+                open = $" open {info.OpenFrom:X8}>{info.OpenTo:X8}{w}";
+            }
+            string crossed = info != null && info.Room >= 0 && info.Room != room && rooms != null
+                ? $" crossing room {info.Room} ({rooms.Cells[info.Room].Count})" : "";
+            bool haz = hazards != null && hazards.Contains(cell);
+            lines.Add(string.Format(inv, "wp {0} ({1:F1},{2:F1},{3:F1}) cell {4:X8} room {5} ({6} cells){7} {8}{9}{10}{11}{12}",
+                i, DungeonGeometry.NavToWorld(p.EW), DungeonGeometry.NavToWorld(p.NS), p.Z * 240.0,
+                cell, room, size, haz ? " HAZARD" : "", kind, p.Doorway ? " [door]" : "", open, crossed,
+                why.Length > 0 ? " why=" + why : ""));
+            if (room >= 0 && size <= tinyMaxCells)
+            {
+                tiny++;
+                bool looked = why.StartsWith("look-in", StringComparison.Ordinal) && info!.Room == room;
+                if (looked) tinyLooked++; else tinyEntered++;
+                tinyRooms.TryGetValue(room, out var t);
+                tinyRooms[room] = (size, t.Entered + (looked ? 0 : 1), t.Looked + (looked ? 1 : 0));
+            }
+        }
+        string roomList = string.Join(" ", tinyRooms.Select(kv => $"{kv.Key}({kv.Value.Cells}c:{kv.Value.Entered}e/{kv.Value.Looked}l)"));
+        if (MainRouteNote != null) lines.Add("wp " + MainRouteNote);
+        lines.Add($"wp summary: {route.Points.Count} points, {rooms?.Cells.Count ?? 0} rooms, {hazards?.Count ?? 0} hazard cells; " +
+                  $"in rooms of <= {tinyMaxCells} cells: {tiny} (entered {tinyEntered}, looked into {tinyLooked}) in {tinyRooms.Count} rooms: {roomList}");
+        return lines;
     }
 
     private static NavPoint WorldPoint(double wx, double wy, double wz, bool doorway) => new()

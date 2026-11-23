@@ -63,6 +63,7 @@ internal static class AfFileParser
 
                 if (trimmed.StartsWith("STATE:"))
                 {
+                    result.DeclaredStates.Add(ExtractBraceContent(lines[idx], out _));
                     ParseState(lines, ref idx, result.Rules);
                 }
                 else if (trimmed.StartsWith("NAVDATA:"))
@@ -99,6 +100,7 @@ internal static class AfFileParser
         idx++; // consume STATE: line
 
         bool pendingDisabled = false;   // set by a "~~ @disabled" marker line
+        string pendingName = "";        // set by a "~~ @name ..." marker line
         while (idx < lines.Length)
         {
             string trimmed = lines[idx].TrimStart();
@@ -113,6 +115,8 @@ internal static class AfFileParser
             {
                 if (trimmed.Equals("~~ @disabled", StringComparison.OrdinalIgnoreCase))
                     pendingDisabled = true;
+                else if (TryRuleName(trimmed, out string name))
+                    pendingName = name;
                 idx++;
                 continue;
             }
@@ -120,8 +124,9 @@ internal static class AfFileParser
             // Look for IF: line
             if (trimmed.StartsWith("IF:"))
             {
-                var rule = new MetaRule { State = stateName, Enabled = !pendingDisabled };
+                var rule = new MetaRule { State = stateName, Enabled = !pendingDisabled, Name = pendingName };
                 pendingDisabled = false;
+                pendingName = "";
                 int ifIndent = CountLeadingTabs(lines[idx]);
                 ParseIfBlock(lines, ref idx, rule, ifIndent);
                 rules.Add(rule);
@@ -131,6 +136,19 @@ internal static class AfFileParser
                 idx++;
             }
         }
+    }
+
+    /// <summary>"~~ @name Rebuff when low" (AfFileWriter's rule name line): the name, trimmed.
+    /// "~~ @names..." or an empty "~~ @name" is just a comment.</summary>
+    internal static bool TryRuleName(string trimmedLine, out string name)
+    {
+        name = "";
+        const string marker = "~~ @name";
+        if (!trimmedLine.StartsWith(marker, StringComparison.OrdinalIgnoreCase)) return false;
+        string rest = trimmedLine.Substring(marker.Length);
+        if (rest.Length == 0 || !char.IsWhiteSpace(rest[0])) return false;
+        name = rest.Trim();
+        return name.Length > 0;
     }
 
     private static void ParseIfBlock(string[] lines, ref int idx, MetaRule rule, int ifIndent)
@@ -476,6 +494,8 @@ internal static class AfFileParser
             case MetaConditionType.MainManaPHE:
             case MetaConditionType.MainStamLE:
             case MetaConditionType.VitaePHE:
+            // RynthAi only: NoKillsInMins 5 (minutes, decimals allowed).
+            case MetaConditionType.NoKillsWithinMinutes:
                 // These use bare numbers (no braces): e.g. MainSlotsLE 4, BlockE F6820033
                 rule.ConditionData = ExtractBareOrBrace(rest);
                 break;
@@ -546,17 +566,11 @@ internal static class AfFileParser
             case MetaActionType.EmbeddedNavRoute:
             {
                 // EmbedNav navname {type/filename}
+                // (metaf: EmbedNav tag {name} {transform}; the tag names the NAV block.)
+                // Stray brackets go ("None]" from VTank's "[None]"), the same as on the NAV keys.
                 int braceStart = rest.IndexOf('{');
-                if (braceStart >= 0)
-                {
-                    string navName = rest.Substring(0, braceStart).Trim();
-                    // Store nav name as ActionData — will be resolved later
-                    rule.ActionData = navName;
-                }
-                else
-                {
-                    rule.ActionData = rest.Trim();
-                }
+                string navName = braceStart >= 0 ? rest.Substring(0, braceStart) : rest;
+                rule.ActionData = EmbedNavName.Clean(navName);
                 break;
             }
 
@@ -634,6 +648,7 @@ internal static class AfFileParser
 
         if (idx < lines.Length && lines[idx].Trim() == "~~ }") idx++; // consume closer
 
+        name = EmbedNavName.Clean(name);
         if (!string.IsNullOrEmpty(name) && navLines.Count >= 3)
             navRoutes[name] = navLines;
     }
@@ -651,7 +666,7 @@ internal static class AfFileParser
 
         // Parse "navname type"
         string[] parts = afterNav.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        string navName = parts.Length > 0 ? parts[0] : "";
+        string navName = EmbedNavName.Clean(parts.Length > 0 ? parts[0] : "");
         string navType = parts.Length > 1 ? parts[1] : "circular";
         idx++;
 

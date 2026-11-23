@@ -34,7 +34,10 @@ namespace RynthCore.Plugin.RynthAi.Vendor;
 /// </summary>
 internal sealed class AutoVendorManager
 {
-    public const string MainProfileDir = @"C:\Games\RynthSuite\RynthAi\AutoVendor";
+    public static readonly string DefaultMainProfileDir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "AutoVendor");
+    /// <summary>RynthAi\AutoVendor: the main folder, with one folder per server in it. The host tests point it at their scratch folder.</summary>
+    public static string MainProfileDir => MainProfileDirOverride ?? DefaultMainProfileDir;
+    internal static string? MainProfileDirOverride;
     public const string ProfileSubfolder = "AutoVendor";
 
     private const long BailMs = 60_000;          // UB bailTimer
@@ -67,7 +70,7 @@ internal sealed class AutoVendorManager
     private bool _needsUpdateSaid;
 
     // ── Session ──
-    private enum Phase { Idle, Identifying, Ready, WaitTrade, WaitConfirm, WaitSplit }
+    private enum Phase { Idle, Identifying, Ready, WaitTrade, WaitConfirm, WaitSplit, WaitMerge }
     private Phase _phase = Phase.Idle;
     private VTankLootProfile? _profile;
     private string _profilePath = string.Empty;
@@ -76,6 +79,7 @@ internal sealed class AutoVendorManager
     private long _nextPollAt;
     private int _failures;
     private readonly HashSet<uint> _sessionSkip = new();   // items the engine refused to sell
+    private readonly HashSet<string> _sellSkipLogged = new(StringComparer.OrdinalIgnoreCase); // names logged as held back this session
 
     private readonly List<uint> _idQueue = new();
     private readonly Dictionary<uint, (int Attempts, long LastAt)> _idState = new();
@@ -89,10 +93,50 @@ internal sealed class AutoVendorManager
     private readonly HashSet<uint> _expectSold = new();
     private long _confirmDeadline;
 
-    private string _splitName = string.Empty;
-    private int _splitAmount;
-    private HashSet<uint> _splitBefore = new();
-    private long _splitDeadline;
+    private string _splitName = string.Empty;   // the item being split or merged (status line)
+    private long _splitDeadline;                 // merges
+
+    // ── Splits (2026-11-01) ──
+    // A split is one PendingSplit until its result is seen: an object the server CREATED after the
+    // send (OnCreateObject), else a stack of the same item that grew by the amount (the split went
+    // onto the stack at the target slot). It outlives the session, so a vendor closed mid-split
+    // still learns where the units went, and the next open picks up from there instead of
+    // splitting again. Before, the wait ended at the first new 1-count stack in a polled list and
+    // the next plan split again at once; that second split went onto the first one's stack, and
+    // "made no new stack" (Master Raiden Stormcaller, 2026-11-01).
+    private sealed class PendingSplit
+    {
+        public uint SourceId;
+        public int SourceBefore;
+        public int Amount;
+        public string Name = string.Empty;
+        public uint Wcid;
+        public string RuleName = string.Empty;
+        public HashSet<uint> Before = new();
+        public Dictionary<uint, int> Siblings = new();   // same-item stacks and their counts at the send
+        public long SentAt;
+        public long Deadline;
+        public long NextPollAt;
+    }
+    private volatile PendingSplit? _pendingSplit;
+    private readonly ConcurrentQueue<uint> _created = new();
+    private readonly HashSet<uint> _createdSinceSplit = new();
+    // Stacks a split made to be sold, and the rule that sold the stack they came from: sold even when
+    // a rule matches them differently at their new size ("Value = 250,000" on a one-note stack).
+    private readonly Dictionary<uint, string> _splitOffForSale = new();
+    // Per item key: the unit value read off a stack a split made (fresh from the server). Kept across
+    // sessions, since the stale stacks it corrects stay stale until relog.
+    private readonly Dictionary<string, int> _freshUnit = new(StringComparer.Ordinal);
+    // Identifies AutoVendor asks for outside the session's ID pass (a split-off stack, a loose note).
+    private readonly Dictionary<uint, (int Attempts, long LastAt)> _extraIds = new();
+    private readonly HashSet<uint> _waitIdLogged = new();
+    // A split or merge that never shows up (no new stack / nothing moved): MaxFailures in a row ends the
+    // session instead of retrying every 10 s forever.
+    private int _tidyFails;
+    private int _tidySteps;                       // splits/merges since the last trade
+    private const int MaxTidySteps = 8;
+    private uint _mergeSource, _mergeTarget;
+    private int _mergeSourceCount, _mergeTargetCount;
 
     private int _pyrealStackSize;
 
@@ -146,6 +190,13 @@ internal sealed class AutoVendorManager
     }
 
     public void SetPlayerId(uint id) { if (id != 0) _playerId = id; }
+
+    /// <summary>The server created an object (any thread). Only kept while a split waits for its stack.</summary>
+    public void OnCreateObject(uint id)
+    {
+        if (id != 0 && _pendingSplit != null && _created.Count < 4096)
+            _created.Enqueue(id);
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     //  Vendor events (tick thread)
@@ -249,26 +300,34 @@ internal sealed class AutoVendorManager
         }
         if (!_host.HasVendorTrade) { SayNeedsUpdate(); return; }
         Start(0, a, explicitCommand: true);
+        if (_phase != Phase.Idle)
+            Said($"started at {_vendorName} with {Path.GetFileName(_profilePath)}{(_settings.AutoVendorTestMode ? " (TestMode: nothing is bought or sold)" : "")}.");
     }
 
     public void CommandBuyAll()
     {
         if (!_host.HasVendorTrade) { SayNeedsUpdate(); return; }
         if (_cart.BuyList.Count == 0) { Tool("buy list is empty"); return; }
+        int entries = _cart.BuyList.Count;
         if (_cart.BuyAll(_host, _openVendorId) == 0)
             Error($"buy refused: {TradeMessage()}");
+        else
+            Said($"buying the buy list ({entries} entr{(entries == 1 ? "y" : "ies")}).");
     }
 
     public void CommandSellAll()
     {
         if (!_host.HasVendorTrade) { SayNeedsUpdate(); return; }
         if (_cart.SellList.Count == 0) { Tool("sell list is empty"); return; }
+        int items = _cart.SellList.Count;
         if (_cart.SellAll(_host, _openVendorId) == 0)
             Error($"sell refused: {TradeMessage()}");
+        else
+            Said($"selling the sell list ({items} item(s)).");
     }
 
-    public void CommandClearBuy() => _cart.ClearBuy();
-    public void CommandClearSell() => _cart.ClearSell();
+    public void CommandClearBuy() { _cart.ClearBuy(); Said("buy list cleared."); }
+    public void CommandClearSell() { _cart.ClearSell(); Said("sell list cleared."); }
 
     /// <summary>/ub vendor addbuy[p] [count] name</summary>
     public void CommandAddBuy(string args, bool partial)
@@ -339,14 +398,17 @@ internal sealed class AutoVendorManager
         _opening = true;
         if (_host.HasSetAutoRun) _host.SetAutoRunBy("Vendor", false);
         _host.Log($"[RynthAi] AutoVendor: attempting to open vendor {vendor.Name}");
+        Said($"opening {vendor.Name}.");
     }
 
     /// <summary>/ub vendor opencancel</summary>
     public void CommandOpenCancel()
     {
+        bool was = _opening;
         if (_opening) CancelUse();
         _opening = false;
         _openHoldUntil = 0;
+        Said(was ? $"stopped opening {_openTargetName}." : "no vendor was being opened.");
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -364,6 +426,7 @@ internal sealed class AutoVendorManager
         long now = Now();
         TickOpener(now);
         TickAddSell(now, busyCount);
+        TickPendingSplit(now);   // also between sessions: a split sent before the vendor closed
 
         if (_phase == Phase.Idle)
         {
@@ -390,6 +453,7 @@ internal sealed class AutoVendorManager
             case Phase.WaitTrade:   TickWaitTrade(now); break;
             case Phase.WaitConfirm: TickWaitConfirm(now); break;
             case Phase.WaitSplit:   TickWaitSplit(now); break;
+            case Phase.WaitMerge:   TickWaitMerge(now); break;
         }
         UpdateStatus();
     }
@@ -406,6 +470,12 @@ internal sealed class AutoVendorManager
         _cart.ClearBuy();
         _cart.ClearSell();
         while (_commands.TryDequeue(out _)) { }
+        _pendingSplit = null;
+        while (_created.TryDequeue(out _)) { }
+        _createdSinceSplit.Clear();
+        _splitOffForSale.Clear();
+        _extraIds.Clear();
+        _waitIdLogged.Clear();
         _status = "Idle";
     }
 
@@ -438,7 +508,9 @@ internal sealed class AutoVendorManager
         string path = ResolveProfilePath(fromArg ? profileArg : _vendorName + ".utl", fromArg);
         if (!File.Exists(path))
         {
-            Error($"No vendor profile exists: {path}");
+            // Every folder it looked in: the main folder's path alone read as "only the main
+            // folder is read", with the character and server folders beside it (2026-11-04).
+            Error($"No vendor profile exists: no {Path.GetFileName(path)} or default.utl in {string.Join(", ", ProfileDirs())}");
             Stop(false);
             return;
         }
@@ -455,11 +527,23 @@ internal sealed class AutoVendorManager
         }
 
         _profilePath = path;
+        // The vendor's own profile (or one named on /ub autovendor) is the player's word for this
+        // vendor; default.utl is not (see SellsForNothing).
+        _profileIsVendors = fromArg || !string.Equals(Path.GetFileName(path), "default.utl", StringComparison.OrdinalIgnoreCase);
         _failures = 0;
         _sessionSkip.Clear();
+        _sellSkipLogged.Clear();
+        _waitIdLogged.Clear();
         _bailAt = Now();
         _nextActionAt = 0;
         _host.Log($"[RynthAi] AutoVendor: {_vendorName} [0x{merchantId:X8}] profile '{path}' ({_profile.Rules.Count} rules)");
+        if (_settings.AutoVendorEnableSelling && TryGetVendor(out VendorView zv, out _) && zv.Id == merchantId && SellsForNothing(zv))
+        {
+            string why = $"{_vendorName} pays nothing for items (buy rate 0): nothing is sold to it with default.utl. " +
+                         $"To hand it items anyway (a storage vault), give it its own profile, {_vendorName}.utl.";
+            Tool(why);
+            _host.Log($"[RynthAi] AutoVendor: {why}");
+        }
 
         BuildIdQueue();
         _phase = Phase.Identifying;
@@ -470,6 +554,8 @@ internal sealed class AutoVendorManager
         if (!silent)
             ThinkOrWrite($"AutoVendor finished: {_vendorName}");
         _phase = Phase.Idle;
+        _tidyFails = 0;
+        _tidySteps = 0;
         _profile = null;
         _requestId = 0;
         _idQueue.Clear();
@@ -487,7 +573,7 @@ internal sealed class AutoVendorManager
         _idState.Clear();
         if (_profile == null || !_settings.AutoVendorEnableSelling || !_host.HasRequestId || !_host.HasHasAppraisalData)
             return;
-        if (!TryGetVendor(out VendorView v, out _))
+        if (!TryGetVendor(out VendorView v, out _) || SellsForNothing(v))
             return;
 
         var ctx = NewContext();
@@ -562,7 +648,7 @@ internal sealed class AutoVendorManager
         {
             _idState.TryGetValue(id, out var st);
             if (st.Attempts > 0 && now - st.LastAt < IdResendMs) continue;
-            _host.RequestId(id);
+            if (!_host.RequestId(id)) break;   // refused (a death or a portal): not an attempt, asked again next tick
             _idState[id] = (st.Attempts + 1, now);
             _lastIdSentAt = now;
             break;
@@ -591,16 +677,59 @@ internal sealed class AutoVendorManager
             return;
         }
 
+        // A split from earlier (this session or one the vendor closed on) still has no result: wait for
+        // it rather than plan a second split onto the first one's stack.
+        if (_pendingSplit != null)
+        {
+            _phase = Phase.WaitSplit;
+            return;
+        }
+
         var inv = Inventory();
         var ctx = NewContext();
         List<BuyWant> wants = CollectWants(v, inv, ctx);
-        List<SellItem> sells = AutoVendorPlanner.SortSells(v, CollectSells(v, inv, ctx, null));
+        var spareNotes = new List<SellItem>();
+        var needId = new List<SellItem>();
+        List<SellItem> sells = AutoVendorPlanner.SortSells(v, CollectSells(v, inv, ctx, null, spareNotes, needId));
         PackState pack = ReadPack(v, vi, inv);
-        VendorPlan plan = AutoVendorPlanner.PlanNext(v, wants, sells, pack);
+        VendorPlan plan = AutoVendorPlanner.PlanNext(v, wants, sells, pack, spareNotes);
+
+        // About to split or merge while a loose stack of the same item (a split's result, a note split
+        // off by hand) is still being identified: it may be the very stack the plan needs, so wait.
+        // The same before giving up on a buy: the stack may be what pays for it.
+        bool tidy = plan.Kind is PlanKind.Split or PlanKind.Merge && plan.SplitItem != null;
+        if (tidy || (plan.Kind == PlanKind.Done && wants.Count > 0))
+        {
+            foreach (SellItem w in needId)
+            {
+                if ((tidy && !SameItem(w, plan.SplitItem!)) || !AwaitId(w.Id, now)) continue;
+                if (_waitIdLogged.Add(w.Id))
+                    _host.Log($"[RynthAi] AutoVendor: waiting for the ID of {w.Name} 0x{w.Id:X8} (x{w.StackSize}) before {(tidy ? $"another split or merge of {plan.SplitItem!.Name}" : "ending the session")}");
+                _nextActionAt = now + 500;
+                _bailAt = now;
+                return;
+            }
+        }
+
+        // Splits and merges only get the stacks ready for a trade: a run of them with no trade between
+        // is going in circles (split-merge-split, 2026-10-19), so it ends the session.
+        if (plan.Kind is PlanKind.Split or PlanKind.Merge)
+        {
+            if (++_tidySteps > MaxTidySteps)
+            {
+                ThinkOrWrite($"AutoVendor Fatal - {MaxTidySteps} splits/merges of {plan.SplitItem?.Name} without a sale");
+                Stop(false);
+                return;
+            }
+        }
+        else
+            _tidySteps = 0;
 
         switch (plan.Kind)
         {
             case PlanKind.Done:
+                if (!string.IsNullOrEmpty(plan.Message))
+                    SayWhy(plan.Message);
                 Stop(false);
                 break;
 
@@ -619,6 +748,10 @@ internal sealed class AutoVendorManager
 
             case PlanKind.Split:
                 DoSplit(plan.SplitItem!, plan.SplitAmount, plan.Message, inv, now);
+                break;
+
+            case PlanKind.Merge:
+                DoMerge(plan.SplitItem!, plan.MergeTarget!, plan.Message, now);
                 break;
         }
     }
@@ -796,29 +929,177 @@ internal sealed class AutoVendorManager
             Stop(false);
             return;
         }
+        // One split at a time: a second one sent before the first's result is seen lands on the first's
+        // new stack (the split targets slot 0 of the main pack and joins a same-item stack there).
+        if (_pendingSplit is { } busy)
+        {
+            _host.Log($"[RynthAi] AutoVendor: not splitting {item.Name} yet: the split of {busy.Amount} off {busy.Name} sent {now - busy.SentAt} ms ago has no result yet");
+            _phase = Phase.WaitSplit;
+            return;
+        }
         uint player = PlayerId();
-        _splitBefore = new HashSet<uint>(inv.Select(w => unchecked((uint)w.Id)));
+        var ps = new PendingSplit
+        {
+            SourceId = item.Id,
+            SourceBefore = item.StackSize,
+            Amount = amount,
+            Name = item.Name,
+            Wcid = item.Wcid,
+            RuleName = item.RuleName,
+            Before = new HashSet<uint>(inv.Select(w => unchecked((uint)w.Id))),
+            SentAt = now,
+            Deadline = now + SplitWaitMs,
+            NextPollAt = now + PollMs,
+        };
+        foreach (var wo in inv)
+            if (SameItem(wo, item.Name, item.Wcid))
+                ps.Siblings[unchecked((uint)wo.Id)] = StackOf(wo);
         _splitName = item.Name;
-        _splitAmount = amount;
         _host.Log($"[RynthAi] AutoVendor DoSplit {item.Name}:{item.Id:X8} old: {item.StackSize} new: {amount} ({why})");
+        while (_created.TryDequeue(out _)) { }
+        _createdSinceSplit.Clear();
+        _pendingSplit = ps;   // before the send: a create that arrives at once is kept
         if (player == 0 || !_host.SplitStackInternal(item.Id, player, 0, amount))
         {
+            _pendingSplit = null;
             TradeFailed(isBuy: false, $"could not split {item.Name}", now);
             return;
         }
         Tool($"splitting {amount} off {item.Name} ({why})");
-        _splitDeadline = now + SplitWaitMs;
-        _nextPollAt = now + PollMs;
         _bailAt = now;
         _phase = Phase.WaitSplit;
     }
 
     private void TickWaitSplit(long now)
     {
+        // TickPendingSplit (every tick, any phase) moves the session on when the split resolves.
+        if (_pendingSplit == null)
+            _phase = Phase.Ready;
+    }
+
+    /// <summary>
+    /// Watches the split in flight: done when the server created a stack of the item after the send,
+    /// or (no create) when a stack of the item that was there grew by the amount while the source
+    /// shrank: the split went onto it. Failed when neither shows up in SplitWaitMs.
+    /// </summary>
+    private void TickPendingSplit(long now)
+    {
+        var ps = _pendingSplit;
+        if (ps == null)
+        {
+            while (_created.TryDequeue(out _)) { }
+            return;
+        }
+        while (_created.TryDequeue(out uint c))
+            if (!ps.Before.Contains(c)) _createdSinceSplit.Add(c);
+        if (now < ps.NextPollAt) return;
+        ps.NextPollAt = now + PollMs;
+
+        var byId = new Dictionary<uint, WorldObject>();
+        foreach (var wo in Inventory())
+            byId[unchecked((uint)wo.Id)] = wo;
+        int sourceNow = byId.TryGetValue(ps.SourceId, out var src) ? StackOf(src) : 0;
+
+        SplitOutcome outcome = AutoVendorSplits.Resolve(
+            ps.Amount, ps.SourceBefore, sourceNow, ps.Siblings, _createdSinceSplit,
+            byId.Where(kv => SameItem(kv.Value, ps.Name, ps.Wcid)).Select(kv => (kv.Key, StackOf(kv.Value), ps.Before.Contains(kv.Key))),
+            now > ps.Deadline);
+
+        switch (outcome.Kind)
+        {
+            case SplitOutcomeKind.Pending:
+                return;
+
+            case SplitOutcomeKind.NewStack:
+            case SplitOutcomeKind.JoinedStack:
+                _pendingSplit = null;
+                _createdSinceSplit.Clear();
+                // Only a stack the split made is sold past the rules; one it joined was already
+                // there and keeps whatever the profile says about it.
+                if (outcome.Kind == SplitOutcomeKind.NewStack && outcome.StackCount == ps.Amount)
+                    _splitOffForSale[outcome.StackId] = ps.RuleName;
+                _host.Log(outcome.Kind == SplitOutcomeKind.NewStack
+                    ? $"[RynthAi] AutoVendor: split {ps.Amount} off {ps.Name}: new stack 0x{outcome.StackId:X8} (x{outcome.StackCount}) after {now - ps.SentAt} ms"
+                    : $"[RynthAi] AutoVendor: split {ps.Amount} off {ps.Name}: no new object; the units went onto stack 0x{outcome.StackId:X8} (now x{outcome.StackCount}) at the split's slot");
+                if (!Appraised(outcome.StackId)) AwaitId(outcome.StackId, now);
+                if (_phase == Phase.WaitSplit)
+                {
+                    if (outcome.Kind == SplitOutcomeKind.NewStack) _tidyFails = 0;
+                    _phase = Phase.Ready;
+                    _nextActionAt = 0;
+                }
+                return;
+
+            default:   // failed
+                _pendingSplit = null;
+                _createdSinceSplit.Clear();
+                string what = sourceNow == ps.SourceBefore
+                    ? $"splitting {ps.Amount} off {ps.Name} changed nothing (the server didn't split it; still x{sourceNow})"
+                    : $"splitting {ps.Amount} off {ps.Name} made no stack we can find (source x{ps.SourceBefore} -> x{sourceNow})";
+                if (_phase == Phase.WaitSplit)
+                    TidyFailed(what);
+                else
+                    _host.Log($"[RynthAi] AutoVendor: {what}");
+                return;
+        }
+    }
+
+    private void DoMerge(SellItem source, SellItem target, string why, long now)
+    {
+        if (!_host.HasMergeStackInternal)
+        {
+            ThinkOrWrite("AutoVendor Fatal - this engine can't merge stacks");
+            Stop(false);
+            return;
+        }
+        _mergeSource = source.Id;
+        _mergeTarget = target.Id;
+        _mergeSourceCount = source.StackSize;
+        _mergeTargetCount = target.StackSize;
+        _splitName = source.Name;
+        _host.Log($"[RynthAi] AutoVendor merge {source.Name}:{source.Id:X8} ({source.StackSize}) onto {target.Id:X8} ({target.StackSize}) - {why}");
+        if (!_host.MergeStackInternal(source.Id, target.Id))
+        {
+            TidyFailed($"could not merge {source.Name}");
+            return;
+        }
+        Tool($"merging {source.Name} stacks ({why})");
+        _splitDeadline = now + SplitWaitMs;
+        _nextPollAt = now + PollMs;
+        _bailAt = now;
+        _phase = Phase.WaitMerge;
+    }
+
+    private void TickWaitMerge(long now)
+    {
         if (now < _nextPollAt) return;
         _nextPollAt = now + PollMs;
-        if (FindNewStack(Inventory(), _splitBefore, _splitName, _splitAmount) != 0 || now > _splitDeadline)
+        var inv = Inventory();
+        var src = inv.FirstOrDefault(w => unchecked((uint)w.Id) == _mergeSource);
+        var tgt = inv.FirstOrDefault(w => unchecked((uint)w.Id) == _mergeTarget);
+        // Done when the source is used up, or either count moved (past the max the target fills and
+        // the source survives smaller).
+        if (src == null || StackOf(src) != _mergeSourceCount || (tgt != null && StackOf(tgt) != _mergeTargetCount))
+        {
+            _tidyFails = 0;
             _phase = Phase.Ready;
+        }
+        else if (now > _splitDeadline)
+            TidyFailed($"merging {_splitName} stacks moved nothing");
+    }
+
+    private void TidyFailed(string what)
+    {
+        _tidyFails++;
+        _host.Log($"[RynthAi] AutoVendor: {what} ({_tidyFails}/{MaxFailures})");
+        if (_tidyFails >= MaxFailures)
+        {
+            _tidyFails = 0;
+            ThinkOrWrite($"AutoVendor Fatal - {what}, {MaxFailures} times in a row");
+            Stop(false);
+            return;
+        }
+        _phase = Phase.Ready;
     }
 
     // ── Collect (UB GetBuyItems / GetSellItems) ──
@@ -837,30 +1118,84 @@ internal sealed class AutoVendorManager
     }
 
     /// <param name="heldBack">Test mode: items a Sell rule points at that are held back, with why.</param>
-    private List<SellItem> CollectSells(VendorView v, List<WorldObject> inv, VTankLootContext ctx, List<string>? heldBack)
+    /// <param name="spareNotes">Filled with loose single notes that pass the safety checks but no Sell rule
+    /// took (see AutoVendorPlanner.PlanNext): one of them is sold before another note is split off.</param>
+    /// <param name="needId">Filled with split-off stacks and loose single notes that still need an ID
+    /// before they can be sold.</param>
+    private List<SellItem> CollectSells(VendorView v, List<WorldObject> inv, VTankLootContext ctx, List<string>? heldBack,
+                                        List<SellItem>? spareNotes = null, List<SellItem>? needId = null)
     {
         var result = new List<SellItem>();
         if (!_settings.AutoVendorEnableSelling || _profile == null)
             return result;
+        if (SellsForNothing(v))
+        {
+            heldBack?.Add($"everything - {_vendorName} pays nothing (buy rate 0) and the profile is default.utl");
+            return result;
+        }
 
         uint player = PlayerId();
         var packOrder = PackOrder(inv, player);
+        var unitValues = TrueUnitValues(inv);
+
+        // Split-off stacks that were sold or merged away are forgotten.
+        if (_splitOffForSale.Count > 0)
+        {
+            var have = new HashSet<uint>(inv.Select(w => unchecked((uint)w.Id)));
+            foreach (uint gone in _splitOffForSale.Keys.Where(k => !have.Contains(k)).ToList())
+                _splitOffForSale.Remove(gone);
+        }
+
         foreach (var wo in inv)
         {
             uint id = unchecked((uint)wo.Id);
             if (_sessionSkip.Contains(id)) continue;
 
-            SafetyFacts safety = ReadSafety(wo, player);
-            string? unsafeWhy = AutoVendorPlanner.UnsafeReason(safety, _settings.AutoVendorOnlyFromMainPack);
-            if (unsafeWhy != null && heldBack == null)
-                continue;
-
             uint type = ItemType(wo);
             int stack = StackOf(wo);
             bool isNote = wo.ObjectClass == AcObjectClass.TradeNote || (type & AutoVendorPlanner.ItemTypePromissoryNote) != 0;
-            int unitValue = stack > 1 ? safety.Value / stack : safety.Value;
-            if (unsafeWhy == null && !AutoVendorPlanner.VendorWillBuy(v, type, isNote, unitValue))
+            bool splitOff = _splitOffForSale.TryGetValue(id, out string? splitRule);
+            bool looseNote = isNote && stack <= 1;
+
+            SafetyFacts safety = ReadSafety(wo, player);
+            string? unsafeWhy = AutoVendorPlanner.UnsafeReason(safety, _settings.AutoVendorOnlyFromMainPack);
+            if (!safety.Appraised && (splitOff || looseNote) && needId != null)
+                needId.Add(new SellItem { Id = id, Name = wo.Name, Class = wo.ObjectClass, ItemType = type, StackSize = stack, Wcid = WcidOf(id) });
+            if (unsafeWhy != null && heldBack == null)
+            {
+                if (!_sellSkipLogged.Contains(wo.Name))
+                {
+                    ProfileVerdict uv = AutoVendorRules.Decide(_profile.Rules, Judge(EvalObject(wo), InventoryFacts(wo, safety.Appraised), ctx));
+                    // "Not identified" is usually just not yet (the IDs are on their way): only a
+                    // certain Sell match is worth a line.
+                    if (uv.Rule?.Action == VTankLootAction.Sell && uv.Certain && _sellSkipLogged.Add(wo.Name))
+                        _host.Log($"[RynthAi] AutoVendor: not selling '{wo.Name}' (rule '{uv.RuleName}'): {unsafeWhy}.");
+                }
                 continue;
+            }
+
+            int unitValue = stack > 1 ? safety.Value / stack : safety.Value;
+            // A stack keeps its old Value after a split (100 peas' worth on a stack of 2 read "1,250,000
+            // each", 2026-10-19), which hid it from the sell list and from the split planner. Use the
+            // per-unit value most of this item's units carry (TrueUnitValues).
+            bool stackable = InventoryManager.GetMaxStackSize(wo) > 1;
+            if (stackable && unitValues.TryGetValue(StackKey(wo), out int trueUnit) && trueUnit > 0)
+                unitValue = trueUnit;
+            int stackValue = stackable ? unitValue * Math.Max(1, stack) : safety.Value;
+            if (unsafeWhy == null && !AutoVendorPlanner.VendorWillBuy(v, type, isNote, unitValue))
+            {
+                // A Sell rule wanted it and the vendor won't take it: say why, once per name a
+                // session (peas not sold at Aun Amanaualuan, 2026-10-07, with nothing logged).
+                if (heldBack == null && !_sellSkipLogged.Contains(wo.Name))
+                {
+                    ProfileVerdict sv = AutoVendorRules.Decide(_profile.Rules, Judge(EvalObject(wo), InventoryFacts(wo, safety.Appraised), ctx));
+                    if (sv.Rule?.Action == VTankLootAction.Sell && sv.Certain && _sellSkipLogged.Add(wo.Name))
+                        _host.Log(!v.Buys(type)
+                            ? $"[RynthAi] AutoVendor: not selling '{wo.Name}' (rule '{sv.RuleName}'): this vendor doesn't buy {AutoVendorPlanner.CategoryName(type)} (item type 0x{type:X}, vendor buys 0x{v.ItemTypes:X})."
+                            : $"[RynthAi] AutoVendor: not selling '{wo.Name}' (rule '{sv.RuleName}'): worth {unitValue:n0} each, this vendor pays for items up to {v.MaxValue:n0}.");
+                }
+                continue;
+            }
 
             ItemFacts f = InventoryFacts(wo, safety.Appraised);
             ProfileVerdict verdict = AutoVendorRules.Decide(_profile.Rules, Judge(EvalObject(wo), f, ctx));
@@ -872,30 +1207,79 @@ internal sealed class AutoVendorManager
                     heldBack!.Add($"{wo.Name} - {unsafeWhy}");
                 continue;
             }
+
+            SellItem Make(string ruleName)
+            {
+                bool main = InMainPack(wo, player);
+                int packIdx = main ? 0 : (packOrder.TryGetValue(wo.DirectContainerId, out int pi) ? pi : 99);
+                string packName = main ? "Main Pack" : (_cache[wo.DirectContainerId]?.Name ?? "Pack");
+                return new SellItem
+                {
+                    Id = id,
+                    Name = wo.Name,
+                    Class = wo.ObjectClass,
+                    ItemType = type,
+                    StackSize = stack,
+                    Value = stackValue,
+                    RuleName = ruleName,
+                    Location = main ? "Main Pack" : $"{packName} #{packIdx}",
+                    SortSlot = main ? Math.Max(0, wo.DirectSlot) : 1000 + 100 * packIdx + Math.Max(0, wo.DirectSlot),
+                    MaxStack = InventoryManager.GetMaxStackSize(wo),
+                    Wcid = WcidOf(id),
+                };
+            }
+
             if (!sd.Sell)
             {
+                // Split off to be sold, from a stack a Sell rule took: sold even if a rule reads the
+                // smaller stack differently (a Keep rule for the vendor's "Value = 250,000" listing
+                // also matches a one-note stack, 2026-11-01).
+                if (splitOff)
+                {
+                    result.Add(Make(string.IsNullOrEmpty(splitRule) ? "split off to sell" : $"{splitRule} (split off to sell)"));
+                    continue;
+                }
+                // A loose single note: kept unless one note has to pay for a buy (PlanNext).
+                if (looseNote && spareNotes != null)
+                    spareNotes.Add(Make(string.IsNullOrEmpty(sd.RuleName) ? "loose note" : $"loose note, rule '{sd.RuleName}' alone keeps it"));
                 if (heldBack != null && verdict.Rule?.Action == VTankLootAction.Sell)
                     heldBack.Add($"{wo.Name} - {sd.Reason}");
+                else if (heldBack == null && verdict.Rule?.Action == VTankLootAction.Sell && _sellSkipLogged.Add(wo.Name))
+                    _host.Log($"[RynthAi] AutoVendor: not selling '{wo.Name}': {sd.Reason}.");
                 continue;
             }
 
-            bool main = InMainPack(wo, player);
-            int packIdx = main ? 0 : (packOrder.TryGetValue(wo.DirectContainerId, out int pi) ? pi : 99);
-            string packName = main ? "Main Pack" : (_cache[wo.DirectContainerId]?.Name ?? "Pack");
-            result.Add(new SellItem
-            {
-                Id = id,
-                Name = wo.Name,
-                Class = wo.ObjectClass,
-                ItemType = type,
-                StackSize = stack,
-                Value = safety.Value,
-                RuleName = sd.RuleName,
-                Location = main ? "Main Pack" : $"{packName} #{packIdx}",
-                SortSlot = main ? Math.Max(0, wo.DirectSlot) : 1000 + 100 * packIdx + Math.Max(0, wo.DirectSlot),
-            });
+            result.Add(Make(sd.RuleName));
         }
         return result;
+    }
+
+    private uint WcidOf(uint id) => _host.HasGetObjectWcid && _host.TryGetObjectWcid(id, out uint wcid) ? wcid : 0;
+
+    /// <summary>Same item for stacking: the weenie when both are known, else the exact name.</summary>
+    private bool SameItem(WorldObject wo, string name, uint wcid)
+    {
+        uint w = WcidOf(unchecked((uint)wo.Id));
+        return wcid != 0 && w != 0 ? w == wcid : string.Equals(wo.Name, name, StringComparison.Ordinal);
+    }
+
+    private static bool SameItem(SellItem a, SellItem b)
+        => a.Wcid != 0 && b.Wcid != 0 ? a.Wcid == b.Wcid : string.Equals(a.Name, b.Name, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Asks for <paramref name="id"/>'s ID (outside the session's ID pass) and says whether it is worth
+    /// waiting for: true while a request is out or another may be sent, false once it is identified
+    /// or IdMaxAttempts went unanswered.
+    /// </summary>
+    private bool AwaitId(uint id, long now)
+    {
+        if (Appraised(id)) return false;
+        _extraIds.TryGetValue(id, out var st);
+        if (st.Attempts > 0 && now - st.LastAt < IdResendMs) return true;
+        if (st.Attempts >= IdMaxAttempts) return false;
+        if (!_host.HasRequestId || !_host.RequestId(id)) return false;
+        _extraIds[id] = (st.Attempts + 1, now);
+        return true;
     }
 
     // ── Test mode (UB DoTestMode) ──
@@ -903,7 +1287,7 @@ internal sealed class AutoVendorManager
     private void DoTestMode()
     {
         Chat("AutoVendor TEST MODE");
-        if (!TryGetVendor(out VendorView v, out _))
+        if (!TryGetVendor(out VendorView v, out VendorInfo tvi))
         {
             Chat("  (no vendor open)");
             return;
@@ -919,10 +1303,33 @@ internal sealed class AutoVendorManager
 
         Chat("Sell Items:");
         var held = new List<string>();
-        var sells = CollectSells(v, inv, ctx, held).OrderBy(s => s.SortSlot).ToList();
+        var spare = new List<SellItem>();
+        var sells = CollectSells(v, inv, ctx, held, spare).OrderBy(s => s.SortSlot).ToList();
         foreach (var s in sells)
             Chat($"  {s.Location}: {s.Name}{(s.StackSize > 1 ? $" x{s.StackSize}" : string.Empty)} - {s.RuleName}");
         if (sells.Count == 0) Chat("  (Nothing)");
+        if (spare.Count > 0)
+        {
+            Chat("Loose notes (one is sold when a note has to pay for a buy):");
+            foreach (var s in spare.Take(10)) Chat($"  {s.Location}: {s.Name} - {s.RuleName}");
+            if (spare.Count > 10) Chat($"  ...and {spare.Count - 10} more");
+        }
+
+        // What the next step would be, and why nothing would be bought.
+        {
+            PackState pack = ReadPack(v, tvi, inv);
+            VendorPlan plan = AutoVendorPlanner.PlanNext(v, wants, AutoVendorPlanner.SortSells(v, sells), pack, spare);
+            string step = plan.Kind switch
+            {
+                PlanKind.Buy => "buy " + string.Join(", ", plan.Buys.Select(b => $"{b.Amount:n0}x {b.Item.Name}")),
+                PlanKind.Sell => "sell " + string.Join(", ", plan.Sells.Select(s => s.Name)),
+                PlanKind.Split => $"split {plan.SplitAmount} off {plan.SplitItem?.Name}",
+                PlanKind.Merge => $"merge {plan.SplitItem?.Name} stacks",
+                PlanKind.Fatal => plan.Message,
+                _ => string.IsNullOrEmpty(plan.Message) ? "done" : $"done - {plan.Message}",
+            };
+            Chat($"Next step: {step}");
+        }
 
         if (held.Count > 0)
         {
@@ -958,7 +1365,7 @@ internal sealed class AutoVendorManager
     /// <summary>UB cancels a pending use by facing one degree away.</summary>
     private void CancelUse()
     {
-        if (_host.HasTurnToHeading && _host.TryGetPlayerHeading(out float h))
+        if (_host.HasTurnToHeading && PlayerCompass.TryGet(_host, out float h))
             _host.TurnToHeadingBy("Vendor", (h + 359f) % 360f);
         else if (_host.HasStopCompletely)
             _host.StopCompletelyBy("Vendor");
@@ -985,10 +1392,11 @@ internal sealed class AutoVendorManager
         double bestDist = double.MaxValue;
         foreach (var wo in _cache.GetLandscapeObjects())
         {
-            if (wo.ObjectClass != AcObjectClass.Vendor || wo.Id == player) continue;
+            if (wo.Id == player) continue;
             string n = (wo.Name ?? string.Empty).ToLowerInvariant();
             bool match = lower.Length == 0 || (partial ? n.Contains(lower) : n == lower);
             if (!match) continue;
+            if (!IsVendorObject(wo)) continue;   // after the name test: the bitfield read costs more
             double d = _cache.Distance(player, wo.Id);
             if (best == null || d < bestDist) { best = wo; bestDist = d; }
         }
@@ -998,7 +1406,42 @@ internal sealed class AutoVendorManager
     private bool IsVendor(uint id, out WorldObject? wo)
     {
         wo = id != 0 ? _cache[unchecked((int)id)] : null;
-        return wo != null && wo.ObjectClass == AcObjectClass.Vendor;
+        return wo != null && IsVendorObject(wo);
+    }
+
+    // The session's profile is the vendor's own (<vendor>.utl) or one named on /ub autovendor, not default.utl.
+    private bool _profileIsVendors;
+
+    /// <summary>
+    /// A vendor that pays nothing for what it takes (buy rate 0), met with default.utl: nothing is
+    /// sold to it. Since the engine trades with zero-rate vendors (a free storage vault), a
+    /// default.utl's Sell rules, written to turn loot into pyreals, would otherwise hand every
+    /// matching item to such a vendor for nothing (on stock ACE for 1 pyreal a stack). A vault the
+    /// player means to fill gets its own profile, which sells (deposits) as written. Buying is not
+    /// changed: a vendor that charges 0 already ends the session at its first buy ("No vendor price
+    /// found").
+    /// </summary>
+    private bool SellsForNothing(VendorView v) => v.BuyRate == 0f && !_profileIsVendors;
+
+    // PublicWeenieDesc._bitfield BF_VENDOR (retail's ObjectDescriptionFlag.Vendor, which ACE sets too).
+    private const uint BfVendor = 0x00000200;
+
+    /// <summary>
+    /// A vendor by the server's own vendor flag. The world cache files a vendor by its type (a
+    /// creature: Npc or Monster) and never as <see cref="AcObjectClass.Vendor"/>, so
+    /// /ub vendor open by name, id or "selected" found no vendor at all. The cache class still
+    /// counts should it ever be Vendor. An engine without the bitfield read: as before.
+    /// </summary>
+    private bool IsVendorObject(WorldObject wo)
+    {
+        if (wo.ObjectClass == AcObjectClass.Vendor) return true;
+        try
+        {
+            return _host.HasGetObjectBitfield
+                && _host.TryGetObjectBitfield(unchecked((uint)wo.Id), out uint bf)
+                && (bf & BfVendor) != 0;
+        }
+        catch { return false; }
     }
 
     // ── /ub vendor addsell ──
@@ -1203,10 +1646,7 @@ internal sealed class AutoVendorManager
             retained = true;   // BF_RETAINED
         if (!retained && _host.HasGetObjectBoolProperty && _host.TryGetObjectBoolProperty(id, 91 /* Retained */, out bool ret) && ret)
             retained = true;
-        bool rare = wo.Values(17 /* RareId */, 0) > 0;
-        if (!rare && _host.HasGetObjectDataIdProperty && _host.TryGetObjectDataIdProperty(id, 52 /* IconUnderlay */, out uint underlay)
-            && (underlay & 0x00FFFFFFu) == 23308u)
-            rare = true;       // UB: IconUnderlay 23308 = rare
+        bool rare = Loot.RareItems.IsRare(_host, wo, out _);   // RareId, or UB's IconUnderlay 23308
 
         return new SafetyFacts
         {
@@ -1232,6 +1672,7 @@ internal sealed class AutoVendorManager
         IsVendorListing = false,
         Appraised = appraised,
         ObjectClass = wo.ObjectClass,
+        ItemType = ItemType(wo),
         HasSpellData = appraised && _host.HasGetObjectSpellIds,
         HasPalettes = _host.HasGetObjectPalettes,
         HasCharacterSkills = _host.HasGetObjectSkill,
@@ -1243,6 +1684,7 @@ internal sealed class AutoVendorManager
         IsVendorListing = true,
         Appraised = false,
         ObjectClass = l.Class,
+        ItemType = l.ItemType,
         HasCharacterSkills = _host.HasGetObjectSkill,
         HasCharacterLevel = _host.HasGetObjectIntProperty,
     };
@@ -1303,6 +1745,40 @@ internal sealed class AutoVendorManager
                 count += StackOf(wo);
         return count;
     }
+
+    /// <summary>
+    /// Per item (weenie, else name): the true Value / StackSize. A stack's Value goes stale after a split
+    /// (too high) or a merge (too low) and stays so until relog. A stack a split just made comes fresh from
+    /// the server, so its unit wins and is remembered (<see cref="_freshUnit"/>); otherwise the unit the
+    /// most units carry. The vote alone failed once the last full stack was split: 79 stale peas outvoted
+    /// the 21 split off, the 21 read too dear to fit, were merged back, and the split came again until
+    /// the 8-try stop (2026-11-12).
+    /// </summary>
+    private Dictionary<string, int> TrueUnitValues(List<WorldObject> inv)
+    {
+        var votes = new Dictionary<string, Dictionary<int, long>>(StringComparer.Ordinal);
+        foreach (var wo in inv)
+        {
+            int stack = StackOf(wo);
+            int value = wo.Values(19 /* Value */, 0);
+            if (stack < 1 || value <= 0 || InventoryManager.GetMaxStackSize(wo) < 2) continue;
+            string key = StackKey(wo);
+            if (!votes.TryGetValue(key, out var byUnit)) votes[key] = byUnit = new Dictionary<int, long>();
+            int unit = value / stack;
+            byUnit[unit] = byUnit.GetValueOrDefault(unit) + stack;
+            if (_splitOffForSale.ContainsKey(unchecked((uint)wo.Id)) && unit > 0)
+                _freshUnit[key] = unit;
+        }
+        var result = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var (key, byUnit) in votes)
+            result[key] = AutoVendorPlanner.TrueUnit(byUnit, _freshUnit.GetValueOrDefault(key));
+        return result;
+    }
+
+    private string StackKey(WorldObject wo) =>
+        _host.HasGetObjectWcid && _host.TryGetObjectWcid(unchecked((uint)wo.Id), out uint wcid) && wcid != 0
+            ? "w:" + wcid
+            : "n:" + wo.Name;
 
     private uint FindNewStack(List<WorldObject> inv, HashSet<uint> before, string name, int amount)
     {
@@ -1369,7 +1845,10 @@ internal sealed class AutoVendorManager
 
     /// <summary>
     /// First existing file of: character folder, server folder, main folder (the named
-    /// profile), then default.utl in the same three; else the main-folder path (missing).
+    /// profile), then default.utl in the same three; else where a new one goes (missing):
+    /// the server folder, or the main folder while the server's name isn't known. UB says
+    /// the main folder there; ours made the dashboard's Edit save every new profile in the
+    /// main folder, beside the server folders it had just made (2026-11-04).
     /// A name typed on /ub autovendor also tries name + ".utl".
     /// </summary>
     public string ResolveProfilePath(string profileName, bool addUtlGuess)
@@ -1390,8 +1869,9 @@ internal sealed class AutoVendorManager
             string p = SafeCombine(dir, "default.utl");
             if (p.Length > 0 && File.Exists(p)) return p;
         }
-        string fallback = SafeCombine(MainProfileDir, profileName);
-        return fallback.Length > 0 ? fallback : Path.Combine(MainProfileDir, "default.utl");
+        string home = ServerDir() ?? MainProfileDir;
+        string fallback = SafeCombine(home, profileName);
+        return fallback.Length > 0 ? fallback : Path.Combine(home, "default.utl");
     }
 
     /// <summary>Character, server, main - UB's order.</summary>
@@ -1401,11 +1881,72 @@ internal sealed class AutoVendorManager
         string charFolder = _charFolder() ?? string.Empty;
         if (!string.IsNullOrEmpty(charFolder))
             dirs.Add(Path.Combine(charFolder, ProfileSubfolder));
-        if (_host.HasGetWorldName && _host.TryGetWorldName(out string world) && !string.IsNullOrWhiteSpace(world))
-            dirs.Add(Path.Combine(MainProfileDir, Sanitize(world)));
+        string? server = ServerDir();
+        if (server != null) dirs.Add(server);
         dirs.Add(MainProfileDir);
         return dirs;
     }
+
+    /// <summary>AutoVendor\&lt;server&gt;, or null while the server's name isn't known.</summary>
+    private string? ServerDir()
+        => _host.HasGetWorldName && _host.TryGetWorldName(out string world) && !string.IsNullOrWhiteSpace(world)
+            ? Path.Combine(MainProfileDir, Sanitize(world))
+            : null;
+
+    /// <summary>
+    /// The profile pickers' list (the Loot Editor's): the .utl files in <paramref name="dirs"/>
+    /// (ProfileDirs: character, server, main), in that order, then the other servers' folders,
+    /// each marked by its folder: "AutoVendor (character): ", "AutoVendor (&lt;server&gt;): ",
+    /// "AutoVendor: " for the main folder. The picker listed the main folder and its server
+    /// folders as one tree and never the character folder (2026-11-04).
+    /// </summary>
+    public static List<(string Path, string Display)> ListProfiles(IReadOnlyList<string> dirs)
+    {
+        var list = new List<(string Path, string Display)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string main = FullPath(MainProfileDir);
+        var folders = new List<string>();
+        foreach (string d in dirs ?? Array.Empty<string>())
+            if (!string.IsNullOrWhiteSpace(d)) folders.Add(d);
+        if (!folders.Exists(d => SameDir(d, main))) folders.Add(MainProfileDir);
+        try
+        {
+            if (Directory.Exists(MainProfileDir))
+            {
+                var others = new List<string>(Directory.GetDirectories(MainProfileDir));
+                others.Sort(StringComparer.OrdinalIgnoreCase);
+                folders.AddRange(others);
+            }
+        }
+        catch { }
+
+        foreach (string dir in folders)
+        {
+            string full = FullPath(dir);
+            if (full.Length == 0 || !seen.Add(full)) continue;
+            string label = SameDir(full, main) ? "AutoVendor: "
+                : SameDir(Path.GetDirectoryName(full) ?? string.Empty, main) ? $"AutoVendor ({Path.GetFileName(full)}): "
+                : "AutoVendor (character): ";
+            try
+            {
+                if (!Directory.Exists(full)) continue;
+                var files = new List<string>(Directory.GetFiles(full, "*.utl"));
+                files.Sort(StringComparer.OrdinalIgnoreCase);
+                foreach (string f in files) list.Add((f, label + Path.GetFileName(f)));
+            }
+            catch { }
+        }
+        return list;
+    }
+
+    private static string FullPath(string dir)
+    {
+        try { return dir.Length == 0 ? string.Empty : Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir)); }
+        catch { return string.Empty; }
+    }
+
+    private static bool SameDir(string a, string b)
+        => string.Equals(FullPath(a), FullPath(b), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Create the per-character and per-server folders so players can see where profiles go (UB Init).</summary>
     public void EnsureProfileFolders()
@@ -1432,9 +1973,22 @@ internal sealed class AutoVendorManager
     private void Tool(string msg) => _host.WriteToChat($"[RynthAi] AutoVendor: {msg}", 1);
     private void Error(string msg) => _host.WriteToChat($"[RynthAi] AutoVendor: {msg}", 2);
 
+    /// <summary>The plugin's command replies (CommandReply.cs): a /ub vendor command answers by them.</summary>
+    internal CommandReply? Reply { get; set; }
+
+    /// <summary>A /ub vendor or /ub autovendor command worked: said when typed, only logged when a meta sent it.</summary>
+    private void Said(string msg)
+    {
+        if (Reply is { } r) r.Ok($"[RynthAi] AutoVendor: {msg}");
+        else Tool(msg);
+    }
+
     /// <summary>UB Util.ThinkOrWrite: a /tell to yourself when Think is on (metas watch for it).</summary>
     private void ThinkOrWrite(string msg)
     {
+        // In RynthCore.log too: a session's end (finished, Fatal) only reached chat, so a log showed
+        // vendor opens with no buy, sell or split and no reason (2026-11-01).
+        _host.Log($"[RynthAi] {msg}");
         uint player = PlayerId();
         if (_settings.AutoVendorThink && _host.HasInvokeChatParser && player != 0
             && _host.TryGetObjectName(player, out string me) && !string.IsNullOrWhiteSpace(me))
@@ -1443,6 +1997,13 @@ internal sealed class AutoVendorManager
             return;
         }
         Chat(msg);
+    }
+
+    /// <summary>Why a session ends without buying what the profile wants: chat and RynthCore.log.</summary>
+    private void SayWhy(string why)
+    {
+        _host.Log($"[RynthAi] AutoVendor: {why}");
+        Error(why);
     }
 
     private void SayNeedsUpdate()
@@ -1461,11 +2022,15 @@ internal sealed class AutoVendorManager
                 Phase.WaitTrade => $"Waiting for the server - {_vendorName}",
                 Phase.WaitConfirm => $"Confirming trade - {_vendorName}",
                 Phase.WaitSplit => $"Splitting {_splitName} - {_vendorName}",
+                Phase.WaitMerge => $"Merging {_splitName} - {_vendorName}",
                 _ => $"Vendoring {_vendorName} ({Path.GetFileName(_profilePath)})",
             };
         if (_settings.AutoVendorTestMode && _phase != Phase.Idle) s += " [test mode]";
         _status = s;
     }
 
-    private static long Now() => Environment.TickCount64;
+    /// <summary>The manager's clock in ms (tests move it by hand).</summary>
+    internal static Func<long> Clock = () => Environment.TickCount64;
+
+    private static long Now() => Clock();
 }

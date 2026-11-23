@@ -40,8 +40,17 @@
   <ItemGroup>
     <!-- RynthAi's script interface (RynthAi.Script v1), shared source with RynthAi. -->
     <Compile Include="..\Shared\RynthAiScriptApi.cs" Link="Shared\RynthAiScriptApi.cs" />
+    <!-- RynthAi's combat hook (RynthAi.Combat v1): scripts choose attack and heal spells. -->
+    <Compile Include="..\Shared\RynthAiCombatApi.cs" Link="Shared\RynthAiCombatApi.cs" />
     <!-- One logged, guarded way to use an object (who used what, and why). -->
     <Compile Include="..\Shared\UseAudit.cs" Link="Shared\UseAudit.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file as RynthCore src\Shared. -->
+    <Compile Include="..\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
+    <!-- How a chat command answers (2026-10-28): the shared reply queue and colours. -->
+    <Compile Include="..\Shared\CommandReply.cs" Link="Shared\CommandReply.cs" />
   </ItemGroup>
 
 </Project>

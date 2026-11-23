@@ -1,5 +1,5 @@
 // LegacyDashboardRenderer.LocalFeatures.cs — style shared with the plugin's own ImGui windows
-// (ILT Hub, floating HUDs, chat translator).
+// (the Mini Remote and its tabs, floating HUDs, chat translator).
 using System.Numerics;
 using ImGuiNET;
 

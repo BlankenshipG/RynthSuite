@@ -42,7 +42,34 @@ internal static class LootAddItemTests
         r.Add("loot add: the popup's item_preview / item_add / item_close through the editor bridge", BridgePopupFlow);
         r.Add("loot add: unsaved edits in the Loot Editor block the add (nothing saved behind them)", BridgeRefusesUnderEdits);
         r.Add("loot add: the popup says when RynthAi's built-in looting takes the item (Mana Tap, mana stones)", BuiltInReasons);
-        r.Add("loot: Mana Tap never loots a wand (ACE won't drain one, so it was kept for good)", ManaTapSkipsWands);
+        r.Add("loot: Mana Tap takes a high-mana wand like any other item (they drain)", ManaTapTakesWands);
+        r.Add("loot profile load (R-20261101-133624-7eeb): a rule with no conditions is named in chat; a normal profile says nothing", UnconditionalRuleWarned);
+    }
+
+    // A 'Trade Note' that lost its Name condition keeps every item silently; loading says so.
+    private static void UnconditionalRuleWarned()
+    {
+        var bot = new Bot();
+        string broken = Temp("broken-trade-note.utl", Utl(
+            "UTL", "1", "2",
+            "Trade Note", "", "0;1",
+            "Keep pyreals", "", "0;1;1", "0", "^Pyreal$", "1"));
+        bot.S.CurrentLootPath = broken;
+        FakeHost.Chat.Clear();
+        object?[] load = { string.Empty, null, null };
+        Check.True((bool)typeof(RynthAiPlugin).GetMethod("TryLoadLootProfile", Any)!.Invoke(bot.P, load)!, "it loads");
+        string chat = bot.ChatText;
+        Check.True(chat.Contains("1 rule(s) have no conditions") && chat.Contains("'Trade Note' (rule 1, Keep)") && chat.Contains("will be Keep"),
+            "the unconditional rule is named: " + chat);
+        Check.Eq(VTankLootEvaluator.FirstMatch(bot.Get<VTankLootProfile>("_loadedLootProfile")!, bot.Item(Opal), null, out _)?.Name, "Trade Note",
+            "and it does keep a gem (what the report showed)");
+
+        var ok = new Bot();
+        ok.S.CurrentLootPath = Temp("sell-gems.utl", SellGems);
+        FakeHost.Chat.Clear();
+        object?[] load2 = { string.Empty, null, null };
+        Check.True((bool)typeof(RynthAiPlugin).GetMethod("TryLoadLootProfile", Any)!.Invoke(ok.P, load2)!, "a normal profile loads");
+        Check.False(ok.ChatText.Contains("no conditions"), "and says nothing about it");
     }
 
     // ── World and plugin ──────────────────────────────────────────────────────
@@ -73,6 +100,7 @@ internal static class LootAddItemTests
             Host = host;
             typeof(RynthPluginBase).GetMethod("Attach", Any)!.Invoke(P, new object[] { FakeHost.LastApi });
             var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+            typeof(LegacyDashboardRenderer).GetField("_profileLoaded", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(dash, true);   // a stand-in with its profile in memory
             typeof(LegacyDashboardRenderer).GetField("_settings", Any)!.SetValue(dash, S);
             Set("_dashboard", dash);
             Cache = FakeHost.MakeCache(host, Player, new[] { Player, Opal, Taper, Coin }.Concat(extra));
@@ -302,7 +330,7 @@ internal static class LootAddItemTests
         Check.Eq(d?.InsertAt, 2, "nothing takes it: the end");
         Check.Eq(d?.Format, "utl", "format");
         Check.True(d?.TargetInUse == true, "target is the profile in use");
-        Check.True(d?.Preview.Any(l => l.Contains("Class is SpellComponent")) == true, "preview lines");
+        Check.True(d?.Preview.Any(l => l.Contains("Class is Spell Component")) == true, "preview lines");
         Check.Eq(File.ReadAllText(path), SellGems, "preview saves nothing");
 
         // The popup changes its mind: Keep 10, own name. Then Add.
@@ -445,16 +473,13 @@ internal static class LootAddItemTests
         Check.Eq(File.ReadAllText(path), SellGems, "preview saves nothing");
     }
 
-    private static void ManaTapSkipsWands()
+    private static void ManaTapTakesWands()
     {
         var bot = TapWorld();
         bot.S.CurrentLootPath = Temp("wand.utl", SellGems);
         var wand = LootEval(bot, Sceptre);
-        Check.False(wand.Taken, $"a 3,001-mana sceptre is left: [{wand.Action}] {wand.Rule}");
-        Check.Eq(bot.Get<System.Collections.Generic.HashSet<int>>("_pendingManaTapIds")?.Count, 0, "not counted against the tap quota");
+        Check.True(wand.Taken && wand.Action == "ManaTap", $"a 3,001-mana sceptre is tapped: [{wand.Action}] {wand.Rule}");
         var ring = LootEval(bot, Ring);
-        Check.True(ring.Taken && ring.Action == "ManaTap", "a ring with the same mana is still tapped: " + ring.Action);
-        Send(bot.P.LootEditor, new LootEditCommand { Op = "item_preview", Item = new LootEditItemRequest { ItemId = Sceptre, Seq = 1 } });
-        Check.Eq(State(bot.P.LootEditor).ItemDraft?.BuiltInReason, "", "the popup has no built-in reason for the wand");
+        Check.False(ring.Taken, "the one empty stone is now spoken for by the wand, so the ring waits: " + ring.Action);
     }
 }

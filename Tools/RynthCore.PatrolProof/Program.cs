@@ -25,6 +25,7 @@ namespace RynthCore.PatrolProof;
 //
 // It also compares /ra dunnav paths between 40 random cell pairs. Extra words:
 //   verbose      list the off-floor legs      trace     log every room crossing
+//   waypoints    one line per patrol waypoint and the rule that laid it (Waypoints.cs)
 //   doors x y    list the cells, openings and floor polygons within 20 m of world (x, y)
 //
 // Run: dotnet run -c Release [-- <landblock hex>] [-- <AC folder>] [-- dump <dir>] [-- verbose]
@@ -33,6 +34,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "clear") return Clearance.Run(args.Skip(1).ToArray());
+        if (args.Contains("waypoints")) return Waypoints.Run(args);
         uint lb = 0x6346;
         string acDir = @"C:\Turbine\Asheron's Call";
         string dumpDir = null;

@@ -21,11 +21,33 @@
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\LegacyUi\NavRouteParser.cs" Link="Linked\NavRouteParser.cs" />
     <!-- Combat: the melee/missile stall ladder (pure timing state, time passed in). -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\CombatStallWatchdog.cs" Link="Linked\CombatStallWatchdog.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\PointBlankFacing.cs" Link="Linked\PointBlankFacing.cs" />
+    <!-- Buff items: which buff item to use now, and the list edits (System only). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\BuffItemPicker.cs" Link="Linked\BuffItemPicker.cs" />
+    <!-- Combat: the Dirty Fighting rotation's height choice and landing-line parser (System only). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Combat\DirtyFightingHeights.cs" Link="Linked\DirtyFightingHeights.cs" />
     <!-- Weapon weakness selection: element ranking per monster. Its only outside reference is
          CreatureProfileStore.Folder (the user override folder), faked in Fakes\. -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\CreatureData\CreatureWeakness.cs" Link="Linked\CreatureWeakness.cs" />
     <!-- Learned per-monster damage (System only), for the Aelrynth difficulty-tier tests. -->
     <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\CreatureData\MonsterDamageStore.cs" Link="Linked\MonsterDamageStore.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\CreatureData\PlayerWeenies.cs" Link="Linked\PlayerWeenies.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\CreatureData\ShieldFacing.cs" Link="Linked\ShieldFacing.cs" />
+    <!-- Loot: the measured loot-timer baseline and its [LootSettings] log line. -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\LootBaseline.cs" Link="Linked\LootBaseline.cs" />
+    <!-- Active Gear: is a worn item's magic on, and its mana's time left (System only). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\ActiveGear\GearActivation.cs" Link="Linked\GearActivation.cs" />
+    <!-- RynthChat: the channel classifier (no dependencies). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthChat\ChatClassifier.cs" Link="Linked\ChatClassifier.cs" />
+    <!-- Item info: per-part colours of the one-line layout (System only). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\ItemInfo\ItemInfoPartColors.cs" Link="Linked\ItemInfoPartColors.cs" />
+    <!-- Trade Shop: UB-IT conversion rates + tell/buy parsing + advertise/sheet builders (System only). -->
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopRates.cs" Link="Linked\TradeShopRates.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopTellParse.cs" Link="Linked\TradeShopTellParse.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopListing.cs" Link="Linked\TradeShopListing.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopMessages.cs" Link="Linked\TradeShopMessages.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Trade\TradeShopAdvertise.cs" Link="Linked\TradeShopAdvertise.cs" />
+    <Compile Include="..\..\Plugins\RynthCore.Plugin.RynthAi\Translate\TranslateChannels.cs" Link="Linked\TranslateChannels.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -39,6 +61,11 @@
   <ItemGroup>
     <!-- Hand-written .nav files for NavFormatTests. -->
     <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Install-folder resolver (env, HKCU, HKLM, default C:\Games). Read only; same file as RynthCore src\Shared. -->
+    <Compile Include="..\..\Plugins\Shared\RynthInstallPaths.cs" Link="Shared\RynthInstallPaths.cs" />
   </ItemGroup>
 
 </Project>

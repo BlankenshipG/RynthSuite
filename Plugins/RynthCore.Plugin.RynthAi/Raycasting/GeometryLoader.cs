@@ -1277,11 +1277,90 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
             if (setup.PartIds != null && setup.PartIds.Length > 0)
             {
                 var gfxVol = GetGfxObjBounds(setup.PartIds[0]);
+                // A big object's first-part sphere is its render bound, not a wall (R-20261119-114214-b9ed,
+                // landblock 0xB64A): wall panel 0x02001C33 is 24 x 0.4 m but its part sphere 28 m round,
+                // and 0x02001C39 (29 parts, not one with physics polygons) got a 13 m sphere. They stand
+                // every 24 m along the landblock edge, so the spheres filled the corner: a line between a
+                // character and a monster 1.5 m off crossed a sphere's surface and read as blocked, and
+                // the selected monster was locked and dropped every 2 s without a cast (and a line through
+                // a panel, both ends inside a sphere, read as clear). Its parts' physics polygons are what
+                // AC collides with; with none at all nothing stops a spell there.
+                // Tools/RynthCore.LosProof checks this spot.
+                if (gfxVol != null && gfxVol.Type == BoundingVolume.VolumeType.Sphere && gfxVol.Dimensions.X > LargePartSphereRadius)
+                {
+                    var mesh = PartsPhysicsMesh(setup, out bool drawingOnly);
+                    if (mesh != null) { result.Add(mesh); return result; }
+                    if (drawingOnly) return result;
+                }
                 if (gfxVol != null)
                     result.Add(gfxVol);
             }
 
             return result;
+        }
+
+        /// <summary>Past this radius a part's sorting sphere is too coarse to stand for the object (meters).</summary>
+        internal const float LargePartSphereRadius = 4.0f;
+
+        /// <summary>
+        /// The physics polygons of every part of <paramref name="setup"/>, placed by its part frames, as one
+        /// triangle mesh (null when there are none or a part couldn't be read). <paramref name="drawingOnly"/>:
+        /// every part was read and none has physics polygons (the GfxObj's HasPhysics flag, 0x01), so nothing
+        /// in the object collides.
+        /// </summary>
+        private BoundingVolume PartsPhysicsMesh(SetupInfo setup, out bool drawingOnly)
+        {
+            drawingOnly = false;
+            int count = setup.PartIds.Length;
+            bool anyPhysics = false, allRead = true;
+            for (int i = 0; i < count; i++)
+            {
+                byte[] head = _portalDat.GetFileData(setup.PartIds[i]);
+                if (head == null || head.Length < 8) { allRead = false; continue; }
+                if ((BitConverter.ToUInt32(head, 4) & 0x01) != 0) anyPhysics = true;
+            }
+            if (!anyPhysics)
+            {
+                drawingOnly = allRead;
+                return null;
+            }
+            if (setup.PartFrames == null || setup.PartFrames.Length < count) return null;
+
+            var triangles = new List<Vector3>();
+            for (int i = 0; i < count && triangles.Count / 3 < MAX_BUILDING_TRIANGLES; i++)
+            {
+                if (setup.PartFrames[i] == null) return null;
+                var mesh = LoadGfxObjMesh(setup.PartIds[i]);
+                if (mesh == null) continue;   // a drawing-only part (or unreadable: the rest still stand)
+                foreach (var face in mesh.Faces)
+                {
+                    TriangulateAndTransform(face, mesh.Vertices, setup.PartFrames[i], triangles);
+                    if (triangles.Count / 3 >= MAX_BUILDING_TRIANGLES) break;
+                }
+            }
+            if (triangles.Count < 3) return null;
+
+            float minX = float.MaxValue, minY = float.MaxValue, minZ = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue, maxZ = float.MinValue;
+            foreach (var v in triangles)
+            {
+                if (v.X < minX) minX = v.X; if (v.X > maxX) maxX = v.X;
+                if (v.Y < minY) minY = v.Y; if (v.Y > maxY) maxY = v.Y;
+                if (v.Z < minZ) minZ = v.Z; if (v.Z > maxZ) maxZ = v.Z;
+            }
+            return new BoundingVolume
+            {
+                Type = BoundingVolume.VolumeType.TriangleMesh,
+                Center = new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f),
+                Dimensions = new Vector3(maxX - minX, maxY - minY, maxZ - minZ),
+                Min = new Vector3(minX, minY, minZ),
+                Max = new Vector3(maxX, maxY, maxZ),
+                MeshTriangles = triangles.ToArray(),
+                IsDoor = false,
+                // Physics polygons only, so no box stands in for missing walls (and a thin panel turned
+                // on the landblock would make a big one).
+                NoAabbFallback = true
+            };
         }
 
         // ── Triangle mesh loading ───────────────────────────────────────────
@@ -1554,6 +1633,59 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
         }
 
         /// <summary>
+        /// The physics polygons of every static object a dungeon's cells place (the EnvCells' stabs: a spider
+        /// web across a doorway, a pillar), in world metres, one TriangleMesh each. A stab's frame is in the
+        /// landblock's space (its z is the floor's: DreamWeave Thread 0x5456's webs stand at z -24 on a -24
+        /// floor). Objects with no physics polygons (nothing to walk into) are left out.
+        /// </summary>
+        public List<(uint SetupId, uint CellId, BoundingVolume Mesh)> GetDungeonStaticMeshes(uint landblockKey)
+        {
+            var list = new List<(uint, uint, BoundingVolume)>();
+            if (_cellDat == null) return list;
+            float gx = ((landblockKey >> 8) & 0xFF) * 192.0f, gy = (landblockKey & 0xFF) * 192.0f;
+            foreach (uint cellId in _cellDat.GetLandblockCellIds(landblockKey))
+            {
+                byte[] data = _cellDat.GetFileData(cellId);
+                if (data == null || data.Length < 20) continue;
+                try
+                {
+                    using var ms = new MemoryStream(data);
+                    using var reader = new BinaryReader(ms);
+                    reader.ReadUInt32();
+                    uint flags = reader.ReadUInt32();
+                    reader.ReadUInt32();
+                    byte numSurfaces = reader.ReadByte();
+                    byte numPortals = reader.ReadByte();
+                    ushort numVisibleCells = reader.ReadUInt16();
+                    for (int i = 0; i < numSurfaces; i++) reader.ReadUInt16();
+                    reader.ReadUInt16(); reader.ReadUInt16();            // environment, cell structure
+                    for (int i = 0; i < 7; i++) reader.ReadSingle();     // the cell's frame
+                    for (int i = 0; i < numPortals; i++) reader.ReadUInt64();
+                    for (int i = 0; i < numVisibleCells; i++) reader.ReadUInt16();
+                    if ((flags & 0x02) == 0 || ms.Position + 4 > ms.Length) continue;
+                    uint numStabs = Math.Min(reader.ReadUInt32(), 500u);
+                    for (uint i = 0; i < numStabs && ms.Position + 32 <= ms.Length; i++)
+                    {
+                        uint setupId = reader.ReadUInt32();
+                        var frame = new Frame
+                        {
+                            OriginX = reader.ReadSingle(), OriginY = reader.ReadSingle(), OriginZ = reader.ReadSingle(),
+                            RotW = reader.ReadSingle(), RotX = reader.ReadSingle(), RotY = reader.ReadSingle(), RotZ = reader.ReadSingle()
+                        };
+                        foreach (var vol in GetBuildingCompositeVolumes(setupId))
+                        {
+                            if (vol.Type != BoundingVolume.VolumeType.TriangleMesh) continue;
+                            var placed = TransformVolume(vol, frame, gx, gy);
+                            if (placed != null) list.Add((setupId, cellId, placed));
+                        }
+                    }
+                }
+                catch (Exception) { }
+            }
+            return list;
+        }
+
+        /// <summary>
         /// Transforms a local-space bounding volume by a placement frame,
         /// producing a world-space AABB for raycasting.
         /// </summary>
@@ -1625,7 +1757,8 @@ namespace RynthCore.Plugin.RynthAi.Raycasting
                         Min = worldMin,
                         Max = worldMax,
                         MeshTriangles = tris,
-                        IsDoor = localVol.IsDoor
+                        IsDoor = localVol.IsDoor,
+                        NoAabbFallback = localVol.NoAabbFallback   // a parts mesh (PartsPhysicsMesh): its triangles are all of it
                     };
                 }
 

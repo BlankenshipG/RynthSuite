@@ -22,6 +22,24 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Reading our hits out of the combat log (victim + amount); RynthAi reads the same lines. -->
+    <Compile Include="..\Shared\CombatText.cs" Link="Shared\CombatText.cs" />
+    <!-- Session stats shared with RynthAi's Mini Remote: the same numbers in both (2026-10-11). -->
+    <Compile Include="..\Shared\KillCounter.cs" Link="Shared\KillCounter.cs" />
+    <Compile Include="..\Shared\TrackerSessionStore.cs" Link="Shared\TrackerSessionStore.cs" />
+    <Compile Include="..\Shared\SessionStats.cs" Link="Shared\SessionStats.cs" />
+    <Compile Include="..\Shared\SessionStatsTracker.cs" Link="Shared\SessionStatsTracker.cs" />
+    <!-- The active server's bank luminance for Lum/hr, from its owner's "RynthServer.Profile" (2026-11-02):
+         behind HasGetServerStateJson / HasGetPluginInterface, so still nothing above v66. -->
+    <Compile Include="..\Shared\EngineServerState.cs" Link="Shared\EngineServerState.cs" />
+    <Compile Include="..\Shared\ServerStateClient.cs" Link="Shared\ServerStateClient.cs" />
+    <Compile Include="..\Shared\RynthServerProfileApi.cs" Link="Shared\RynthServerProfileApi.cs" />
+    <!-- One session (2026-10-13): RynthAi's session through "RynthAi.Hub" when RynthAi is loaded. -->
+    <Compile Include="..\Shared\RynthAiHubApi.cs" Link="Shared\RynthAiHubApi.cs" />
+    <Compile Include="..\Shared\RynthAiSessionClient.cs" Link="Shared\RynthAiSessionClient.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginCore\RynthCore.PluginCore.csproj" />
     <ProjectReference Include="..\..\..\RynthCore\src\RynthCore.PluginSdk\RynthCore.PluginSdk.csproj" />
   </ItemGroup>

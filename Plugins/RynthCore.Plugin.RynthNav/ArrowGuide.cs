@@ -64,7 +64,8 @@ internal sealed class ArrowGuide
     /// Points along a planned route: each portal entrance, each recall, then the place.
     /// A route with no portal or recall is just the place.
     /// </summary>
-    public void SetRoute(IReadOnlyList<RouteStep> route, string name, string type, double ns, double ew)
+    /// <param name="hubName">A hub step's place ("the Abandoned Mine"); null: "the Town Network".</param>
+    public void SetRoute(IReadOnlyList<RouteStep> route, string name, string type, double ns, double ew, Func<RouteStep, string>? hubName = null)
     {
         _steps.Clear();
         foreach (RouteStep s in route)
@@ -73,7 +74,7 @@ internal sealed class ArrowGuide
                 _steps.Add(new ArrowStep { Kind = ArrowStepKind.Recall, Name = s.Label, Hint = "recall: " + s.Label });
             else if (s.IsHub)
                 // Inside the Town Network: no map position; the teleport out moves the arrow on.
-                _steps.Add(new ArrowStep { Kind = ArrowStepKind.Portal, Name = s.Label, Type = "Portal", Hint = "in the Town Network: walk into the " + s.Label });
+                _steps.Add(new ArrowStep { Kind = ArrowStepKind.Portal, Name = s.Label, Type = "Portal", Hint = $"in {hubName?.Invoke(s) ?? "the Town Network"}: walk into the " + s.Label });
             else if (s.UsePortal)
                 _steps.Add(new ArrowStep
                 {

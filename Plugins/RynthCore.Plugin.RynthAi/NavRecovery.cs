@@ -60,10 +60,19 @@ internal interface INavRecoveryPlanner
 {
     NavRecoveryPlan? TryPlan(NavPoint target, out string why);
     NavAreaCheck CheckArea(uint playerCell, double tNs, double tEw, out string routeArea, out string playerArea);
+    /// <summary>
+    /// Outdoors: does the straight walk from (aNs, aEw) to (bNs, bEw) climb ground too steep to
+    /// walk (RynthVision's red slopes)? <paramref name="atYd"/> is how far along; false indoors
+    /// or when the landscape isn't loaded.
+    /// </summary>
+    bool CrossesSteepGround(double aNs, double aEw, double bNs, double bEw, out double atYd);
 }
 
 internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
 {
+    /// <summary>TryPlan's why when the waypoint is a level above or below with no walk to it.</summary>
+    internal const string OtherLevelWhy = "the waypoint is on another level, no walk leads there";
+
     // A dungeon waypoint is always inside some cell; its distance to that cell's centre
     // is at most about half the biggest room. Used to decide "this waypoint is in that
     // cell graph" for both planning and the area check.
@@ -74,7 +83,7 @@ internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
     // Area check: dungeon cells can sit outside their landblock's 192-unit square, so a
     // waypoint that maps to a neighbouring landblock still counts as "in this dungeon"
     // when it is this close to one of its cells.
-    private const double AreaCellReachYd     = 60.0;
+    internal const double AreaCellReachYd    = 60.0;
     private const int    MaxNavmeshCorners   = 128;
 
     private readonly RynthCoreHost _host;
@@ -181,10 +190,13 @@ internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
         applicable = true;
         uint start = graph.ContainsKey(playerCell) ? playerCell : DungeonPathfinder.NearestCell(graph, pNs, pEw, pz);
         if (start == 0) { why = "can't place you on the dungeon map"; return null; }
-        if (start == goal) { why = "already in the waypoint's room, the map has no way around"; return null; }
+        // The waypoint over or under you by a level (2026-11-08: a chase into a pit, 17 m down, and the route's
+        // waypoints up on the floor above): no walk gets there; NavigationEngine hands it on (WaypointOnOtherLevel).
+        bool otherLevel = Math.Abs(pz - tz) > DungeonPathfinder.LevelApartZ;
+        if (start == goal) { why = otherLevel ? OtherLevelWhy : "already in the waypoint's room, the map has no way around"; return null; }
 
         var path = DungeonPathfinder.FindPath(start, goal, graph, _hazards());
-        if (path.Count < 2) { why = "no walkable way on the dungeon map"; return null; }
+        if (path.Count < 2) { why = otherLevel ? OtherLevelWhy : "no walkable way on the dungeon map"; return null; }
 
         // The same points the dungeon patrol uses: an approach and an exit point centred on
         // every narrow opening (flagged, so the engine goes through straight), rooms crossed
@@ -215,9 +227,10 @@ internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
         unsafe
         {
             // Resolved on every call: RynthNav may be missing, or reloaded since last time.
-            IntPtr p = _host.GetPluginInterface(RynthNavPathApiV1.PluginName, RynthNavPathApiV1.InterfaceName, RynthNavPathApiV1.InterfaceVersion);
+            // Version 1 (FindPath is all this needs): a RynthNav from before v2 answers it too.
+            IntPtr p = _host.GetPluginInterface(RynthNavPathApiV1.PluginName, RynthNavPathApiV1.InterfaceName, 1);
             var t = (RynthNavPathApiV1*)p;
-            if (t == null || t->Version < 1 || t->StructSize < (uint)sizeof(RynthNavPathApiV1) || t->FindPath == null)
+            if (t == null || t->Version < 1 || t->StructSize < RynthNavPathApiV1.SizeV1 || t->FindPath == null)
             {
                 why = "RynthNav isn't loaded";
                 return null;
@@ -247,6 +260,31 @@ internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
         double pNs = (sy / 24.0 - 1019.5) / 10.0, pEw = (sx / 24.0 - 1019.5) / 10.0;
         plan.LengthYd = PathLengthYd(pNs, pEw, plan.Points, tNs, tEw);
         return plan;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  STEEP GROUND AHEAD (the red slope overlay's rule, on a straight leg)
+    // ══════════════════════════════════════════════════════════════════════
+
+    // Where the character stands and where the waypoint sits are not checked (either may sit
+    // on the edge of a slope), nor anything farther ahead than SteepLookaheadYd: the engine
+    // asks again as the character comes closer.
+    private const double SteepSkipStartYd  = 0.5;
+    private const double SteepSkipEndYd    = 2.0;
+    private const double SteepLookaheadYd  = 150.0;
+
+    public bool CrossesSteepGround(double aNs, double aEw, double bNs, double bEw, out double atYd)
+    {
+        atYd = -1;
+        if (!_host.HasGetPlayerPose ||
+            !_host.TryGetPlayerPose(out uint cell, out _, out _, out _, out _, out _, out _, out _))
+            return false;
+        if (cell == 0 || (cell & 0xFFFF) >= 0x0100) return false;   // indoors: the dungeon map's job
+        var geo = _raycast()?.GeometryLoader;
+        if (geo == null) return false;
+        atYd = NavSteepGround.FirstBlockedYd(NavToWorld(aEw), NavToWorld(aNs), NavToWorld(bEw), NavToWorld(bNs),
+            key => geo.GetLandblockData(key)?.HeightsZ, SteepSkipStartYd, SteepSkipEndYd, SteepLookaheadYd);
+        return atYd >= 0;
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -332,7 +370,7 @@ internal sealed class NavRecoveryPlanner : INavRecoveryPlanner
         return result;
     }
 
-    private static bool ComputeIsDungeon(uint lb, DatDatabase cellDat)
+    internal static bool ComputeIsDungeon(uint lb, DatDatabase cellDat)
     {
         try
         {

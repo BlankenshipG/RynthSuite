@@ -84,8 +84,14 @@ internal sealed class ScrollLearner
     internal const long ArrivalGraceMs = 15_000;
     /// <summary>Read animation + 1 s read + return to ready is ~3-4 s on ACE; give up after this.</summary>
     internal const long ReadTimeoutMs = 8_000;
-    /// <summary>Pause between two reads.</summary>
+    /// <summary>
+    /// Pause between two reads, from the read's end (its chat answer), when the read's UseDone is not
+    /// seen. ACE sends "The scroll is destroyed." before the return-to-ready animation and the UseDone
+    /// after it (Scroll.ActOnUse, Player.TryUseItem): about 0.7 s apart in a client log.
+    /// </summary>
     internal const long ReadGapMs = 1_500;
+    /// <summary>Pause between two reads, from the last read's UseDone (the server is free then).</summary>
+    internal const long ReadGapAfterUseDoneMs = 250;
     /// <summary>How often the pack is looked through for unknown scrolls.</summary>
     internal const long PackSweepMs = 5_000;
     /// <summary>A scroll approved for looting holds its spell this long (one copy per spell).</summary>
@@ -145,6 +151,11 @@ internal sealed class ScrollLearner
     private ChatOutcome _chat;
     private string _chatText = "";
     private bool _readItemDeleted;
+
+    // The UseDone of the last read sent: the first UseDone after its send. 0 = not seen (yet).
+    private bool _readUseDoneWatch;
+    private int _readUseDoneSeqAtSend;
+    private long _readUseDoneAt;
 
     public ScrollLearner(RynthCoreHost host, LegacyUiSettings settings, WorldObjectCache? cache)
     {
@@ -352,10 +363,17 @@ internal sealed class ScrollLearner
     public bool Tick(bool safe, int busyCount)
     {
         long now = NowMs();
+        PollReadUseDone(now);
         if (IsReading)
         {
             if (ResolveRead(now)) return false;
             return safe;
+        }
+
+        if (_seriesOpen)
+        {
+            if (!_settings.IsMacroRunning) CloseSeries(CurrentMode() == CombatMode.NonCombat ? "the macro stopped" : "");
+            else TickRestore(now, safe, busyCount);
         }
 
         if (!_settings.IsMacroRunning) return false;
@@ -370,7 +388,7 @@ internal sealed class ScrollLearner
         }
 
         if (!safe || busyCount > 0 || _pending.Count == 0) return false;
-        if (now - _lastReadEndedAt < ReadGapMs) return false;
+        if (!ReadGapOver(now)) return false;
         if (inv == null)
         {
             if (now - _lastStartCheckAt < StartCheckMs) return false;   // one pack walk a second at most
@@ -380,6 +398,106 @@ internal sealed class ScrollLearner
         return TryStartRead(inv, now);
     }
 
+    // ── Stance restore ────────────────────────────────────────────────────────
+    // Using a scroll puts the character in Peace. The mode it was in before the FIRST read of a
+    // run of reads is remembered, and requested once after the last one, when it was a combat
+    // mode and Peace Mode When Idle is off, so the next fight starts in stance. Nothing is sent
+    // when something else owns the moment (not safe: a fight or buff), when anything else already
+    // changed the mode, or while the client is busy.
+
+    /// <summary>Quiet time after a read before the stance goes back: a next scroll starts within ReadGapMs + StartCheckMs.</summary>
+    internal const long RestoreSettleMs = 3_500;
+    internal const long RestoreRetryMs = 1_000;
+    internal const int RestoreMaxRequests = 3;
+    /// <summary>
+    /// How long after the settle time a restore may still go out. The learner is not ticked during a
+    /// death hold, a buff hold, vendoring or crafting, and the client can stay busy: a restore that
+    /// late is a stance from before the interruption (a previous life's Melee after a respawn), so
+    /// the series is dropped instead.
+    /// </summary>
+    internal const long RestoreGiveUpMs = 15_000;
+
+    private bool _seriesOpen;
+    private int _restoreMode;        // 0 = nothing to restore
+    private int _restoreWeapon;      // the main-hand weapon at the first read; ACE reverts a mode its weapon doesn't fit
+    private long _restoreNextAt;
+    private int _restoreRequests;
+
+    private int CurrentMode()
+    {
+        try { return _host.HasGetCurrentCombatMode ? _host.GetCurrentCombatMode() : 0; }
+        catch { return 0; }
+    }
+
+    private static string ModeName(int mode) => mode switch
+    {
+        CombatMode.NonCombat => "Peace",
+        CombatMode.Melee => "Melee",
+        CombatMode.Missile => "Missile",
+        CombatMode.Magic => "Magic",
+        _ => mode.ToString(),
+    };
+
+    /// <summary>The melee/missile weapon or caster in the main hand (0 = none readable); CombatManager.InHandWeaponId's rules.</summary>
+    private int WieldedWeaponId()
+    {
+        try
+        {
+            foreach (var wo in _cache?.GetDirectInventory(forceRefresh: true) ?? Array.Empty<WorldObject>())
+            {
+                if (WorldObjectCache.IsAmmo(wo)) continue;
+                if ((wo.Values(LongValueKey.CurrentWieldedLocation, 0) & OffhandRules.ShieldSlot) != 0) continue;   // the off hand
+                bool weapon = wo.ObjectClass == AcObjectClass.MeleeWeapon || wo.ObjectClass == AcObjectClass.MissileWeapon || WeaponList.IsWand(wo);
+                if (weapon && WorldObjectCache.IsWieldedByPlayer(_host, wo)) return wo.Id;
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    private void OpenSeries()
+    {
+        if (_seriesOpen) return;   // a later scroll of the same run: the first read's mode stands
+        _seriesOpen = true;
+        _restoreRequests = 0;
+        _restoreNextAt = 0;
+        int m = CurrentMode();
+        _restoreMode = !_settings.PeaceModeWhenIdle && (m == CombatMode.Melee || m == CombatMode.Missile || m == CombatMode.Magic) ? m : 0;
+        _restoreWeapon = _restoreMode != 0 ? WieldedWeaponId() : 0;
+    }
+
+    private void CloseSeries(string why)
+    {
+        if (_restoreMode != 0 && why.Length > 0) LogLine($"[Learn] stance not restored ({why})");
+        _seriesOpen = false;
+        _restoreMode = 0;
+    }
+
+    private void TickRestore(long now, bool safe, int busyCount)
+    {
+        if (_settings.PeaceModeWhenIdle) { CloseSeries(""); return; }                     // switched on since: Peace is wanted
+        long age = now - _lastReadEndedAt;
+        if (_restoreMode == 0) { if (age >= RestoreSettleMs) CloseSeries(""); return; }
+        // The next scroll may be about to start: wait the settle time, unless the last read's UseDone
+        // is in and no scroll is pending (nothing left to read, so the stance can go back now).
+        bool lastReadDone = LastReadUseDoneSeen && _pending.Count == 0;
+        if (age < RestoreSettleMs && !lastReadDone) return;
+        if (age > RestoreSettleMs + RestoreGiveUpMs) { CloseSeries("too late"); return; }
+        int cur = CurrentMode();
+        if (cur == _restoreMode) { CloseSeries(""); return; }                              // back in stance
+        if (cur != CombatMode.NonCombat) { CloseSeries("something else set the mode"); return; }
+        if (!safe) { CloseSeries("a fight or another task has the tick"); return; }
+        if (busyCount > 0 || now < _restoreNextAt) return;
+        if (_restoreRequests >= RestoreMaxRequests) { CloseSeries("the client did not change mode"); return; }
+        if (WieldedWeaponId() != _restoreWeapon) { CloseSeries("the weapon changed"); return; }
+        // Only a request that went out counts: a pacing hold (another action unanswered) is retried next tick.
+        if (_host.ChangeCombatModeFor(_restoreMode, "Learn", "back to the stance from before the scroll read"))
+        {
+            _restoreRequests++;
+            _restoreNextAt = now + RestoreRetryMs;
+            LogLine($"[Learn] restoring {ModeName(_restoreMode)} mode after reading");
+        }
+    }
     /// <summary>How often a waiting scroll is looked for in the pack.</summary>
     internal const long StartCheckMs = 1_000;
     private long _lastStartCheckAt = long.MinValue / 2;
@@ -479,6 +597,7 @@ internal sealed class ScrollLearner
             return false;
         }
 
+        OpenSeries();
         pp.Attempts++;
         _readItemId = pickId;
         _readSpellId = j.SpellId;
@@ -489,6 +608,9 @@ internal sealed class ScrollLearner
         _chatText = "";
         _readItemDeleted = false;
 
+        int seqBefore = 0;
+        bool haveSeq = false;
+        try { if (_host.HasUseDoneSeq) { seqBefore = _host.GetUseDoneSeq(); haveSeq = true; } } catch { }
         bool sent = false;
         try { sent = _host.UseFor(unchecked((uint)pickId), "Learn", $"read the scroll to learn {j.SpellName} ({j.Why})"); }
         catch { }
@@ -499,9 +621,38 @@ internal sealed class ScrollLearner
             else pp.NotBefore = now + 3_000;
             return false;
         }
+        _readUseDoneWatch = haveSeq;
+        _readUseDoneSeqAtSend = seqBefore;
+        _readUseDoneAt = 0;
         LogLine($"[Learn] reading '{pick.Name}' ({j.SpellName}: {j.Why})");
         return true;
     }
+
+    /// <summary>Notes the first UseDone after the last read's send (the server's end of that read).</summary>
+    private void PollReadUseDone(long now)
+    {
+        if (!_readUseDoneWatch) return;
+        try
+        {
+            if (unchecked(_host.GetUseDoneSeq() - _readUseDoneSeqAtSend) > 0)
+            {
+                _readUseDoneWatch = false;
+                _readUseDoneAt = now;
+            }
+        }
+        catch { _readUseDoneWatch = false; }
+    }
+
+    /// <summary>The last read's UseDone was seen (after its chat answer, or at any time for this read).</summary>
+    private bool LastReadUseDoneSeen => _readUseDoneAt != 0;
+
+    /// <summary>
+    /// May the next read start? ReadGapAfterUseDoneMs after the last read's UseDone, or ReadGapMs
+    /// after its end when no UseDone is seen (an engine without UseDone, or a lost one).
+    /// </summary>
+    private bool ReadGapOver(long now) =>
+        (LastReadUseDoneSeen && now - _readUseDoneAt >= ReadGapAfterUseDoneMs)
+        || now - _lastReadEndedAt >= ReadGapMs;
 
     /// <summary>True when the read in flight is over (learned, refused, or timed out).</summary>
     private bool ResolveRead(long now)
@@ -600,6 +751,8 @@ internal sealed class ScrollLearner
     /// <summary>Logout: the session memory goes with the character.</summary>
     public void Reset()
     {
+        _seriesOpen = false;
+        _restoreMode = 0;
         _failedSpells.Clear();
         _approved.Clear();
         _pending.Clear();

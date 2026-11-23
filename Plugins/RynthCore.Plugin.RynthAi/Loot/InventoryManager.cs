@@ -12,9 +12,11 @@ namespace RynthCore.Plugin.RynthAi.Loot;
 /// AutoCram moves non-equipped loose items out of the player's main pack into
 /// sub-packs so the main pack stays empty for new loot pickups.
 ///
-/// AutoStack merges two partial stacks of the same item (arrows, components,
-/// salvage, pyreals, etc.) by dropping the smaller one onto the larger one's
-/// slot — the server auto-merges stackable same-type items at the same slot.
+/// AutoStack merges two partial stacks of the same weenie (arrows, components,
+/// pyreals, etc.) by dropping the smaller one onto the larger one's slot — the
+/// server merges only same-WCID stackables. Groups by WCID (not display name). A
+/// pair whose total is over MaxStackSize is still tried: the server fills the
+/// target and leaves the rest in the source, which is progress, not a failure.
 /// </summary>
 public sealed class InventoryManager
 {
@@ -33,13 +35,17 @@ public sealed class InventoryManager
     // engine return is enqueue-accepted, not moved-confirmed (AcMainThreadQueue
     // gesture-defers a move up to ~250 ticks ≈ 4-8s), so success and failure are
     // indistinguishable at the call site. We confirm on a LATER snapshot.
-    private sealed class Pending { public DateTime EnqueuedAt; public int FromContainer; }
+    private sealed class Pending { public DateTime EnqueuedAt; public int FromContainer; public int TargetCount; public int SourceCount; public string Group = ""; public string Name = ""; public bool Guessed; }
     private sealed class Backoff { public DateTime NextRetry; public int Attempts; public DateTime LastTouched; }
     private readonly Dictionary<int, Pending> _cramPending = new();        // item id -> in-flight move
     private readonly Dictionary<int, Backoff> _cramBackoff = new();        // item id -> confirmed-fail backoff
     private readonly Dictionary<string, Pending> _stackPending = new();    // "tgt_src" -> in-flight merge
     private readonly Dictionary<string, Backoff> _stackBackoff = new();    // "tgt_src" -> confirmed-fail backoff
     private DateTime _lastBackoffPrune = DateTime.MinValue;
+    // Groups whose stack size is only a name guess and whose merges the server never takes
+    // (2026-11-08: 17 Pyreal Motes, which don't stack, were "Pyreal" 25000 stacks; 136 pairs each
+    // failed and backed off on their own, two merges a second for hours).
+    private readonly StackGroupRefusals _guessRefusals = new();
 
     // Grace window for confirm-via-snapshot. MUST be strictly larger than the
     // AcMainThreadQueue max gesture-defer (DrainDeferTickCap=250 ticks ≈ 4-8s at the
@@ -65,6 +71,86 @@ public sealed class InventoryManager
         _cache = cache;
     }
 
+    // ── The last move or merge, until the server answers it (2026-11-18, R-20261117-230613-88c5) ──
+    // AC lets the client have one item request out at a time: a pack move fills the client's pending
+    // inventory request slot, and until the server's answer about that item comes back the client
+    // refuses every use, move and pickup with "You can only move or use one item at a time" and
+    // sends nothing (RynthCore ClientActionGates). AutoCram runs on the first tick after a corpse is
+    // released, and the looter claimed and used the next corpse 1-3 ms after the cram's move, four
+    // times in 100 s in the report: each open was refused, the looter waited 5 s for an answer that
+    // could never come, then opened the corpse again. So the next item action (a corpse, door or chest
+    // use, salvage, a mana stone, a pet) waits for this move's answer: the item seen out of the pack it
+    // was moved from, or out of the stack it was merged from, or the server refusing it
+    // (InventoryServerSaveFailed naming it). At most MoveAnswerMaxMs, so a lost answer holds nothing
+    // for long.
+    private uint _flightId;
+    private int _flightFrom;
+    private int _flightStack;
+    private bool _flightIsMerge;
+    private int _flightErrSeq;
+    private DateTime _flightSentAt = DateTime.MinValue;
+    private string _flightWhat = "";
+
+    /// <summary>Longest a move counts as unanswered: answers come in 50-300 ms; this only bounds a lost one.</summary>
+    internal const double MoveAnswerMaxMs = 3000;
+    private const uint EventInventoryServerSaveFailed = 0x00A0;
+
+    private void NoteMoveSent(uint id, int fromContainer, int stackCount, bool merge, string what)
+    {
+        _flightId = id;
+        _flightFrom = fromContainer;
+        _flightStack = stackCount;
+        _flightIsMerge = merge;
+        _flightErrSeq = LastWeenieErrorSeq();
+        _flightSentAt = RynthClock.Now;
+        _flightWhat = what;
+    }
+
+    private int LastWeenieErrorSeq()
+    {
+        try { return _host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int seq, out _, out _, out _) ? seq : 0; }
+        catch { return 0; }
+    }
+
+    /// <summary>
+    /// True while AutoCram's or AutoStack's last move has no answer from the server yet: the client
+    /// refuses any other item action until it has one. <paramref name="what"/> says which move.
+    /// </summary>
+    public bool MoveUnanswered(out string what)
+    {
+        what = "";
+        if (_flightId == 0) return false;
+        double age = (RynthClock.Now - _flightSentAt).TotalMilliseconds;
+        if (age >= MoveAnswerMaxMs || age < 0 || MoveAnswered())
+        {
+            _flightId = 0;
+            return false;
+        }
+        what = $"the {(_flightIsMerge ? "merge" : "move")} of {_flightWhat} sent {age:0} ms ago has no answer yet";
+        return true;
+    }
+
+    private bool MoveAnswered()
+    {
+        int id = unchecked((int)_flightId);
+        try
+        {
+            // The server refused it: InventoryServerSaveFailed names the item (it empties the client's slot too).
+            if (_host.HasGetLastWeenieError && _host.TryGetLastWeenieError(out int seq, out _, out uint evt, out uint obj)
+                && seq != _flightErrSeq && evt == EventInventoryServerSaveFailed && obj == _flightId)
+                return true;
+        }
+        catch { }
+        // Gone from the client (merged away, destroyed) or out of the pack it was moved from.
+        int container = _cache.GetContainerId(id);
+        if (container == 0 || container != _flightFrom) return true;
+        // A merge that left the source in place: its stack shrank.
+        if (_flightIsMerge && (_cache[id]?.Values(LongValueKey.StackCount, -999) ?? -999) is int n
+            && n != -999 && n != _flightStack)
+            return true;
+        return false;
+    }
+
     // Kept as a no-op for call-site compatibility. Scans are now driven by
     // the backoff timer below — we re-scan every 2 seconds when idle, every
     // 500 ms after an action, so external "dirty" signals aren't needed.
@@ -77,13 +163,13 @@ public sealed class InventoryManager
 
     public void RunManual(bool cram, bool stack)
     {
-        if (cram)  _manualCramUntil  = DateTime.Now.AddSeconds(60);
-        if (stack) _manualStackUntil = DateTime.Now.AddSeconds(60);
+        if (cram)  _manualCramUntil  = RynthClock.Now.AddSeconds(60);
+        if (stack) _manualStackUntil = RynthClock.Now.AddSeconds(60);
         _nextInventoryActionTime = DateTime.MinValue;
     }
 
-    private bool ManualCram  => DateTime.Now < _manualCramUntil;
-    private bool ManualStack => DateTime.Now < _manualStackUntil;
+    private bool ManualCram  => RynthClock.Now < _manualCramUntil;
+    private bool ManualStack => RynthClock.Now < _manualStackUntil;
 
     public void OnHeartbeat(int busyCount)
     {
@@ -95,13 +181,13 @@ public sealed class InventoryManager
         // that haven't been touched in BackoffMaxIdleMs are dropped so they don't
         // accumulate across a multi-hour session; live backoff state persists so a
         // genuinely-unmovable item stays backed off.
-        if ((DateTime.Now - _lastBackoffPrune).TotalMilliseconds >= BackoffPruneIntervalMs)
+        if ((RynthClock.Now - _lastBackoffPrune).TotalMilliseconds >= BackoffPruneIntervalMs)
         {
             PruneBackoff();
-            _lastBackoffPrune = DateTime.Now;
+            _lastBackoffPrune = RynthClock.Now;
         }
 
-        if (DateTime.Now < _nextInventoryActionTime) return;
+        if (RynthClock.Now < _nextInventoryActionTime) return;
 
         // Snapshot inventory once per tick — both passes use the same list.
         var inv = _cache.GetDirectInventory(forceRefresh: true).ToList();
@@ -113,26 +199,28 @@ public sealed class InventoryManager
         // each other if AutoStack keeps finding new partial pairs every tick.
         if (ProcessAutoCram(inv, (int)playerId))
         {
-            _nextInventoryActionTime = DateTime.Now.AddMilliseconds(500);
+            _nextInventoryActionTime = RynthClock.Now.AddMilliseconds(500);
             return;
         }
 
         if (ProcessAutoStack(inv, (int)playerId))
         {
-            _nextInventoryActionTime = DateTime.Now.AddMilliseconds(500);
+            _nextInventoryActionTime = RynthClock.Now.AddMilliseconds(500);
             return;
         }
 
         // Nothing to do — back off re-scan for a bit, and end a manual run.
         _manualCramUntil = _manualStackUntil = DateTime.MinValue;
-        _nextInventoryActionTime = DateTime.Now.AddMilliseconds(2000);
+        _nextInventoryActionTime = RynthClock.Now.AddMilliseconds(2000);
     }
 
     // ── AutoCram ──────────────────────────────────────────────────────────
 
     private bool ProcessAutoCram(List<WorldObject> inv, int playerId)
     {
-        if (!_settings.EnableAutocram && !ManualCram) return false;
+        // RynthSort's auto-sort on: it owns the packs, and Auto Cram moving items back out of the main pack
+        // fought it (owner, 2026-11-03). A cram asked for by hand (/ra cram) still runs.
+        if ((!_settings.EnableAutocram || _settings.AutoSortOn) && !ManualCram) return false;
 
         int crammable = 0;
         foreach (var item in inv)
@@ -152,7 +240,7 @@ public sealed class InventoryManager
                     _cramBackoff.Remove(item.Id);
                     continue;
                 }
-                if ((DateTime.Now - cp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
+                if ((RynthClock.Now - cp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
                     continue;                       // still in flight — don't re-enqueue or blacklist
                 _cramPending.Remove(item.Id);
                 RegisterFailure(_cramBackoff, item.Id);
@@ -160,7 +248,7 @@ public sealed class InventoryManager
                 continue;
             }
             // Backed-off after a confirmed failure: skip until NextRetry.
-            if (_cramBackoff.TryGetValue(item.Id, out var cb) && DateTime.Now < cb.NextRetry)
+            if (_cramBackoff.TryGetValue(item.Id, out var cb) && RynthClock.Now < cb.NextRetry)
                 continue;
             // Skip items the user has registered in the RynthAi Weapons tab —
             // those are weapons they want to keep accessible at the top level.
@@ -225,7 +313,8 @@ public sealed class InventoryManager
 
             // Enqueue accepted — record as PENDING and confirm on a later snapshot (do
             // NOT blacklist; success and a deferred-but-pending move look identical here).
-            _cramPending[item.Id] = new Pending { EnqueuedAt = DateTime.Now, FromContainer = playerId };
+            _cramPending[item.Id] = new Pending { EnqueuedAt = RynthClock.Now, FromContainer = playerId };
+            NoteMoveSent(unchecked((uint)item.Id), playerId, amount, merge: false, $"'{item.Name}'");
             return true; // one action per tick
         }
 
@@ -259,11 +348,13 @@ public sealed class InventoryManager
             if (inPlayerScope) playerItems.Add(item);
         }
 
-        // Group by name, keep only stackable items with >1 in the same group.
+        // Group by weenie class id (WCID), not display name. Same-name stacks that are
+        // different weenies (e.g. Coalesced Mana 42517 vs 42518) cannot merge — the server
+        // answers "not compatible for stacking" and AutoStack used to retry forever.
         var groupList = playerItems
             .Where(x => GetMaxStackSize(x) > 1)
-            .GroupBy(x => x.Name)
-            .Where(g => g.Count() > 1)
+            .GroupBy(StackGroupKey)
+            .Where(g => g.Count() > 1 && !_guessRefusals.GivenUp(g.Key))
             .ToList();
 
         foreach (var g in groupList)
@@ -296,10 +387,14 @@ public sealed class InventoryManager
             (WorldObject Item, int Count)? chosenTarget = null;
             (WorldObject Item, int Count)? chosenSource = null;
             string? pairKey = null;
-            for (int ti = 0; ti < parts.Count && chosenTarget == null; ti++)
+            bool guessed = g.First().Values(LongValueKey.MaxStackSize, 0) <= 1;
+            for (int ti = 0; ti < parts.Count && chosenTarget == null && !_guessRefusals.GivenUp(g.Key); ti++)
             {
                 for (int si = parts.Count - 1; si > ti; si--)
                 {
+                    // Server rejects merges that would overflow MaxStackSize.
+                    if (parts[ti].Count + parts[si].Count > max)
+                        continue;
                     string key = parts[ti].Item.Id + "_" + parts[si].Item.Id;
                     // Confirm-via-snapshot: a prior merge of this pair either consumed
                     // the source (id vanished from inv) or grew the target. Either =>
@@ -308,20 +403,28 @@ public sealed class InventoryManager
                     if (_stackPending.TryGetValue(key, out var sp))
                     {
                         bool sourceGone = !inv.Any(x => x.Id == parts[si].Item.Id);
-                        if (sourceGone)
+                        // Past the max the server fills the target and the source survives smaller:
+                        // that is a merge too, not a failure.
+                        if (sourceGone || MergeProgressed(sp.TargetCount, sp.SourceCount, parts[ti].Count, parts[si].Count))
                         {
                             _stackPending.Remove(key);
                             _stackBackoff.Remove(key);
+                            _guessRefusals.Merged(sp.Group);
                             continue; // this pair resolved — try another
                         }
-                        if ((DateTime.Now - sp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
+                        if ((RynthClock.Now - sp.EnqueuedAt).TotalMilliseconds < MoveConfirmGraceMs)
                             continue; // still in flight — skip this pair this tick
                         _stackPending.Remove(key);
                         RegisterFailure(_stackBackoff, key);
+                        if (sp.Guessed && _guessRefusals.Refused(sp.Group))
+                        {
+                            _host.Log($"[RynthAi] AutoStack: '{sp.Name}' never merged in {StackGroupRefusals.GiveUpAfter} tries and its stack size was only guessed from its name: it doesn't stack, leaving those alone until the plugin reloads.");
+                            break;
+                        }
                         _host.Log($"[RynthAi] AutoStack: CONFIRMED merge failure {key} (source survived after {MoveConfirmGraceMs:0}ms) — backing off");
                         continue;
                     }
-                    if (_stackBackoff.TryGetValue(key, out var sb) && DateTime.Now < sb.NextRetry)
+                    if (_stackBackoff.TryGetValue(key, out var sb) && RynthClock.Now < sb.NextRetry)
                         continue; // backed off — try another pair
                     chosenTarget = parts[ti];
                     chosenSource = parts[si];
@@ -343,6 +446,7 @@ public sealed class InventoryManager
             if (!ok)
             {
                 RegisterFailure(_stackBackoff, pairKey);
+                if (guessed) _guessRefusals.Refused(g.Key);
                 _host.Log($"[RynthAi] AutoStack: MergeStackInternal REJECTED src=0x{source.Item.Id:X8} tgt=0x{target.Item.Id:X8} — backing off");
                 return true; // one action per tick
             }
@@ -350,7 +454,12 @@ public sealed class InventoryManager
             // Enqueue accepted — record PENDING, confirm on a later snapshot. Do NOT
             // add the pair-key on success (the old bug that poisoned good merges and
             // starved multi-partial consolidation).
-            _stackPending[pairKey] = new Pending { EnqueuedAt = DateTime.Now, FromContainer = playerId };
+            _stackPending[pairKey] = new Pending
+            {
+                EnqueuedAt = RynthClock.Now, FromContainer = playerId, TargetCount = target.Count, SourceCount = source.Count,
+                Group = g.Key, Name = source.Item.Name ?? "", Guessed = guessed,
+            };
+            NoteMoveSent(unchecked((uint)source.Item.Id), source.Item.Container, source.Count, merge: true, $"'{source.Item.Name}'");
             return true; // one action per tick
         }
 
@@ -368,21 +477,21 @@ public sealed class InventoryManager
             map[key] = b;
         }
         b.Attempts++;
-        b.LastTouched = DateTime.Now;
+        b.LastTouched = RynthClock.Now;
         int shift = b.Attempts - 1;
         if (shift > 6) shift = 6;                       // cap the shift so the multiply can't overflow
         double delay = BackoffBaseMs * (1 << shift);    // 5s,10s,20s,40s,80s,160s,320s→capped
         if (delay > BackoffMaxMs) delay = BackoffMaxMs;
         // Past the attempt budget, park far out (still age-pruned) instead of looping.
         if (b.Attempts >= MaxAttemptsBudget) delay = BackoffMaxMs;
-        b.NextRetry = DateTime.Now.AddMilliseconds(delay);
+        b.NextRetry = RynthClock.Now.AddMilliseconds(delay);
     }
 
     // Age-prune dead/idle entries so the maps don't grow unbounded across a long
     // session (the wholesale clear used to be the de-facto bound).
     private void PruneBackoff()
     {
-        DateTime now = DateTime.Now;
+        DateTime now = RynthClock.Now;
         PruneMap(_cramBackoff, b => b.LastTouched, now);
         PruneMap(_stackBackoff, b => b.LastTouched, now);
         PruneMap(_cramPending, p => p.EnqueuedAt, now);
@@ -400,32 +509,91 @@ public sealed class InventoryManager
             foreach (var k in dead) map.Remove(k);
     }
 
-    // ── Stack-size lookup ─────────────────────────────────────────────────
+    // ── Stack-size / group-key lookup ─────────────────────────────────────
 
-    private static int GetMaxStackSize(WorldObject item)
+    /// <summary>
+    /// AutoStack group key: the WCID when known (Decal Type / TryGetObjectWcid), else the name.
+    /// Name-only is a cold-start fallback; once a WCID is known, same-name stacks of different
+    /// weenies stay in separate groups.
+    /// </summary>
+    internal static string StackGroupKey(int wcid, string? name) => wcid > 0 ? "w:" + wcid : "n:" + (name ?? "");
+
+    private static string StackGroupKey(WorldObject item)
+        => StackGroupKey(item.Values(unchecked((int)WorldObjectCache.DecalTypeKey), 0), item.Name);
+
+    /// <summary>
+    /// True when a merge we sent moved something: the target grew or the source shrank since it was
+    /// enqueued. Counts are read from the same snapshot, so a refused merge changes neither.
+    /// </summary>
+    internal static bool MergeProgressed(int targetBefore, int sourceBefore, int targetNow, int sourceNow)
+        => targetBefore > 0 && sourceBefore > 0 && (targetNow > targetBefore || sourceNow < sourceBefore);
+
+    internal static int GetMaxStackSize(WorldObject item)
     {
         int max = item.Values(LongValueKey.MaxStackSize, 0);
         if (max > 1) return max;
+        return NameFallbackMaxStack(item.Name);
+    }
 
-        // Name-based fallbacks for items whose quality property didn't resolve yet.
-        string n = item.Name;
-        if (string.IsNullOrEmpty(n)) return 1;
-
-        if (n.Contains("Pyreal", StringComparison.OrdinalIgnoreCase)) return 25000;
-        if (n.Contains("Trade Note", StringComparison.OrdinalIgnoreCase)) return 100;
-        if (n.Contains("Taper", StringComparison.OrdinalIgnoreCase)
-            || n.Contains("Scarab", StringComparison.OrdinalIgnoreCase)
-            || n.Contains("Prismatic", StringComparison.OrdinalIgnoreCase)) return 100;
-        if (n.Contains("Arrow", StringComparison.OrdinalIgnoreCase)
-            || n.Contains("Bolt", StringComparison.OrdinalIgnoreCase)
-            || n.Contains("Quarrel", StringComparison.OrdinalIgnoreCase)
-            || n.Contains("Atlatl Dart", StringComparison.OrdinalIgnoreCase)) return 250;
-        if (n.Contains("Pea", StringComparison.OrdinalIgnoreCase)
-            || n.Contains("Grain", StringComparison.OrdinalIgnoreCase)) return 100;
+    /// <summary>
+    /// The stack size guessed from a name while the item's MaxStackSize isn't known. Pyreals by
+    /// their exact name only, the rest by whole words: "Pyreal Mote" (it doesn't stack) used to be
+    /// a 25000 pyreal stack and a "Spear" or "Pearl" a 100 "Pea" stack.
+    /// </summary>
+    internal static int NameFallbackMaxStack(string? n)
+    {
+        if (string.IsNullOrWhiteSpace(n)) return 1;
+        n = n.Trim();
+        if (n.Equals("Pyreal", StringComparison.OrdinalIgnoreCase) || n.Equals("Pyreals", StringComparison.OrdinalIgnoreCase)) return 25000;
+        if (HasWord(n, "Trade Note")) return 100;
+        if (HasWord(n, "Taper") || HasWord(n, "Scarab") || HasWord(n, "Prismatic")) return 100;
+        if (HasWord(n, "Arrow") || HasWord(n, "Arrows") || HasWord(n, "Bolt") || HasWord(n, "Bolts")
+            || HasWord(n, "Quarrel") || HasWord(n, "Quarrels") || HasWord(n, "Atlatl Dart") || HasWord(n, "Atlatl Darts")) return 250;
+        if (HasWord(n, "Pea") || HasWord(n, "Peas") || HasWord(n, "Grain")) return 100;
 
         // Salvage bags are intentionally NOT here — each bag is a unique item
         // with quality props; they do not stack.
 
         return 1;
     }
+
+    /// <summary><paramref name="word"/> in <paramref name="name"/> as whole words (letters on neither side), any case.</summary>
+    private static bool HasWord(string name, string word)
+    {
+        for (int at = name.IndexOf(word, StringComparison.OrdinalIgnoreCase); at >= 0;
+             at = name.IndexOf(word, at + 1, StringComparison.OrdinalIgnoreCase))
+        {
+            int end = at + word.Length;
+            if ((at == 0 || !char.IsLetter(name[at - 1])) && (end == name.Length || !char.IsLetter(name[end])))
+                return true;
+        }
+        return false;
+    }
+}
+
+/// <summary>
+/// Stack groups whose merges the server keeps refusing, when their stack size was only guessed
+/// from the name: after GiveUpAfter refusals with no merge between, the group is left alone for
+/// the plugin's life. A merge that goes through clears the count.
+/// </summary>
+internal sealed class StackGroupRefusals
+{
+    internal const int GiveUpAfter = 3;
+    private readonly Dictionary<string, int> _refused = new();
+    private readonly HashSet<string> _givenUp = new();
+
+    /// <summary>A refused merge in <paramref name="group"/>: true when this one gives the group up.</summary>
+    public bool Refused(string group)
+    {
+        if (string.IsNullOrEmpty(group) || _givenUp.Contains(group)) return false;
+        int n = _refused.TryGetValue(group, out int c) ? c + 1 : 1;
+        _refused[group] = n;
+        if (n < GiveUpAfter) return false;
+        _givenUp.Add(group);
+        return true;
+    }
+
+    public void Merged(string group) { if (!string.IsNullOrEmpty(group)) _refused.Remove(group); }
+
+    public bool GivenUp(string group) => _givenUp.Contains(group);
 }

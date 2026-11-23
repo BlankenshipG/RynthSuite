@@ -1,6 +1,6 @@
 using System;
 using System.IO;
-using RynthCore.Plugin.RynthTracker;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.TrackerSessionTests;
 
@@ -11,7 +11,7 @@ namespace RynthCore.TrackerSessionTests;
 // Self-contained; fails on zero assertions.
 //
 // Run: dotnet run -c Release  (exit 0 = pass, 1 = fail)
-internal static class Program
+internal static partial class Program
 {
     private static int _asserts;
     private static int _fails;
@@ -45,6 +45,9 @@ internal static class Program
         TestFileNames();
         TestFiles();
         TestCleanup();
+        TestKillCounter();
+        TestSessionStats();
+        TestRynthAiSnapshot();
 
         Console.WriteLine($"\n{_asserts} assertions, {_fails} failed.");
         if (_asserts == 0) { Console.WriteLine("ABORT: zero assertions ran."); return 1; }
@@ -53,6 +56,58 @@ internal static class Program
     }
 
     private static readonly DateTime Now = new(2026, 10, 1, 3, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// One session (2026-10-13): RynthTracker shows RynthAi's session ("RynthAi.Hub" SessionStats and
+    /// SessionStatsMore) when RynthAi answers; its rates are rounded, not cut off.
+    /// </summary>
+    private static void TestRynthAiSnapshot()
+    {
+        Console.WriteLine("-- RynthAi's session in the Tracker panel");
+        var s = new RynthCore.Plugin.Shared.SessionStatsV1
+        {
+            StartUtcTicks = Now.AddHours(-2).Ticks, SessionSeconds = 7200, Xp = 5_000_000, XpPerHour = 2_499_999.6,
+            Lum = 9000, LumPerHour = 4500.5, LumLast5Min = 120, PassUpTracked = 1, LumPassUp = 300, PassUpPerHour = 149.4,
+            Kills = 40, KillsPerHour = 20,
+        };
+        var more = new RynthCore.Plugin.Shared.SessionStatsMoreV1 { XpPerKill = 125_000, Deaths = 1, MaxLevel = 0, Rad = 77, RadPerHour = 38.5 };
+        var v = RynthCore.Plugin.RynthTracker.TrackerSnapshot.FromRynthAi(s, more, null);
+        Eq(v.SessionStartUtc, Now.AddHours(-2), "RynthAi's session start");
+        Check(v.Xp == 5_000_000 && v.Lum == 9000 && v.Kills == 40 && v.PassUpTracked && v.LumPassUp == 300, "RynthAi's totals");
+        Check(v.XpPerKill == 125_000 && v.Deaths == 1 && v.Rad == 77 && !v.MaxLevel, "and the rest from SessionStatsMore");
+
+        string json = RynthCore.Plugin.RynthTracker.TrackerSnapshot.Build(v, Now);
+        Check(json.Contains("\"ss\":7200.0"), "the clock runs from RynthAi's start: " + json);
+        Check(json.Contains("\"xh\":2500000") && json.Contains("\"lh\":4501") && json.Contains("\"ph\":149") && json.Contains("\"rh\":39"),
+              "rates rounded, not cut off: " + json);
+        Check(json.Contains("\"kt\":40") && json.Contains("\"xk\":125000") && json.Contains("\"dt\":1") && json.Contains("\"pk\":1"), "panel fields: " + json);
+
+        // An older RynthAi (no SessionStatsMore): those fields from the Tracker's own session, else zero.
+        var own = new SessionStatsView(Now.AddHours(-1), 3600, 1, 1, 1, 1, 0, 0, 0, false, 3, 3, 999, 4, 5, 6, true);
+        var old = RynthCore.Plugin.RynthTracker.TrackerSnapshot.FromRynthAi(s, null, own);
+        Check(old.Xp == 5_000_000 && old.XpPerKill == 999 && old.Deaths == 4 && old.Rad == 5 && old.MaxLevel,
+              "older RynthAi: RynthAi's totals, the Tracker's own deaths / Radiance / XP per kill");
+        var bare = RynthCore.Plugin.RynthTracker.TrackerSnapshot.FromRynthAi(s, null, null);
+        Check(bare.XpPerKill == 0 && bare.Deaths == 0 && bare.Rad == 0 && !bare.MaxLevel, "and zero with no own session");
+
+        Eq(RynthCore.Plugin.RynthTracker.TrackerSnapshot.PerHour(double.NaN), 0L, "NaN rate is 0");
+        Eq(RynthCore.Plugin.RynthTracker.TrackerSnapshot.PerHour(-5), 0L, "negative rate is 0");
+        Eq(RynthCore.Plugin.RynthTracker.TrackerSnapshot.PerHour(0.5), 1L, "half rounds up");
+        unsafe
+        {
+            Eq(RynthCore.Plugin.Shared.RynthAiHubApiV1.BaseStructSize, (uint)(8 + 10 * sizeof(nint)), "the hub table's base size (10 functions)");
+            // Append-only: each field added after the base sits at the offset readers check it by
+            // (VaultedDungeonsEnabled, BackAwayFrom and SetPlayerCounter came after SessionStatsMore).
+            RynthCore.Plugin.Shared.RynthAiHubApiV1 t = default;
+            byte* at = (byte*)&t;
+            Eq((int)((byte*)&t.SessionStatsMore - at), RynthCore.Plugin.Shared.RynthAiHubApiV1.SessionStatsMoreOffset, "SessionStatsMore appended right after the base");
+            Eq((int)((byte*)&t.VaultedDungeonsEnabled - at), RynthCore.Plugin.Shared.RynthAiHubApiV1.VaultedDungeonsEnabledOffset, "VaultedDungeonsEnabled next");
+            Eq((int)((byte*)&t.BackAwayFrom - at), RynthCore.Plugin.Shared.RynthAiHubApiV1.BackAwayFromOffset, "BackAwayFrom next");
+            Eq((int)((byte*)&t.SetPlayerCounter - at), RynthCore.Plugin.Shared.RynthAiHubApiV1.SetPlayerCounterOffset, "SetPlayerCounter next");
+            Eq((uint)sizeof(RynthCore.Plugin.Shared.RynthAiHubApiV1), (uint)(RynthCore.Plugin.Shared.RynthAiHubApiV1.SetPlayerCounterOffset + sizeof(nint)),
+               "SetPlayerCounter is the last field (a new one appends here, with its own offset check)");
+        }
+    }
 
     private static TrackerSessionState Sample() => new()
     {
@@ -76,6 +131,13 @@ internal static class Program
         RadBase = 0,
         BankedBase = 77,
         DrawnBase = -5,
+        BankLumBase = 3_900_000_000_000,
+        LumOwn = 5_000,
+        BankIncome = 9_000,
+        OwnSinceBank = 4_000,
+        RecentLum = { (Now.AddMinutes(-2).Ticks, 300), (Now.AddMinutes(-1).Ticks, 700) },
+        DeathCountBase = 17,
+        DeathOpen = true,
     };
 
     private static void SameState(TrackerSessionState a, TrackerSessionState b, string what)
@@ -100,6 +162,13 @@ internal static class Program
         Eq(a.RadBase, b.RadBase, what + " radbase");
         Eq(a.BankedBase, b.BankedBase, what + " bankedbase");
         Eq(a.DrawnBase, b.DrawnBase, what + " drawnbase");
+        Eq(a.BankLumBase, b.BankLumBase, what + " bankbase");
+        Eq(a.LumOwn, b.LumOwn, what + " lumown");
+        Eq(a.BankIncome, b.BankIncome, what + " bankincome");
+        Eq(a.OwnSinceBank, b.OwnSinceBank, what + " ownsincebank");
+        Eq(string.Join(";", a.RecentLum), string.Join(";", b.RecentLum), what + " recentlum");
+        Eq(a.DeathCountBase, b.DeathCountBase, what + " deathsbase");
+        Eq(a.DeathOpen, b.DeathOpen, what + " deathopen");
     }
 
     // First read is the baseline; rises count; a drop only moves the baseline.
@@ -129,6 +198,10 @@ internal static class Program
     {
         var s = Sample();
         s.XpBase = null; s.LumBase = null; s.RadBase = null; s.BankedBase = null; s.DrawnBase = null;
+        s.BankLumBase = null;
+        s.DeathCountBase = null;
+        s.DeathOpen = false;
+        s.RecentLum.Clear();
         s.MaxLevel = false;
         Check(TrackerSessionStore.TryParse(TrackerSessionStore.Serialize(s), out var back), "null baselines parse");
         SameState(back, s, "null baselines");
@@ -167,6 +240,36 @@ internal static class Program
         Check(TrackerSessionStore.TryParse(good.Replace("\n", "\r\n"), out var crlf), "CRLF parses");
         SameState(crlf, Sample(), "CRLF");
         Check(TrackerSessionStore.TryParse(good.Replace("end=1", "future=thing\nend=1"), out _), "unknown key ignored");
+
+        // A save written before the 2026-10-11 keys still carries the session on.
+        string old = good;
+        foreach (string key in new[] { "bankbase", "lumown", "bankincome", "ownsincebank", "recentlum" })
+        {
+            int at = old.IndexOf("\n" + key + "=", StringComparison.Ordinal);
+            int end = old.IndexOf('\n', at + 1);
+            old = old.Remove(at, end - at);
+        }
+        Check(TrackerSessionStore.TryParse(old, out var oldBack), "save without the 2026-10-11 keys parses");
+        Eq(oldBack.XpTotal, Sample().XpTotal, "older save keeps its totals");
+        Eq(oldBack.BankLumBase, (long?)null, "older save: no bank baseline");
+        Eq(oldBack.RecentLum.Count, 0, "older save: no recent luminance");
+        Check(!TrackerSessionStore.TryParse(good.Replace("lumown=5000", "lumown=x"), out _), "malformed new key rejected");
+        Check(!TrackerSessionStore.TryParse(good.Replace("recentlum=", "recentlum=12"), out _), "malformed recent luminance rejected");
+
+        // A save written before the 2026-10-30 death keys (the live release's) carries on too.
+        string preDeaths = good;
+        foreach (string key in new[] { "deathsbase", "deathopen" })
+        {
+            int at = preDeaths.IndexOf("\n" + key + "=", StringComparison.Ordinal);
+            int end = preDeaths.IndexOf('\n', at + 1);
+            preDeaths = preDeaths.Remove(at, end - at);
+        }
+        Check(TrackerSessionStore.TryParse(preDeaths, out var preBack), "save without the 2026-10-30 keys parses");
+        Eq(preBack.DeathsTotal, Sample().DeathsTotal, "older save keeps its deaths");
+        Eq(preBack.DeathCountBase, (long?)null, "older save: no death counter baseline (its first read is one)");
+        Check(!preBack.DeathOpen, "older save: no death waiting for its counter");
+        Check(!TrackerSessionStore.TryParse(good.Replace("deathsbase=17", "deathsbase=?"), out _), "malformed death counter baseline rejected");
+        Check(!TrackerSessionStore.TryParse(good.Replace("deathopen=1", "deathopen=yes"), out _), "malformed death flag rejected");
     }
 
     private static void TestShouldRestore()

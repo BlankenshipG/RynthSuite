@@ -8,6 +8,9 @@ namespace RynthCore.Plugin.RynthOracle.Views;
 /// <summary>About: the credit to Oracle of Dereth's author, the settings and the quest list's source.</summary>
 internal sealed partial class OracleView
 {
+    // The labels for OracleSettings.QuestRefreshChoices, in the same order.
+    private static readonly string[] QuestRefreshLabels = { "Off (login and Refresh only)", "5 minutes", "10 minutes", "15 minutes", "30 minutes" };
+
     private void DrawAbout(UiWindow w)
     {
         w.TextColored(UiColors.Gold, "Based on Oracle of Dereth by Advis Eveldan - thank you!");
@@ -17,18 +20,48 @@ internal sealed partial class OracleView
         OracleSettings s = _c.Settings;
         w.SeparatorText("Settings");
         w.Checkbox("Read quest flags when you log in", "o.readlogin", s.ReadQuestsAtLogin, v => { s.ReadQuestsAtLogin = v; s.Save(); });
-        w.Tooltip("Sends /myquests once after login so the quest pages have data.");
+        // 2026-11-13 (R-20261110-155059-e947): the login read alone went stale over a long session.
+        w.Tooltip("Sends /myquests after login so the quest pages have data, and again while quest timers are on screen "
+                  + "and the flags are over 10 minutes old, or when the server turns a quest down as solved too recently "
+                  + "(only with the replies hidden).");
+        int refreshIndex = Math.Max(0, Array.IndexOf(OracleSettings.QuestRefreshChoices, s.QuestRefreshMinutes));
+        w.Combo("Read quest flags again when older than", "o.refresh", refreshIndex, QuestRefreshLabels,
+            i => { s.QuestRefreshMinutes = OracleSettings.QuestRefreshChoices[i]; s.Save(); });
+        w.Tooltip("Keeps the quest pages current on a long session: /myquests again (its reply hidden) once nothing\n"
+                  + "has read it for this long. Any reply resets the clock, RynthAi's meta polls too. The server allows one a minute.");
         w.Checkbox("Hide the replies to RynthOracle's own requests", "o.hide", s.HideOwnQuestReplies, v => { s.HideOwnQuestReplies = v; s.Save(); });
-        w.Tooltip("/myquests, and on their servers /b, /augs, /top and the like. A command you type yourself always shows its reply.");
+        w.Tooltip("/myquests. A command you type yourself always shows its reply.");
         w.Checkbox("Show the Void window for characters with Void Magic", "o.void", s.AutoShowVoidWindow, v => { s.AutoShowVoidWindow = v; s.Save(); });
+        w.Checkbox("Say in chat when a quest timer comes up", "o.alert", s.AlertTimers, v => { s.AlertTimers = v; s.Save(); });
+        w.Tooltip("Watches the quests you track (the * on the Quests tab) and prints a line the moment a cooldown ends.");
+        w.Checkbox("...for every quest you hold, not just tracked ones", "o.alertall", s.AlertAllTimers, v => { s.AlertAllTimers = v; s.Save(); });
         w.Checkbox("Check once a day for a newer quest list", "o.daily", s.CheckQuestListDaily, v => { s.CheckQuestListDaily = v; s.Save(); });
         w.Tooltip("Downloads Oracle of Dereth's master quest list from GitHub, as the original plugin does.");
 
         w.SeparatorText("Server");
         ServerIdentity sv = _c.Server;
-        w.Text(sv.Tag.Length > 0 ? $"{sv.Tag}: its own pages and quest pack are on." : "No server-specific pages here (retail features only).");
+        QuestCatalog pc = _c.Catalog;
+        w.Text(sv.ServerId.Length == 0 ? "No server active (retail quests only)."
+            : pc.PackServer.Length > 0 ? $"{sv.DisplayName}: its quest pack is on ({pc.ServerCount} {pc.PackServer} quests, {pc.PackSource})."
+            : $"{sv.DisplayName}: no quest pack ({(sv.Plugin.Length > 0 ? sv.Plugin + " offers none" : "no server plugin loaded for it")}; retail quests only).");
+        w.TextDisabled("A server's quest pack comes from its server plugin, and its own pages are that plugin's: the Mini Remote's Server section, or /rserver.");
         w.TextDisabled($"How it was decided: {sv.Source}");
-        if (_c.Host.Version < 75) w.TextDisabled($"This engine is API v{_c.Host.Version}; v75 adds a surer server check and the titles you hold.");
+        // RynthCore's server list (API v86) and the active server's settings from the plugin that owns it.
+        RynthCore.Plugin.Shared.ServerStateClient st = _c.ServerState;
+        if (st.State is { } es)
+        {
+            w.TextDisabled(es.HasActive
+                ? $"RynthCore: {es.ActiveName} ({es.Active}){(es.Picked ? ", picked by hand" : "")}; settings from {(es.ActivePlugin.Length > 0 ? es.ActivePlugin : "no plugin")}"
+                : "RynthCore: no server active" + (es.Picked ? " (picked by hand)" : ""));
+            if (RynthCore.Plugin.Shared.ServerProfileView.Parse(st.ProfileJson) is { } prof)
+                w.TextDisabled($"{st.ProfilePlugin} ({RynthCore.Plugin.Shared.RynthServerProfileApiV1.InterfaceName}): {prof.Summary()}");
+            else if (es.ActivePlugin.Length > 0)
+                w.TextDisabled($"{es.ActivePlugin} hasn't sent its server settings (an older plugin?).");
+            w.TextDisabled("Change the server: RynthCore Settings > Game Client > Server, or /rc server pick <id>|auto.");
+        }
+        else if (_c.Host.Version > 0 && _c.Host.Version < 86)
+            w.TextDisabled($"This engine is API v{_c.Host.Version}; server quest packs need v86 (RynthCore's server list).");
+        if (_c.Host.Version > 0 && _c.Host.Version < 75) w.TextDisabled($"This engine is API v{_c.Host.Version}; v75 adds the titles you hold.");
 
         w.SeparatorText("Quest list");
         QuestCatalog cat = _c.Catalog;
@@ -48,10 +81,18 @@ internal sealed partial class OracleView
 
         w.SeparatorText("Commands");
         w.BulletText("/ro  open or close this window");
+        w.BulletText("/ro character  the Character tab (status, session)");
+        w.BulletText("/ro skills  the Skills tab (raise and train); /ro attributes, /ro progress likewise");
+        w.BulletText("/ro timers  open or close the Quest Timers window");
+        w.BulletText("/ro fellowship  the Fellowship tab");
+        w.BulletText("/ro trackers  the Quests tab, trackers only (Legendary, markers)");
+        w.BulletText("/ro legendary  John's Legendary Key quests: have, missing, repeat timers");
+        w.BulletText("/ro markers  the 100 exploration markers: found and still to find");
+        w.BulletText("/ro about  this tab (settings, server, quest list)");
         w.BulletText("/ro void  open or close the Void window");
         w.BulletText("/ro quests  read your quest flags now");
         w.BulletText("/ro help  list the commands in chat");
-        w.TextDisabled("A server quest pack can be replaced without a rebuild: put quests.<server>.csv in %APPDATA%\\RynthCore\\RynthOracle\\packs.");
+        w.TextDisabled("A server quest pack can be replaced without a rebuild: put quests.<server id>.csv in %APPDATA%\\RynthCore\\RynthOracle\\packs.");
     }
 
     private void StartQuestListCheck()
@@ -66,7 +107,7 @@ internal sealed partial class OracleView
     {
         try { File.Delete(QuestCatalog.DownloadedPath); }
         catch (Exception ex) { _c.UpdaterMessage = "Couldn't remove the downloaded list: " + ex.Message; return; }
-        _c.Catalog.Load(_c.Server.Tag, null);
+        _c.Catalog.Reload(null);
         _c.Catalog.SyncDiscoveries(_c.Flags);
         _c.UpdaterMessage = "Using the bundled quest list.";
     }

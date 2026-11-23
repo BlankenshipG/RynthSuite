@@ -36,9 +36,10 @@ public sealed partial class RynthAiPlugin
         var at = _autoTrade;
         if (at == null)
         {
-            ChatLine("[RynthAi] AutoTrade isn't ready yet (log in first).");
+            ReplyFail("[RynthAi] AutoTrade isn't ready yet (log in first).");
             return;
         }
+        Reply.Answered();   // AutoTrade says what it did when it runs the command on the tick
         at.Enqueue(() => at.Command(args));
     }
 
@@ -47,7 +48,7 @@ public sealed partial class RynthAiPlugin
     {
         if (!Host.HasTrade)
         {
-            ChatLine($"[RynthAi] Player trading needs RynthCore 2026.9.x or newer (plugin API v{AutoTradeManager.RequiredApiVersion}; this engine is v{Host.Version}).");
+            ReplyFail($"[RynthAi] Player trading needs RynthCore 2026.9.x or newer (plugin API v{AutoTradeManager.RequiredApiVersion}; this engine is v{Host.Version}).");
             return;
         }
 
@@ -62,27 +63,27 @@ public sealed partial class RynthAiPlugin
             case "open":
             {
                 uint target = ResolveTradeTarget(arg);
-                if (target == 0) { ChatLine("[RynthAi] Usage: /ra trade open <player name|id|sel>"); break; }
-                ChatLine(Host.TradeOpen(target)
-                    ? $"[RynthAi] Asked {TradeName(target)} to trade."
-                    : "[RynthAi] Could not send the trade request.");
+                if (target == 0) { ReplyFail("[RynthAi] Usage: /ra trade open <player name|id|sel>"); break; }
+                ReplyIf(Host.TradeOpen(target),
+                    $"[RynthAi] Asked {TradeName(target)} to trade.",
+                    "[RynthAi] Could not send the trade request.");
                 break;
             }
             case "add":
             {
                 uint item = ParseTradeId(arg);
-                if (item == 0) { ChatLine("[RynthAi] Usage: /ra trade add <item id|sel>"); break; }
-                ChatLine(Host.TradeAdd(item)
-                    ? $"[RynthAi] Adding {TradeName(item)} to the trade window."
-                    : "[RynthAi] Could not send the add.");
+                if (item == 0) { ReplyFail("[RynthAi] Usage: /ra trade add <item id|sel>"); break; }
+                ReplyIf(Host.TradeAdd(item),
+                    $"[RynthAi] Adding {TradeName(item)} to the trade window.",
+                    "[RynthAi] Could not send the add.");
                 break;
             }
-            case "accept":  ChatLine(Host.TradeAccept()  ? "[RynthAi] Accepting the trade."  : "[RynthAi] Could not send the accept."); break;
-            case "decline": ChatLine(Host.TradeDecline() ? "[RynthAi] Declining the trade."  : "[RynthAi] Could not send the decline."); break;
-            case "reset":   ChatLine(Host.TradeReset()   ? "[RynthAi] Clearing the trade window." : "[RynthAi] Could not send the reset."); break;
-            case "close":   ChatLine(Host.TradeClose()   ? "[RynthAi] Closing the trade."    : "[RynthAi] Could not send the close."); break;
+            case "accept":  ReplyIf(Host.TradeAccept(),  "[RynthAi] Accepting the trade.",       "[RynthAi] Could not send the accept."); break;
+            case "decline": ReplyIf(Host.TradeDecline(), "[RynthAi] Declining the trade.",       "[RynthAi] Could not send the decline."); break;
+            case "reset":   ReplyIf(Host.TradeReset(),   "[RynthAi] Clearing the trade window.", "[RynthAi] Could not send the reset."); break;
+            case "close":   ReplyIf(Host.TradeClose(),   "[RynthAi] Closing the trade.",         "[RynthAi] Could not send the close."); break;
             default:
-                ChatLine("[RynthAi] Usage: /ra trade [state | open <name|id|sel> | add <id|sel> | accept | decline | reset | close]");
+                ReplyFail("[RynthAi] Usage: /ra trade [state | open <name|id|sel> | add <id|sel> | accept | decline | reset | close]");
                 break;
         }
     }

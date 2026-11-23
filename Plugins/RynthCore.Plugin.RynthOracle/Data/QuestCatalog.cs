@@ -2,8 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Reflection;
+using RynthCore.Plugin.Shared;
 
 namespace RynthCore.Plugin.RynthOracle.Data;
 
@@ -11,7 +10,7 @@ namespace RynthCore.Plugin.RynthOracle.Data;
 internal sealed class Quest
 {
     public string Flag = "";
-    /// <summary>"" for a retail quest; the server tag for a row from that server's pack.</summary>
+    /// <summary>"" for a retail quest; the pack's tag for a row from the active server's pack.</summary>
     public string Server = "";
     public string Name = "";
     public string Url = "";
@@ -33,6 +32,9 @@ internal sealed class Quest
 
     /// <summary>The Name column: the curated name, else the one-line info, else "Unknown quest" (upstream's rule).</summary>
     public string DisplayName => Name.Length > 0 ? Name : Info.Length > 0 ? Info : "Unknown quest";
+
+    /// <summary>The list label: the display name, or for a flag no list knows "(new)" and its description or flag.</summary>
+    public string Label => IsNew ? "(new) " + (Name.Length > 0 ? Name : Flag) : DisplayName;
 
     /// <summary>The server is the source of truth where it has spoken (the flag's timer); else the lists.</summary>
     public bool IsRepeatable(QuestFlagStore flags) =>
@@ -70,14 +72,26 @@ internal sealed class Quest
 }
 
 /// <summary>
+/// What the catalog merges on this server: its RynthCore id (the override file's name), the tag its
+/// rows go under (the pack's own, else the server's name), the pack the server's plugin offers ("" =
+/// none) and where that came from.
+/// </summary>
+internal sealed record QuestPackSource(string ServerId, string Tag, string Csv, string From)
+{
+    /// <summary>What the catalog was loaded for (the reader adds its pack revision: a changed pack loads again).</summary>
+    public string Key => $"{ServerId}|{Tag}|{From}|{Csv.Length}";
+}
+
+/// <summary>
 /// The quest catalog: the base list (every retail quest: Oracle of Dereth's curated master
-/// list, or a newer download of it) plus the current server's quest pack.
+/// list, or a newer download of it) plus the active server's quest pack.
 ///
-/// Packs: Resources\quests.&lt;tag&gt;.csv embedded as "RynthOracle.quests.&lt;tag&gt;.csv" (Conquest and
-/// Levistras: Advis's server-specific rows; Aelrynth: generated from the world database by
-/// Tools\RynthOracle.QuestPackGen). A file %APPDATA%\RynthCore\RynthOracle\packs\quests.&lt;tag&gt;.csv
-/// replaces the embedded pack, so a regenerated pack can be tried without a rebuild. A new
-/// server only needs a tag (ServerTags) and a pack file.
+/// Packs are the server plugins' (since 2026-10-21): the plugin that owns the active server offers its
+/// pack through "RynthServer.QuestPack" (Resources\quests.&lt;server id&gt;.csv in its project; e.g.
+/// Advis's server-specific rows, or one generated from a world database by Tools\RynthOracle.QuestPackGen),
+/// and RynthOracle merges whatever it offers, under the pack's tag, without knowing the server. A file
+/// %APPDATA%\RynthCore\RynthOracle\packs\quests.&lt;server id&gt;.csv replaces the offered pack (or stands
+/// in for a server whose plugin offers none), so a regenerated pack can be tried without a rebuild.
 ///
 /// Pack columns: the base list's (QuestFlag, Quest, Url, Info, Hint, Repeatable) plus optional
 /// MinDelta, MaxSolves, Source and NotOnServer. Merge: a pack row for a flag the base list has
@@ -105,20 +119,44 @@ internal sealed class QuestCatalog
     public static string DownloadedPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "RynthOracle", "quests.csv");
 
-    public static string PackOverridePath(string tag) => Path.Combine(
+    /// <summary>The file that replaces a server's pack: packs\quests.&lt;server id&gt;.csv.</summary>
+    public static string PackOverridePath(string serverId) => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RynthCore", "RynthOracle", "packs",
-        $"quests.{tag.ToLowerInvariant()}.csv");
+        $"quests.{SafeFileName(serverId)}.csv");
 
-    /// <summary>The servers with an embedded quest pack.</summary>
-    public static IEnumerable<string> EmbeddedPacks() =>
-        Assembly.GetExecutingAssembly().GetManifestResourceNames()
-            .Where(n => n.StartsWith("RynthOracle.quests.", StringComparison.Ordinal) && n.EndsWith(".csv", StringComparison.Ordinal)
-                        && n.Length > "RynthOracle.quests..csv".Length)
-            .Select(n => n["RynthOracle.quests.".Length..^4]);
-
-    /// <summary>Loads the base list (downloaded when valid, else bundled) and the pack for <paramref name="serverTag"/>.</summary>
-    public void Load(string serverTag, Action<string>? log)
+    /// <summary>A server id as a file name part (RynthCore ids are a-z, 0-9 and '-'; anything else becomes '_').</summary>
+    private static string SafeFileName(string id)
     {
+        var sb = new System.Text.StringBuilder(id.Length);
+        foreach (char c in id.ToLowerInvariant()) sb.Append(c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-' ? c : '_');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// What to merge for <paramref name="server"/>: nothing without an active server; else the pack its
+    /// plugin offers (<paramref name="pack"/>, already checked to be the active server's), or none but
+    /// the server's id (an override file, or the master list's rows for it, can still apply).
+    /// </summary>
+    public static QuestPackSource? SourceFor(ServerIdentity server, ServerQuestPack? pack)
+    {
+        if (server.ServerId.Length == 0) return null;
+        string name = server.ServerName.Length > 0 ? server.ServerName : server.ServerId;
+        return pack != null
+            ? new QuestPackSource(server.ServerId, pack.Tag.Length > 0 ? pack.Tag : name, pack.Csv, pack.Plugin)
+            : new QuestPackSource(server.ServerId, name, "", "");
+    }
+
+    /// <summary>What the catalog was last loaded with (null = retail only).</summary>
+    public QuestPackSource? LastSource { get; private set; }
+
+    /// <summary>Loads the lists again with the last source (a new download, the bundled list again).</summary>
+    public void Reload(Action<string>? log) => Load(LastSource, log);
+
+    /// <summary>Loads the base list (downloaded when valid, else bundled) and <paramref name="source"/>'s pack (null = retail only).</summary>
+    public void Load(QuestPackSource? source, Action<string>? log)
+    {
+        LastSource = source;
+        string serverTag = source?.Tag ?? "";
         List<Quest>? baseRows = null;
         UsingBundled = true;
         if (File.Exists(DownloadedPath))
@@ -144,9 +182,9 @@ internal sealed class QuestCatalog
         List<Quest>? packRows = null;
         PackServer = "";
         PackSource = "";
-        if (serverTag.Length > 0)
+        if (source != null && serverTag.Length > 0)
         {
-            string over = PackOverridePath(serverTag);
+            string over = PackOverridePath(source.ServerId);
             try
             {
                 if (File.Exists(over))
@@ -154,32 +192,34 @@ internal sealed class QuestCatalog
                     using var r = new StreamReader(over);
                     packRows = ReadRows(r, serverTag, out string? why);
                     if (packRows != null) PackSource = "file " + over;
-                    else log?.Invoke($"[RynthOracle] {over} is unusable ({why}); using the bundled {serverTag} pack.");
+                    else log?.Invoke($"[RynthOracle] {over} is unusable ({why}); using {(source.From.Length > 0 ? source.From + "'s" : "no")} {serverTag} pack.");
                 }
             }
             catch (Exception ex)
             {
                 log?.Invoke($"[RynthOracle] Couldn't read {over} ({ex.Message}).");
             }
-            if (packRows == null && EmbeddedPacks().Any(t => t.Equals(serverTag, StringComparison.OrdinalIgnoreCase)))
+            if (packRows == null && source.Csv.Length > 0)
             {
-                using StreamReader r = Csv.OpenEmbedded($"quests.{serverTag.ToLowerInvariant()}.csv");
-                packRows = ReadRows(r, serverTag, out _);
-                if (packRows != null) PackSource = "bundled pack";
+                using var r = new StringReader(source.Csv);
+                packRows = ReadRows(r, serverTag, out string? why);
+                if (packRows != null) PackSource = "from " + source.From;
+                else log?.Invoke($"[RynthOracle] {source.From}'s quest pack is unusable ({why}); retail quests only.");
             }
             if (packRows != null) PackServer = serverTag;
         }
 
-        Build(baseRows, packRows ?? new List<Quest>(), serverTag);
+        Build(baseRows, packRows ?? new List<Quest>(), serverTag, source?.ServerId ?? "");
     }
 
-    private void Build(List<Quest> baseRows, List<Quest> packRows, string serverTag)
+    private void Build(List<Quest> baseRows, List<Quest> packRows, string serverTag, string serverId)
     {
         _quests.Clear();
         _byFlag.Clear();
         int retail = 0, server = 0, hidden = 0;
 
-        // Base rows tied to a server (a downloaded master list) are that server's pack rows.
+        // Base rows tied to a server (a downloaded master list) are that server's pack rows: its Server
+        // column names the pack's tag (or the server's id).
         var pack = new List<Quest>();
         foreach (Quest q in baseRows)
         {
@@ -187,7 +227,8 @@ internal sealed class QuestCatalog
             {
                 if (_byFlag.TryAdd(q.Flag, q)) { _quests.Add(q); retail++; }
             }
-            else if (serverTag.Length > 0 && q.Server.Equals(serverTag, StringComparison.OrdinalIgnoreCase))
+            else if (serverTag.Length > 0 && (q.Server.Equals(serverTag, StringComparison.OrdinalIgnoreCase)
+                                              || serverId.Length > 0 && q.Server.Equals(serverId, StringComparison.OrdinalIgnoreCase)))
             {
                 q.Server = serverTag;
                 pack.Add(q);

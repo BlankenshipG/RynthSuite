@@ -20,13 +20,13 @@ namespace RynthCore.Plugin.RynthAi.Loot;
 /// </summary>
 internal sealed class LootEditorBridge
 {
-    public const string LootFolder = @"C:\Games\RynthSuite\RynthAi\LootProfiles";
+    public static readonly string LootFolder = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "LootProfiles");
 
     private readonly object _sync = new();
     private readonly LootEditSession _session = new();
     private readonly Func<string> _inUsePath;
     private readonly Action<string> _onSaved;
-    private readonly string[] _vendorFolders;
+    private readonly Func<IReadOnlyList<string>> _vendorFolders;
 
     // Follow RynthAi's loot profile while the editor shows it and has no edits.
     private bool _followInUse = true;
@@ -39,10 +39,23 @@ internal sealed class LootEditorBridge
     private long _draftRevision;
     private LootEditSession? _other;
 
+    // "Filter like this" (2026-10-24): the last result the state shows (either scope), and the
+    // Inventory panel's filter (its rule and last result). find_refresh judges the panel's items
+    // again with that rule, so it outlives the item it was made from; a Global Inventory find
+    // in between doesn't disturb it.
+    private LootEditItemFind? _find;
+    private VTankLootRule? _findRule;
+    private LootEditItemFind? _findMeta;
+    private long _findRevision;
+
+    /// <summary>The most items one find judges (a full character carries a few hundred).</summary>
+    private const int MaxFindCandidates = 4096;
+
     /// <summary>RynthAi's item lookups for "Add to loot profile". Set once by the plugin.</summary>
     public LootItemHooks Items { get; set; } = new();
 
-    public LootEditorBridge(Func<string> inUsePath, Action<string> onSaved, params string[] vendorFolders)
+    /// <param name="vendorFolders">AutoVendor's folders in its order (character, server, main).</param>
+    public LootEditorBridge(Func<string> inUsePath, Action<string> onSaved, Func<IReadOnlyList<string>> vendorFolders)
     {
         _inUsePath = inUsePath;
         _onSaved = onSaved;
@@ -68,12 +81,27 @@ internal sealed class LootEditorBridge
                 if (_followInUse && !_session.IsDirty && inUse.Length > 0 && !LootEditSession.SamePath(inUse, _session.Path))
                     _session.Open(inUse);
             }
+            CheckServer();
             return unchecked((int)StateRevision);
         }
     }
 
-    // The session's revision plus the popup draft's: both only grow, so the sum moves when either does.
-    private long StateRevision => _session.Revision + _draftRevision;
+    // The session's revision plus the popup draft's and the filter's: all only grow, so the sum moves when any does.
+    private long StateRevision => _session.Revision + _draftRevision + _findRevision;
+
+    /// <summary>On Infinite Leaftide now (the server RynthCore says is active).</summary>
+    private bool Ilt => Items.IsIlt?.Invoke() ?? true;
+    private bool _lastIlt = true;
+
+    /// <summary>The server changed to or from Leaftide: the vocabulary is built again and the state's revision moves.</summary>
+    private void CheckServer()
+    {
+        bool ilt = Ilt;
+        if (ilt == _lastIlt) return;
+        _lastIlt = ilt;
+        _vocabJson = null;
+        _draftRevision++;
+    }
 
     public string StateJson()
     {
@@ -83,7 +111,9 @@ internal sealed class LootEditorBridge
             if (!_session.IsOpen && _followInUse && inUse.Length > 0) _session.Open(inUse);
             LootEditState state = _session.BuildState(inUse, ListFiles());
             state.Revision = StateRevision;
+            state.Ilt = Ilt;
             state.ItemDraft = _draft;
+            state.ItemFind = _find;
             return JsonSerializer.Serialize(state, LootEditJsonContext.Default.LootEditState);
         }
     }
@@ -97,8 +127,15 @@ internal sealed class LootEditorBridge
         }
     }
 
-    public string VocabJson() =>
-        _vocabJson ??= JsonSerializer.Serialize(LootRuleText.BuildVocab(), LootEditJsonContext.Default.LootEditVocab);
+    public string VocabJson()
+    {
+        if (_vocabJson != null) return _vocabJson;
+        // Kept once the spell table is in (the popups' spell lists come with it).
+        LootSpellCatalog? spells = Items.Spells();
+        string json = JsonSerializer.Serialize(LootRuleText.BuildVocab(spells, Ilt), LootEditJsonContext.Default.LootEditVocab);
+        if (spells != null) _vocabJson = json;
+        return json;
+    }
 
     public void Command(string json)
     {
@@ -107,6 +144,11 @@ internal sealed class LootEditorBridge
         if (cmd.Op is "item_preview" or "item_add" or "item_close")
         {
             ItemCommand(cmd);
+            return;
+        }
+        if (cmd.Op is "item_find" or "find_refresh" or "find_close")
+        {
+            FindCommand(cmd);
             return;
         }
         string? saved = null;
@@ -133,8 +175,33 @@ internal sealed class LootEditorBridge
             }
             if (_session.Apply(cmd) == LootEditSession.Outcome.Saved)
                 saved = _session.Path;
+            ReportWriteError(_session);
         }
         if (saved != null) _onSaved(saved);
+    }
+
+    /// <summary>
+    /// The Loaded files drawer's New (2026-11-11): the editor on <paramref name="path"/>, the same
+    /// open as its own file picker (a .utl that isn't there yet opens empty, and its Save creates
+    /// it). False, with the editor's reason, when it has unsaved edits in another profile.
+    /// </summary>
+    public bool OpenFile(string path, out string message)
+    {
+        lock (_sync)
+        {
+            var cmd = new LootEditCommand { Op = "open", Path = path };
+            bool opened = _session.Apply(cmd) == LootEditSession.Outcome.Opened;
+            if (opened) _followInUse = LootEditSession.SamePath(path, InUse);
+            message = _session.Message;
+            return opened;
+        }
+    }
+
+    /// <summary>The editor has unsaved edits in <paramref name="path"/> (the drawer's * and its rename/move guard).</summary>
+    public bool IsDirtyFor(string path)
+    {
+        lock (_sync)
+            return _session.IsDirty && path.Length > 0 && LootEditSession.SamePath(path, _session.Path);
     }
 
     // =====================================================================
@@ -178,17 +245,38 @@ internal sealed class LootEditorBridge
     private LootEditItemDraft BuildDraft(LootEditItemRequest req, bool add)
     {
         var d = new LootEditItemDraft { Seq = req.Seq };
+        if (req.Find && req.Blank)
+        {
+            // The panel's own filter: every attribute, no item.
+            d.Find = true;
+            d.AttributesSupported = true;
+            d.ItemName = "any item";
+            BuildFindRule(d, null, req, LootItemMatch.Like);
+            d.Ok = true;
+            return d;
+        }
+        if (req.Blank) return BuildBlankRuleDraft(d, req, add);
         uint id = req.ItemId != 0 ? req.ItemId : Items.SelectedItemId();
         if (id == 0) return Refuse(d, "No item selected. Click an item first.");
         d.ItemId = id;
         var match = (LootItemMatch)Math.Clamp(req.Match, 0, 2);
         d.IncludeT11 = req.IncludeT11;
-        LootItemFacts? facts = Items.Facts(id, match == LootItemMatch.Like, req.IncludeT11);
+        d.AttributesSupported = true;
+        // The checklist shows every attribute whatever the match, so the item is always read in full.
+        LootItemFacts? facts = Items.Facts(id, true, req.IncludeT11 || req.Choices != null);
         if (facts == null) return Refuse(d, $"RynthAi doesn't know item 0x{id:X8} yet. Select it again in a moment.");
         d.IsT11 = facts.T11?.IsT11 == true;
         d.ItemName = facts.Name;
         d.ClassName = LootItemRules.ClassName(facts.ObjectClass);
         d.Stackable = facts.Stackable;
+        if (req.Find)
+        {
+            // A filter: the checklist and the conditions in words; no profile, action or place.
+            d.Find = true;
+            if (BuildFindRule(d, facts, req, match) == null) return d;
+            d.Ok = true;
+            return d;
+        }
         d.BuiltInReason = BuiltInSentence(Items.BuiltInKeep(id));
 
         string inUse = InUse;
@@ -210,9 +298,14 @@ internal sealed class LootEditorBridge
             KeepCount = req.KeepCount < 0 ? null : req.KeepCount,
             RuleName = req.RuleName,
             IncludeT11 = req.IncludeT11,
+            Choices = req.Choices,
+            Extras = req.Extras,
+            Spells = Items.Spells(),
+            Ilt = Ilt,
         };
         LootItemRuleDraft? draft = LootItemRules.Build(facts, options, out string error);
         if (draft == null) return Refuse(d, error);
+        foreach (LootItemAttribute row in draft.Attributes) d.Attributes.Add(row.ToWire());
         d.Match = (int)draft.Match;
         d.Action = (int)draft.Action;
         d.KeepCount = draft.KeepCount;
@@ -256,10 +349,301 @@ internal sealed class LootEditorBridge
         d.Ok = true;
         if (!add) return d;
 
-        if (!s.InsertAndSave(draft.Rule, native, at)) return Refuse(d, s.Message);
+        if (!s.InsertAndSave(draft.Rule, native, at))
+        {
+            ReportWriteError(s);
+            return Refuse(d, s.Message);
+        }
         d.Added = true;
         d.Message = $"Added loot rule '{draft.Rule.Name}' to {d.TargetFile}";
         return d;
+    }
+
+    /// <summary>
+    /// The Loot Editor's Add rule (2026-11-07, Silentkelpie: "standardize the loot editor add rule to follow
+    /// the same logic used to filter for inventory"): the Inventory filter's blank checklist (every
+    /// attribute, spells and cantrips from the lists) with an action, a count and a name, added at the end
+    /// of the profile (no item to place it by). Under the lock.
+    /// </summary>
+    private LootEditItemDraft BuildBlankRuleDraft(LootEditItemDraft d, LootEditItemRequest req, bool add)
+    {
+        d.Blank = true;
+        d.AttributesSupported = true;
+        d.ItemName = "any item";
+        string inUse = InUse;
+        string target = req.ToOpenProfile && _session.IsOpen ? _session.Path : inUse;
+        if (target.Length == 0) return Refuse(d, "No loot profile selected. Pick one in RynthAi first.");
+        d.TargetPath = target;
+        d.TargetFile = Path.GetFileName(target);
+        d.TargetInUse = LootEditSession.SamePath(target, inUse);
+        if (!File.Exists(target)) return Refuse(d, $"Loot profile not found: {target}");
+        LootEditSession s = SessionFor(target);
+        if (!s.IsOpen || !LootEditSession.SamePath(s.Path, target)) return Refuse(d, s.Message);
+        d.Format = s.Format;
+        if (!s.CanInsert) return Refuse(d, $"{d.TargetFile} is read-only here: {s.ReadOnlyReason}");
+
+        // Editing a rule (2026-11-07): the checklist starts from its conditions; what no row can say is kept as written.
+        VTankLootRule? editing = null;
+        List<VTankLootCondition>? kept = null;
+        List<LootEditItemChoice>? choices = req.Choices;
+        if (req.EditIndex >= 0)
+        {
+            d.EditIndex = req.EditIndex;
+            if (!req.ToOpenProfile || !LootEditSession.SamePath(target, _session.Path))
+                return Refuse(d, "Open the profile in the Loot Editor to edit its rules.");
+            if (s.Format == "json") return Refuse(d, "Native-format rules are edited in the rule view (Start empty edits by hand).");
+            editing = s.UtlRule(req.EditIndex);
+            if (editing == null || (editing.Name ?? string.Empty) != req.EditName)
+                return Refuse(d, "That rule is no longer there. The list has been refreshed.");
+            List<VTankLootCondition> all = editing.Conditions;
+            List<LootEditItemChoice> fromRule = LootItemAttributes.ChoicesFromRule(LootItemAttributes.ForBlank(Ilt), all, out kept);
+            // The popup sends only the rows it changed: they go over the rule's own.
+            if (req.Choices != null)
+                foreach (LootEditItemChoice c in req.Choices)
+                {
+                    fromRule.RemoveAll(x => x.Id == c.Id);
+                    fromRule.Add(c);
+                }
+            choices = fromRule;
+        }
+
+        LootItemRuleDraft draft = LootItemRules.BuildBlank(new LootItemRuleOptions
+        {
+            Match = LootItemMatch.Like,
+            Action = req.Action != 0 ? (VTankLootAction)req.Action : editing?.Action,
+            KeepCount = req.KeepCount >= 0 ? req.KeepCount : editing?.KeepCount,
+            RuleName = req.RuleName.Length > 0 ? req.RuleName : editing?.Name,
+            BlankRule = true,
+            Ilt = Ilt,
+            Choices = choices,
+            Extras = req.Extras,
+            Spells = Items.Spells(),
+            KeepConditions = kept,
+        });
+        foreach (LootItemAttribute row in draft.Attributes) d.Attributes.Add(row.ToWire());
+        d.Match = (int)LootItemMatch.Like;
+        d.Action = (int)draft.Action;
+        d.KeepCount = draft.KeepCount;
+        d.RuleName = draft.Rule.Name;
+        d.DefaultRuleName = draft.DefaultName;
+        d.Preview = LootItemRules.PreviewLines(draft.Rule);
+        d.Notes.AddRange(draft.Notes);
+        bool any = draft.Rule.Conditions.Exists(c => c.NodeType != VTankNodeTypes.DisabledRule);
+
+        bool json = s.Format == "json";
+        LootRule? native = null;
+        if (json && any)
+        {
+            var dropped = new List<string>();
+            native = LootItemRules.ToNative(draft.Rule, dropped);
+            foreach (string c in dropped) d.Notes.Add($"Left out (the native format has no such condition): {c}");
+            if (native == null) return Refuse(d, "The native format can't hold any of this rule's conditions.");
+        }
+        int count = s.RuleCount;
+        d.InsertAt = editing != null ? req.EditIndex : count;
+        d.RuleCount = count;
+        d.OrderNote = editing != null
+            ? $"Replaces rule {req.EditIndex + 1} of {count} in place (its place in the list stays)."
+            : $"Goes in at the end ({count + 1} of {count + 1}). Rules are checked top to bottom and the first match wins, "
+              + "so it only gets items no rule above it takes; move it up the list to make it decide first.";
+        if (editing != null) d.DefaultRuleName = editing.Name ?? string.Empty;
+        if (!any) { d.Ok = false; return d; }   // the note says to tick something
+        if (s.IsDirty) return Refuse(d, $"The Loot Editor has unsaved changes in {d.TargetFile}. Save or discard them first.");
+        d.Ok = true;
+        if (!add) return d;
+        if (editing != null)
+        {
+            if (!s.ReplaceAndSave(req.EditIndex, req.EditName, draft.Rule))
+            {
+                ReportWriteError(s);
+                return Refuse(d, s.Message);
+            }
+            d.Added = true;
+            d.Message = $"Saved loot rule '{draft.Rule.Name}' in {d.TargetFile}";
+            return d;
+        }
+        if (!s.InsertAndSave(draft.Rule, native, count))
+        {
+            ReportWriteError(s);
+            return Refuse(d, s.Message);
+        }
+        d.Added = true;
+        d.Message = $"Added loot rule '{draft.Rule.Name}' to {d.TargetFile}";
+        return d;
+    }
+
+    // =====================================================================
+    //  Filter like this (the Inventory panel's right-click, 2026-10-24)
+    // =====================================================================
+
+    /// <summary>
+    /// The checklist's rule for a filter, into <paramref name="d"/> (rows, match, the conditions
+    /// as Preview, notes); null (and d's Error) when the item can't make one. Under the lock.
+    /// </summary>
+    private VTankLootRule? BuildFindRule(LootEditItemDraft d, LootItemFacts? facts, LootEditItemRequest req, LootItemMatch match)
+    {
+        var options = new LootItemRuleOptions
+        {
+            Match = match,
+            Action = VTankLootAction.Keep,   // not used: a filter only has conditions
+            IncludeT11 = req.IncludeT11,
+            Choices = req.Choices,
+            Extras = req.Extras,
+            Spells = Items.Spells(),
+            Ilt = Ilt,
+        };
+        string error = string.Empty;
+        LootItemRuleDraft? draft = facts == null ? LootItemRules.BuildBlank(options) : LootItemRules.Build(facts, options, out error);
+        if (draft == null)
+        {
+            d.Ok = false;
+            d.Error = error;
+            return null;
+        }
+        foreach (LootItemAttribute row in draft.Attributes) d.Attributes.Add(row.ToWire());
+        d.Match = (int)draft.Match;
+        d.Action = (int)draft.Action;
+        d.Preview = FindLines(draft.Rule);
+        d.Notes.AddRange(draft.Notes);
+        d.RuleName = facts == null ? "attribute filter" : FindLabel(facts, draft.Match);
+        d.DefaultRuleName = d.RuleName;
+        return draft.Rule;
+    }
+
+    /// <summary>"like Gold Ring", "named Gold Ring", "Gold Ring (Jewelry)".</summary>
+    private static string FindLabel(LootItemFacts facts, LootItemMatch match)
+    {
+        string name = (facts.Name ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (name.Length == 0) name = LootItemRules.ClassName(facts.ObjectClass);
+        return match switch
+        {
+            LootItemMatch.Like => "like " + name,
+            LootItemMatch.Name => "named " + name,
+            _ => name + " (" + LootItemRules.ClassName(facts.ObjectClass) + ")",
+        };
+    }
+
+    /// <summary>The rule's conditions in words: "Where: Class is Jewelry", "and Workmanship >= 7".</summary>
+    private static List<string> FindLines(VTankLootRule rule)
+    {
+        var lines = new List<string>();
+        foreach (VTankLootCondition c in rule.Conditions)
+        {
+            if (c.NodeType == VTankNodeTypes.DisabledRule) continue;
+            lines.Add((lines.Count == 0 ? "Where: " : "and ") + LootRuleText.Condition(c));
+        }
+        if (lines.Count == 0) lines.Add("Where: (every item)");
+        return lines;
+    }
+
+    private void FindCommand(LootEditCommand cmd)
+    {
+        lock (_sync)
+        {
+            LootEditItemRequest req = cmd.Item ?? new LootEditItemRequest();
+            if (cmd.Op == "find_close")
+            {
+                if (_find == null && _findRule == null) return;
+                _find = null;
+                _findRule = null;
+                _findMeta = null;
+                _findRevision++;
+                return;
+            }
+
+            LootEditItemFind f;
+            if (cmd.Op == "find_refresh")
+            {
+                if (_findRule == null || _findMeta == null)
+                {
+                    f = new LootEditItemFind { Seq = req.Seq, Scope = LootFindScopes.Inventory, Error = "The filter was lost (RynthAi reloaded). Right-click the item again." };
+                }
+                else
+                {
+                    f = new LootEditItemFind
+                    {
+                        Seq = req.Seq, Ok = true, Scope = LootFindScopes.Inventory, ItemId = _findMeta.ItemId, ItemName = _findMeta.ItemName,
+                        Label = _findMeta.Label, Lines = _findMeta.Lines, NeedsIdentify = _findMeta.NeedsIdentify,
+                    };
+                    Judge(f, _findRule, req.Candidates);
+                    // Nothing new: leave the state alone (the engine re-reads every rule on a change).
+                    if (ReferenceEquals(_find, _findMeta) && SameResult(f, _findMeta)) return;
+                    _findMeta = f;
+                }
+            }
+            else
+                f = BuildFind(req);
+            _find = f;
+            _findRevision++;
+        }
+    }
+
+    /// <summary>item_find: the rule from the item and the checklist, then the panel's items judged, or the spec for Global Inventory.</summary>
+    private LootEditItemFind BuildFind(LootEditItemRequest req)
+    {
+        string scope = req.Scope == LootFindScopes.Global ? LootFindScopes.Global : LootFindScopes.Inventory;
+        var f = new LootEditItemFind { Seq = req.Seq, Scope = scope };
+        LootItemFacts? facts = null;
+        if (!req.Blank)
+        {
+            uint id = req.ItemId != 0 ? req.ItemId : Items.SelectedItemId();
+            if (id == 0) { f.Error = "No item selected. Click an item first."; return f; }
+            f.ItemId = id;
+            facts = Items.Facts(id, true, true);
+            if (facts == null) { f.Error = $"RynthAi doesn't know item 0x{id:X8} yet. Try again in a moment."; return f; }
+            f.ItemName = facts.Name;
+        }
+        var d = new LootEditItemDraft { Seq = req.Seq, Find = true };
+        var match = (LootItemMatch)Math.Clamp(req.Match, 0, 2);
+        VTankLootRule? rule = BuildFindRule(d, facts, req, match);
+        if (rule == null) { f.Error = d.Error; return f; }
+        f.Label = d.RuleName;
+        f.Lines = d.Preview;
+        f.NeedsIdentify = LootFactsMatcher.NeedsIdentify(rule.Conditions);
+        f.Ok = true;
+        if (scope == LootFindScopes.Global)
+        {
+            // Global Inventory keeps its own copy (the spec); the panel's filter stays as it is.
+            f.Spec = LootFindSpec.Encode(f.Label, rule.Conditions);
+            return f;
+        }
+        Judge(f, rule, req.Candidates);
+        _findRule = rule;
+        _findMeta = f;
+        return f;
+    }
+
+    /// <summary>The candidates the rule takes (Ids) and the ones it can't judge yet (Unknown).</summary>
+    private void Judge(LootEditItemFind f, VTankLootRule rule, List<uint>? candidates)
+    {
+        f.Ids = new List<uint>();
+        f.Unknown = new List<uint>();
+        if (candidates == null || candidates.Count == 0) return;
+        List<uint> list = candidates.Count > MaxFindCandidates ? candidates.GetRange(0, MaxFindCandidates) : candidates;
+        Items.Judge(rule, list, f.NeedsIdentify, f.Ids, f.Unknown);
+        f.Checked = list.Count;
+    }
+
+    private static bool SameResult(LootEditItemFind a, LootEditItemFind b) =>
+        a.Ok == b.Ok && a.Error == b.Error && a.Checked == b.Checked && Same(a.Ids, b.Ids) && Same(a.Unknown, b.Unknown);
+
+    private static bool Same(List<uint> a, List<uint> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// A save the disk refused (folder not writable, file in use, ...): the editor shows the
+    /// session's message; this adds the chat line (once per folder) and the log line with the
+    /// reason and the fix (Plugins/Shared/DataWriteGuard.cs, 2026-10-13).
+    /// </summary>
+    private static void ReportWriteError(LootEditSession session)
+    {
+        Exception? error = session.TakeWriteError();
+        if (error != null)
+            RynthCore.Plugin.Shared.DataWriteGuard.Report("the loot profile", session.Path, error);
     }
 
     private static LootEditItemDraft Refuse(LootEditItemDraft d, string error)
@@ -318,14 +702,9 @@ internal sealed class LootEditorBridge
                 names.Sort(StringComparer.OrdinalIgnoreCase);
                 foreach (string f in names) files.Add(new LootEditFile { Path = f, Display = Path.GetFileName(f) });
             }
-            foreach (string folder in _vendorFolders)
-            {
-                if (!Directory.Exists(folder)) continue;
-                var names = new List<string>(Directory.GetFiles(folder, "*.utl", new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 2 }));
-                names.Sort(StringComparer.OrdinalIgnoreCase);
-                foreach (string f in names)
-                    files.Add(new LootEditFile { Path = f, Display = "AutoVendor: " + Path.GetRelativePath(folder, f) });
-            }
+            // In AutoVendor's order, each marked by its folder (character, server, main).
+            foreach ((string path, string display) in Vendor.AutoVendorManager.ListProfiles(_vendorFolders()))
+                files.Add(new LootEditFile { Path = path, Display = display });
         }
         catch { }
         if (_session.IsOpen && !files.Exists(f => LootEditSession.SamePath(f.Path, _session.Path)))
@@ -339,6 +718,11 @@ internal sealed class LootItemHooks
 {
     /// <summary>The item selected in the game, or 0.</summary>
     public Func<uint> SelectedItemId { get; set; } = () => 0;
+    /// <summary>
+    /// RynthCore's active server is Infinite Leaftide (2026-11-07): the checklists offer the T11, weapon-card
+    /// and pet rows and the pickers the ACECustom keys only there. Null: treated as Leaftide.
+    /// </summary>
+    public Func<bool>? IsIlt { get; set; }
     /// <summary>
     /// The item's facts from the object cache, or null. The bools: "items like this" and
     /// "include T11 attributes"; either asks for an ID when the item isn't identified.
@@ -355,6 +739,14 @@ internal sealed class LootItemHooks
     /// (the looter's own classification, run as a preview), or null.
     /// </summary>
     public Func<uint, LootBuiltInKeep?> BuiltInKeep { get; set; } = _ => null;
+    /// <summary>
+    /// "Filter like this": judges the items (in order) with the rule as the looter would, adding
+    /// the ones it takes to the first list and, when the rule needs an identify (the bool), the
+    /// unidentified or unknown ones it doesn't take to the second.
+    /// </summary>
+    public Action<VTankLootRule, IReadOnlyList<uint>, bool, List<uint>, List<uint>> Judge { get; set; } = (_, _, _, _, _) => { };
+    /// <summary>The standard spell lists from RynthAi's spell table, or null until it is read.</summary>
+    public Func<LootSpellCatalog?> Spells { get; set; } = () => null;
 }
 
 /// <summary>

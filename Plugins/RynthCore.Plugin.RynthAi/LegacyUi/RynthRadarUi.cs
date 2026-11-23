@@ -23,7 +23,10 @@ internal sealed class RynthRadarUi
     // resolution). Cleared whenever the player transitions landblocks, so
     // re-entering a dungeon resets the coloring.
     private const float GridCell = 0.5f;
-    private readonly System.Collections.Generic.HashSet<(int gx, int gy)> _visitedCells = new();
+    // Keyed by the floor (layer Z) as well (2026-11-11, Silentkelpie: the dungeon map's trail "isn't tracking the z
+    // coords elevation level changes and overlaps"): walking one floor painted the same spot on the floors above and
+    // below it. Each floor now has its own painted cells.
+    private readonly System.Collections.Generic.HashSet<(float z, int gx, int gy)> _visitedCells = new();
     private uint _visitedLandblock;
     // Visited cells merged into strips — rebuilt only when _visitedCells grows.
     private System.Collections.Generic.Dictionary<float, System.Collections.Generic.List<(float x0, float y0, float x1, float y1)>>? _visitedFillStrips;
@@ -75,7 +78,48 @@ internal sealed class RynthRadarUi
     internal void SetMapData(DungeonMapUi mapData) => _mapData = mapData;
     public void SetWorldObjectCache(WorldObjectCache cache) => _objectCache = cache;
 
+    /// <summary>
+    /// The share (0..1) of the dungeon's flat floor the radar has painted as visited this visit, for
+    /// /ra dunroute where; null when the radar hasn't drawn this landblock (its snapshot drives the
+    /// painting, so a closed radar knows nothing). Pump thread, as the snapshot.
+    /// </summary>
+    internal double? ExploredShare(uint landblock)
+    {
+        var map = _mapData;
+        if (map?._floorCells is null || map._cachedLandblock != landblock || _visitedLandblock != landblock) return null;
+        int total = 0, seen = 0;
+        foreach (var (layerZ, cells) in map._floorCells)
+            foreach (var ((gx, gy), ctype) in cells)
+            {
+                if (ctype != DungeonMapUi.CellType.Flat) continue;
+                total++;
+                if (_visitedCells.Contains((layerZ, gx, gy))) seen++;
+            }
+        return total == 0 ? null : (double)seen / total;
+    }
+
     // ── Visited strip cache ─────────────────────────────────────────────
+
+    /// <summary>
+    /// The floor (layer Z) under the player: of the floors that have floor at the player's grid cell, the one
+    /// nearest their Z (stacked floors share x/y); none has: the nearest by Z. Null without layers.
+    /// </summary>
+    internal static float? PlayerLayer(DungeonMapUi map, int gx, int gy, float z)
+    {
+        var layers = map._zLayers;
+        if (layers is not { Count: > 0 }) return null;
+        float? best = null, nearest = null;
+        float bestD = float.MaxValue, nearestD = float.MaxValue;
+        foreach (float lz in layers)
+        {
+            float d = MathF.Abs(lz - z);
+            if (d < nearestD) { nearestD = d; nearest = lz; }
+            if (map._floorCells != null && map._floorCells.TryGetValue(lz, out var cells) && cells.ContainsKey((gx, gy)) && d < bestD)
+            { bestD = d; best = lz; }
+        }
+        // A floor more than a storey off isn't the one you're on (a cell above you shares your x/y).
+        return best is float b && bestD <= 6f ? b : nearest;
+    }
 
     private void RebuildRadarVisitedStrips()
     {
@@ -91,7 +135,7 @@ internal sealed class RynthRadarUi
         {
             var flatVisited = new System.Collections.Generic.List<(int, int)>();
             foreach (var ((gx, gy), ctype) in cells)
-                if (ctype == DungeonMapUi.CellType.Flat && _visitedCells.Contains((gx, gy)))
+                if (ctype == DungeonMapUi.CellType.Flat && _visitedCells.Contains((layerZ, gx, gy)))
                     flatVisited.Add((gx, gy));
             if (flatVisited.Count == 0) continue;
             var strips = DungeonMapUi.BuildVisitedStripsFrom(flatVisited);
@@ -242,14 +286,21 @@ internal sealed class RynthRadarUi
             _corpseKillers.Clear();
         }
 
-        if (isIndoor)
+        if (isIndoor && _mapData != null)
         {
+            _mapData.EnsureCache(landblock);
             int pgx = (int)MathF.Floor(playerWX / GridCell);
             int pgy = (int)MathF.Floor(playerWY / GridCell);
-            int r = Math.Clamp(_settings.RadarWallPaintRadius, 0, 40);
-            for (int oy = -r; oy <= r; oy++)
-                for (int ox = -r; ox <= r; ox++)
-                    _visitedCells.Add((pgx + ox, pgy + oy));
+            // The floor you stand on: painted there only, and only where that floor has floor.
+            if (PlayerLayer(_mapData, pgx, pgy, pz) is float layerZ)
+            {
+                var floor = _mapData._floorCells != null && _mapData._floorCells.TryGetValue(layerZ, out var fc) ? fc : null;
+                int r = Math.Clamp(_settings.RadarWallPaintRadius, 0, 40);
+                for (int oy = -r; oy <= r; oy++)
+                    for (int ox = -r; ox <= r; ox++)
+                        if (floor == null || floor.ContainsKey((pgx + ox, pgy + oy)))
+                            _visitedCells.Add((layerZ, pgx + ox, pgy + oy));
+            }
         }
 
         if (_visitedCells.Count != _lastVisitedCount && _mapData != null)
@@ -353,7 +404,7 @@ internal sealed class RynthRadarUi
         }
 
         if (_objectCache != null && _host.HasGetObjectPosition && landblock != 0)
-            AddMarkers(payload, landblock, gxLB, gyLB);
+            AddMarkers(payload, landblock, isIndoor);
 
         return payload;
     }
@@ -363,7 +414,21 @@ internal sealed class RynthRadarUi
     // decided once and kept (per object id and name) wherever the answer is settled, because
     // this runs on every radar poll (10-30 Hz) over every creature and world object nearby.
 
-    private void AddMarkers(RadarSnapshotPayload payload, uint landblock, float gxLB, float gyLB)
+    /// <summary>
+    /// Where an object's landblock puts it in world space. Outdoors every landblock counts: the client has the
+    /// neighbours loaded and an object's position is local to its own landblock, so it is offset by that one
+    /// (2026-10-15: objects over the border used to show only once you crossed it). In a dungeon only the
+    /// player's own landblock counts (the neighbours' cells are other places).
+    /// </summary>
+    private static bool TryLandblockOffset(uint cell, uint playerLandblock, bool indoor, out float gx, out float gy)
+    {
+        uint lb = cell >> 16;
+        gx = ((lb >> 8) & 0xFF) * 192f;
+        gy = (lb & 0xFF) * 192f;
+        return lb != 0 && (!indoor || lb == playerLandblock);
+    }
+
+    private void AddMarkers(RadarSnapshotPayload payload, uint landblock, bool indoor)
     {
         var cache = _objectCache!;
         if (_creatureNpcLandblock != (int)landblock)
@@ -382,9 +447,9 @@ internal sealed class RynthRadarUi
         {
             if (!_host.TryGetObjectPosition((uint)wo.Id, out uint cCellId,
                     out float cox, out float coy, out float coz)) continue;
-            if ((cCellId >> 16) != landblock) continue;
+            if (!TryLandblockOffset(cCellId, landblock, indoor, out float cgx, out float cgy)) continue;
             _drawnCreatures.Add(wo.Id);
-            AddCreature(payload, wo, petPrefix, cox + gxLB, coy + gyLB, coz);
+            AddCreature(payload, wo, petPrefix, cox + cgx, coy + cgy, coz);
         }
 
         foreach (var wo in cache.GetLandscapeObjects())
@@ -399,20 +464,20 @@ internal sealed class RynthRadarUi
             {
                 if (wo.ObjectClass == AcObjectClass.Monster || _drawnCreatures.Contains(wo.Id)) continue;
                 if (!_host.TryGetObjectPosition(uid, out uint cc, out float cx, out float cy, out float cz)) continue;
-                if ((cc >> 16) != landblock) continue;
-                AddCreature(payload, wo, petPrefix, cx + gxLB, cy + gyLB, cz);
+                if (!TryLandblockOffset(cc, landblock, indoor, out float rgx, out float rgy)) continue;
+                AddCreature(payload, wo, petPrefix, cx + rgx, cy + rgy, cz);
                 continue;
             }
 
             if (wo.ObjectClass == AcObjectClass.Corpse)
             {
                 if (!_host.TryGetObjectPosition(uid, out uint kc, out float kx, out float ky, out float kz)) continue;
-                if ((kc >> 16) != landblock) continue;
+                if (!TryLandblockOffset(kc, landblock, indoor, out float kgx, out float kgy)) continue;
                 bool own = IsOwnCorpse(wo, woName, me, myCorpse, now);
                 payload.Markers.Add(new RadarMarker
                 {
                     Kind = own ? KindOwnCorpse : KindCorpse,
-                    X = kx + gxLB, Y = ky + gyLB, Z = kz,
+                    X = kx + kgx, Y = ky + kgy, Z = kz,
                     Label = woName,
                     Id = uid,
                 });
@@ -421,7 +486,7 @@ internal sealed class RynthRadarUi
 
             if (uid >= 0x80000000u)
             {
-                AddDynamicObject(payload, wo, woName, landblock, gxLB, gyLB);
+                AddDynamicObject(payload, wo, woName, landblock, indoor);
                 continue;
             }
 
@@ -431,7 +496,7 @@ internal sealed class RynthRadarUi
 
             if (!_host.TryGetObjectPosition(uid, out uint oCellId,
                     out float oox, out float ooy, out float ooz)) continue;
-            if ((oCellId >> 16) != landblock) continue;
+            if (!TryLandblockOffset(oCellId, landblock, indoor, out float ogx, out float ogy)) continue;
 
             byte kind;
             string label;
@@ -459,7 +524,7 @@ internal sealed class RynthRadarUi
             payload.Markers.Add(new RadarMarker
             {
                 Kind = kind,
-                X = oox + gxLB, Y = ooy + gyLB, Z = ooz,
+                X = oox + ogx, Y = ooy + ogy, Z = ooz,
                 Label = label,
                 Id = uid,
             });
@@ -525,7 +590,7 @@ internal sealed class RynthRadarUi
     }
 
     /// <summary>A summoned portal, a lifestone or an item on the ground; other dynamic objects aren't drawn.</summary>
-    private void AddDynamicObject(RadarSnapshotPayload payload, WorldObject wo, string woName, uint landblock, float gxLB, float gyLB)
+    private void AddDynamicObject(RadarSnapshotPayload payload, WorldObject wo, string woName, uint landblock, bool indoor)
     {
         byte kind;
         if (_dynamicKinds.TryGetValue(wo.Id, out var known) && known.Name == woName)
@@ -545,11 +610,11 @@ internal sealed class RynthRadarUi
             _dynamicKinds[wo.Id] = (woName, kind);
         }
         if (!_host.TryGetObjectPosition((uint)wo.Id, out uint cell, out float x, out float y, out float z)) return;
-        if ((cell >> 16) != landblock) return;
+        if (!TryLandblockOffset(cell, landblock, indoor, out float dgx, out float dgy)) return;
         payload.Markers.Add(new RadarMarker
         {
             Kind = kind,
-            X = x + gxLB, Y = y + gyLB, Z = z,
+            X = x + dgx, Y = y + dgy, Z = z,
             Label = kind == KindPortal ? GetPortalLabel(wo) : woName,
             Id = (uint)wo.Id,
         });

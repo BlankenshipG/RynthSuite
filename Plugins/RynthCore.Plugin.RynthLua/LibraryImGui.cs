@@ -469,6 +469,15 @@ public sealed partial class RynthLuaPlugin
             return LibraryImGuiValues.NewVec2(s, size.X, size.Y);
         });
 
+        // ── Clipboard (any time; Windows clipboard, Unicode text) ───────
+        Fn("SetClipboardText", args =>
+        {
+            DynValue v = LuaArgs.At(args, 0);
+            string text = v.IsNil() ? string.Empty : v.ToPrintString();
+            return DynValue.NewBoolean(WinClipboard.SetText(text));
+        });
+        Fn("GetClipboardText", args => DynValue.NewString(WinClipboard.GetText()));
+
         im["ImGui"] = DynValue.NewTable(im);   // require("imgui").ImGui works too
 
         var mt = new Table(s);

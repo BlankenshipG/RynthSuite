@@ -45,6 +45,7 @@ internal static class Program
         TestPlanBuy();
         TestPlanSell();
         TestPlanNotes();
+        TestLooseNotesAndSplits();
         TestPrices();
         TestSafety();
         TestVendorWillBuy();
@@ -391,6 +392,83 @@ internal static class Program
         var p5 = AutoVendorPlanner.PlanNext(v, none, new List<SellItem>(), Pack(0));
         Eq(p5.Kind, PlanKind.Done, "nothing to do");
 
+        // A split lands on another partial stack of the same item, so the planner never splits while one
+        // exists (Drakkon's Gold Peas looped split-wait-split, 2026-10-19). Peas: 25,000 each, max 100.
+        SellItem Pea(uint id, int stack) => new() { Id = id, Name = "Gold Pea", Value = 25_000 * stack, StackSize = stack,
+                                                    Class = AcObjectClass.Misc, ItemType = 0x40000000, RuleName = "S: Peas", MaxStack = 100, Wcid = 9001 };
+        // 88 free main slots: (88 - 2) * 25000 / 25000 = 86 peas fit.
+        var twoPartials = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { Pea(1, 100), Pea(2, 91), Pea(3, 88) }, Pack(0, free: 88));
+        Eq(twoPartials.Kind, PlanKind.Merge, "two partials: merge first");
+        Eq(twoPartials.SplitItem!.Id, 3u, "the smaller partial goes...");
+        Eq(twoPartials.MergeTarget!.Id, 2u, "...onto the bigger one");
+
+        // Right after a split: the new stack (38) fits and is sold, never merged back onto the source (62).
+        var justSplit = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { Pea(1, 62), Pea(2, 38), Pea(3, 100) }, Pack(0, free: 40));
+        Eq(justSplit.Kind, PlanKind.Sell, "the freshly split stack is sold...");
+        Eq(justSplit.Sells.Single().Id, 2u, "...not merged back");
+        var justSplit2 = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { Pea(1, 100), Pea(2, 62), Pea(3, 38) }, Pack(0, free: 40));
+        Eq(justSplit2.Kind, PlanKind.Sell, "same with a full stack first");
+        Eq(justSplit2.Sells.Single().Id, 3u, "the 38");
+
+        // 2026-11-05 (DreamWeave, Pyreal Peas at 50,000 each, two pyreal stacks a pea): the last full stack,
+        // 80 free slots: split 39 off ((80 - 2) * 25000 / 50000). The new stack takes a slot (79 free): it
+        // must still be sold whole (its slot frees for the pyreals), never merged back onto the 61.
+        SellItem PyPea(uint id, int stack) => new() { Id = id, Name = "Pyreal Pea", Value = 50_000 * stack, StackSize = stack,
+                                                      Class = AcObjectClass.Misc, ItemType = 0x40000000, RuleName = "S: Peas", MaxStack = 100, Wcid = 9003 };
+        var lastStack = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { PyPea(1, 100) }, Pack(0, free: 80));
+        Eq(lastStack.Kind, PlanKind.Split, "the last full stack: split");
+        Eq(lastStack.SplitAmount, 39, "39 peas fit");
+        var afterSplit = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { PyPea(1, 61), PyPea(2, 39) }, Pack(0, free: 79));
+        Eq(afterSplit.Kind, PlanKind.Sell, "after the split: the 39 is sold, not merged back (the loop that left a stack)");
+        Eq(afterSplit.Sells.Single().Id, 2u, "the split-off 39");
+        var oneTooBig = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { PyPea(1, 61), PyPea(2, 41) }, Pack(0, free: 79));
+        Eq(oneTooBig.Kind, PlanKind.Merge, "a partial more than a slot's worth too big still merges first");
+
+        var onePartialFits = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { Pea(1, 100), Pea(2, 79) }, Pack(0, free: 88));
+        Eq(onePartialFits.Kind, PlanKind.Sell, "one partial that fits: sold whole, no split");
+        Eq(onePartialFits.Sells.Single().Id, 2u, "the partial");
+
+        var onePartialBig = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { Pea(1, 100), Pea(2, 95) }, Pack(0, free: 88));
+        Eq(onePartialBig.Kind, PlanKind.Split, "one partial too big: split...");
+        Eq(onePartialBig.SplitItem!.Id, 2u, "...from the partial itself (nothing else for it to join)");
+        Eq(onePartialBig.SplitAmount, 86, "86 fit");
+
+        var allFull = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { Pea(1, 100), Pea(2, 100) }, Pack(0, free: 88));
+        Eq(allFull.Kind, PlanKind.Split, "all full: plain split");
+        Eq(allFull.SplitItem!.Id, 1u, "from the first");
+
+        var otherItem = new SellItem { Id = 5, Name = "Silver Pea", Value = 50, StackSize = 50, MaxStack = 100, Wcid = 9002, Class = AcObjectClass.Misc, ItemType = 0x40000000 };
+        var notSame = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { Pea(1, 100), otherItem }, Pack(0, free: 88));
+        Eq(notSame.Kind, PlanKind.Split, "another item's partial doesn't count");
+        Eq(notSame.SplitItem!.Id, 1u, "gold split as asked");
+
+        // Stale stack values: a split leaves 100 peas' value on a small stack, a merge leaves a small value on a big one.
+        Eq(AutoVendorPlanner.MostCarriedUnit(new Dictionary<int, long> { [25_000] = 800, [1_250_000] = 2, [3_000] = 100 }), 25_000, "most peas carry the true price");
+        Eq(AutoVendorPlanner.MostCarriedUnit(new Dictionary<int, long> { [25_000] = 50, [30_000] = 50 }), 30_000, "tie: the higher value");
+        Eq(AutoVendorPlanner.MostCarriedUnit(new Dictionary<int, long>()), 0, "nothing: 0 (no override)");
+
+        // 2026-11-12 (DreamWeave, Pyreal Peas): the last full stack (100) split 21 off with 44 free slots. The
+        // 79 left keep 100 peas' Value (63,291 a pea) and outvote the 21 (50,000): read at that price the 21
+        // didn't fit, were merged back, and the split came again until the 8-try stop. The split-off stack
+        // is fresh from the server, so its unit wins.
+        var staleVotes = new Dictionary<int, long> { [5_000_000 / 79] = 79, [50_000] = 21 };
+        Eq(AutoVendorPlanner.MostCarriedUnit(staleVotes), 5_000_000 / 79, "the vote alone picks the stale price");
+        Eq(AutoVendorPlanner.TrueUnit(staleVotes, 50_000), 50_000, "a split-off stack's fresh unit wins");
+        Eq(AutoVendorPlanner.TrueUnit(staleVotes, 0), 5_000_000 / 79, "no fresh unit: the vote");
+        var lastFull = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { PyPea(1, 100) }, Pack(0, free: 44));
+        Eq(lastFull.Kind, PlanKind.Split, "44 free: split...");
+        Eq(lastFull.SplitAmount, 21, "...21 off");
+        SellItem StalePea(uint id, int stack) => new() { Id = id, Name = "Pyreal Pea", Value = 5_000_000 / 79 * stack, StackSize = stack,
+                                                         Class = AcObjectClass.Misc, ItemType = 0x40000000, RuleName = "S: Peas", MaxStack = 100, Wcid = 9003 };
+        var staleRead = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { StalePea(1, 79), StalePea(2, 21) }, Pack(0, free: 43));
+        Eq(staleRead.Kind, PlanKind.Merge, "at the stale price the 21 is merged back (the loop)");
+        var freshRead = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { PyPea(1, 79), PyPea(2, 21) }, Pack(0, free: 43));
+        Eq(freshRead.Kind, PlanKind.Sell, "at the fresh price the 21 is sold");
+        Eq(freshRead.Sells.Single().Id, 2u, "the split-off 21");
+
+        var unknownMax = AutoVendorPlanner.PlanNext(v, none, new List<SellItem> { S(1, "Gem", 100_000, stack: 100), S(2, "Gem", 50_000, stack: 50) }, Pack(0, free: 3));
+        Eq(unknownMax.Kind, PlanKind.Split, "unknown max stack: the old plain split");
+
         // Payout estimate uses the vendor's buy rate (ACE floor(value * rate + 0.1)).
         var half = Vendor(buy: 0.5f);
         var p6 = AutoVendorPlanner.PlanNext(half, none, new List<SellItem> { S(1, "Salvage", 101) }, Pack(0));
@@ -434,6 +512,89 @@ internal static class Program
         var alt = Vendor(buy: 0.5f, alt: true);
         var p6 = AutoVendorPlanner.PlanNext(alt, dear, new List<SellItem> { Note(2, 1) }, Pack(0));
         Eq(p6.Kind, PlanKind.Done, "alt currency: notes kept");
+    }
+
+    // 2026-11-01, Master Raiden Stormcaller: a one-note stack matches the profile's Keep rule for the
+    // vendor's listing ("ObjectClass TradeNote, Value = 250,000"), so a loose single never reached the
+    // sell list and every plan split another note off. Loose singles now pay first; a split's result
+    // is judged from what the server did; a session that can't buy says why.
+    private static void TestLooseNotesAndSplits()
+    {
+        Console.WriteLine("\n-- loose notes, split results, why nothing was bought --");
+        var v = Vendor(buy: 0.7f, sell: 1.15f);
+        SellItem Note(uint id, int stack, string rule = "S: Trade Note") => new()
+        {
+            Id = id, Name = "Trade Note (250,000)", Value = 250_000 * stack, StackSize = stack, Class = AcObjectClass.TradeNote,
+            ItemType = 0x40000, RuleName = rule, MaxStack = 250, Wcid = 20630,
+        };
+        var tapers = new List<BuyWant> { new() { Item = L(10, "Prismatic Taper", 115, value: 100, maxStack: 5000), Amount = 36, RuleName = "B: Prismatic Tapers" } };
+
+        // The owner's profile, as RynthAi judges an identified note stack.
+        var keepListing = Rule("B: Trade Note (250,000)", VTankLootAction.Keep, null, Cond(7, "15"), Cond(12, "250000", "19"));
+        var sellNotes = Rule("S: Trade Note", VTankLootAction.Sell, null, Cond(7, "15"));
+        var rules = new List<VTankLootRule> { keepListing, sellNotes };
+        var noteFacts = new ItemFacts { Appraised = true, ObjectClass = AcObjectClass.TradeNote, ItemType = 0x40000 };
+        var forty = AutoVendorRules.Decide(rules, JudgeFake(noteFacts, "Trade Note (250,000)", new() { [19] = 10_000_000 }));
+        Check(AutoVendorRules.JudgeSell(forty).Sell, "40 notes (10,000,000): the Sell rule takes them");
+        var one = AutoVendorRules.Decide(rules, JudgeFake(noteFacts, "Trade Note (250,000)", new() { [19] = 250_000 }));
+        Eq(one.Rule?.Name, "B: Trade Note (250,000)", "one note (250,000): the listing's Keep rule matches it");
+        Check(!AutoVendorRules.JudgeSell(one).Sell, "so a single note is never on the sell list");
+
+        // A loose single (kept by that rule) pays before any split.
+        var big = Note(1, 39);
+        var loose = Note(2, 1, "loose note");
+        var p1 = AutoVendorPlanner.PlanNext(v, tapers, new List<SellItem> { big }, Pack(0), new List<SellItem> { loose });
+        Eq(p1.Kind, PlanKind.Sell, "a loose note is sold...");
+        Eq(p1.Sells.Single().Id, 2u, "...the loose one");
+        var p2 = AutoVendorPlanner.PlanNext(v, tapers, new List<SellItem> { big }, Pack(0), new List<SellItem>());
+        Eq(p2.Kind, PlanKind.Split, "none loose: split one off");
+        var otherNote = new SellItem { Id = 3, Name = "Trade Note (100,000)", Value = 100_000, StackSize = 1, Class = AcObjectClass.TradeNote, ItemType = 0x40000, MaxStack = 250, Wcid = 2626 };
+        var p3 = AutoVendorPlanner.PlanNext(v, tapers, new List<SellItem> { big }, Pack(0), new List<SellItem> { otherNote });
+        Eq(p3.Kind, PlanKind.Split, "a loose note of another kind doesn't stand in");
+        var p4 = AutoVendorPlanner.PlanNext(v, new List<BuyWant>(), new List<SellItem> { big }, Pack(0), new List<SellItem> { loose });
+        Eq(p4.Kind, PlanKind.Done, "nothing to buy: loose notes stay too");
+
+        // Why nothing was bought.
+        var p5 = AutoVendorPlanner.PlanNext(v, tapers, new List<SellItem>(), Pack(0));
+        Eq(p5.Kind, PlanKind.Done, "can't pay: done");
+        Eq(p5.Message, "can't buy 36x Prismatic Taper (rule 'B: Prismatic Tapers'): 115 pyreals each, you have 0, and nothing the profile sells is here to pay for it", "...and says why");
+        var p6 = AutoVendorPlanner.PlanNext(v, tapers, new List<SellItem>(), Pack(0), new List<SellItem> { loose });
+        Check(p6.Message.Contains("no Sell rule matches a note stack here: the loose Trade Note (250,000) (loose note) stays"), "only loose notes, no sellable note stack: says they stay");
+        var keepAll = new List<BuyWant> { new() { Item = L(11, "Trade Note (250,000)", 287_500, 250_000, cls: AcObjectClass.TradeNote, type: 0x40000), Amount = int.MaxValue } };
+        Eq(AutoVendorPlanner.PlanNext(v, keepAll, new List<SellItem>(), Pack(0)).Message, string.Empty, "a Keep (all you can afford) running out of money is no failure");
+        Check(AutoVendorPlanner.PlanNext(v, tapers, new List<SellItem>(), Pack(1_000_000, free: 1)).Kind == PlanKind.Done
+              && AutoVendorPlanner.ExplainUnmetBuy(v, tapers, new List<SellItem>(), Pack(1_000_000, free: 1)).Contains("only 1 free main-pack slot(s)"), "no room: says so");
+
+        // Where a split went.
+        var sibs = new Dictionary<uint, int> { [1] = 40, [5] = 1 };
+        var none = new HashSet<uint>();
+        var made = AutoVendorSplits.Resolve(1, 40, 39, sibs, new HashSet<uint> { 9 }, new[] { (1u, 39, true), (5u, 1, true), (9u, 1, false) }, false);
+        Eq(made.Kind, SplitOutcomeKind.NewStack, "a create of the item: the new stack");
+        Eq(made.StackId, 9u, "its id");
+        var unread = AutoVendorSplits.Resolve(25, 100, 100, sibs, new HashSet<uint> { 9 }, new[] { (1u, 100, true), (9u, 1, false) }, false);
+        Eq(unread.Kind, SplitOutcomeKind.Pending, "created but the count unreadable and the source unchanged: wait");
+        var unreadLater = AutoVendorSplits.Resolve(25, 100, 75, sibs, new HashSet<uint> { 9 }, new[] { (1u, 75, true), (9u, 1, false) }, false);
+        Eq(unreadLater.Kind, SplitOutcomeKind.NewStack, "...until the source shrank by the amount");
+        var missed = AutoVendorSplits.Resolve(1, 40, 39, sibs, none, new[] { (1u, 39, true), (9u, 1, false) }, false);
+        Eq(missed.Kind, SplitOutcomeKind.NewStack, "create missed: a new id with exactly the amount");
+        var joined = AutoVendorSplits.Resolve(1, 40, 39, sibs, none, new[] { (1u, 39, true), (5u, 2, true) }, false);
+        Eq(joined.Kind, SplitOutcomeKind.JoinedStack, "no new object, a stack that was there grew: joined");
+        Eq(joined.StackId, 5u, "the stack it joined");
+        Eq(joined.StackCount, 2, "now 2");
+        Eq(AutoVendorSplits.Resolve(1, 40, 40, sibs, none, new[] { (1u, 40, true), (5u, 1, true) }, false).Kind, SplitOutcomeKind.Pending, "nothing yet: pending");
+        Eq(AutoVendorSplits.Resolve(1, 40, 40, sibs, none, new[] { (1u, 40, true), (5u, 1, true) }, true).Kind, SplitOutcomeKind.Failed, "nothing in time: failed");
+        Eq(AutoVendorSplits.Resolve(1, 40, 39, sibs, none, new[] { (1u, 39, true), (5u, 1, true) }, false).Kind, SplitOutcomeKind.Pending, "the source shrank but the units aren't seen yet: wait");
+
+        // A server's custom letter (a writable, so Book) is never a TradeNote.
+        Eq(AutoVendorRules.JudgeObjectClass(Cond(7, "15"), AcObjectClass.Book, 0x2000), Tri.No, "Book with its type read: not a TradeNote");
+        Eq(AutoVendorRules.JudgeObjectClass(Cond(7, "15"), AcObjectClass.Book, 0), Tri.Unknown, "type unread: still unknown");
+        Eq(AutoVendorRules.JudgeObjectClass(Cond(7, "42"), AcObjectClass.Book, 0x2000), Tri.Unknown, "Book may still be a Scroll");
+        Eq(AutoVendorRules.JudgeObjectClass(Cond(7, "29"), AcObjectClass.Misc, 0x80), Tri.Unknown, "Misc may still be a healing kit");
+        Eq(AutoVendorRules.JudgeObjectClass(Cond(7, "16"), AcObjectClass.Misc, 0x80), Tri.No, "Misc is never a ManaStone");
+        Eq(AutoVendorRules.JudgeObjectClass(Cond(7, "15"), AcObjectClass.Unknown, 0x10000000), Tri.No, "an unclassified type without the note bit: not a TradeNote");
+        var letterFacts = new ItemFacts { Appraised = true, ObjectClass = AcObjectClass.Book, ItemType = 0x2000 };
+        var letter = AutoVendorRules.Decide(rules, JudgeFake(letterFacts, "Scarlet Red Letter", new() { [19] = 5 }));
+        Check(letter.Rule == null && letter.Certain, "the letter: no rule matches, nothing to log");
     }
 
     private static void TestPrices()
@@ -480,7 +641,6 @@ internal static class Program
             (new SafetyFacts { Appraised = true, Value = 100, CanBeSold = false }, "not sellable"),
             (new SafetyFacts { Appraised = true, Value = 100, IsRare = true }, "rare"),
             (new SafetyFacts { Appraised = true, Value = 100, Attuned = 1 }, "attuned"),
-            (new SafetyFacts { Appraised = true, Value = 100, Bonded = 1 }, "bonded"),
             (new SafetyFacts { Appraised = true, Value = 100, Retained = true }, "retained"),
             (new SafetyFacts { Appraised = true, Value = 100, TimesTinkered = 1 }, "tinkered"),
             (new SafetyFacts { Appraised = true, Value = 100, Imbued = 1 }, "imbued"),
@@ -495,6 +655,8 @@ internal static class Program
 
         var side = new SafetyFacts { Appraised = true, Class = AcObjectClass.Salvage, Value = 100, InMainPack = false };
         Eq(AutoVendorPlanner.UnsafeReason(side, false), null, "side pack ok by default");
+        // Bonded only decides what a death keeps on ACE: peas, trade notes and salvage are bonded and sell (2026-10-07).
+        Eq(AutoVendorPlanner.UnsafeReason(new SafetyFacts { Appraised = true, Value = 12500, Bonded = 1 }, false), null, "bonded (kept on death) still sells");
         Eq(AutoVendorPlanner.UnsafeReason(side, true), "not in main pack", "OnlyFromMainPack");
     }
 

@@ -1,0 +1,746 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using RynthCore.Loot;
+using RynthCore.Plugin.RynthAi;
+using RynthCore.Plugin.RynthAi.LegacyUi;
+using RynthCore.Plugin.RynthAi.Loot;
+using RynthCore.PluginCore;
+using RynthCore.PluginSdk;
+using RynthCore.RynthAiHostTests.Fakes;
+using RynthCore.RynthAiTests.Harness;
+
+namespace RynthCore.RynthAiHostTests.Tests;
+
+// 2026-10-12: with Looting on, a chest the player or a meta opened is looted by the corpse
+// looter (RynthAiPlugin.ChestLoot.cs): matching items picked up, the rest left, no walk and no
+// open, closed when done, never marked done for good (chests regenerate). Not the player's own
+// packs, not house storage, nothing with Looting off.
+internal static class ChestLootTests
+{
+    private const uint Player = 0x50000D01;
+    private const uint Chest = 0x7A9B4001;     // a landblock chest (static id)
+    private const uint Gem = 0x80263101;
+    private const uint Spoon = 0x80263102;
+    private const uint Gem2 = 0x80263103;
+    private const uint Cap = 0x80263104;
+    private const uint SidePack = 0x80263200;
+    private const uint PackGem = 0x80263201;
+    private const uint ItemTypeContainer = 0x200, ItemTypeGem = 0x800, ItemTypeMisc = 0x80, ItemTypeArmor = 0x2;
+    private const BindingFlags Any = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+
+    public static void Register(Runner r)
+    {
+        r.Add("chest loot: an opened chest's matching items are picked up, the rest left; no walk, no open, closed when done", OpenedChestLooted);
+        r.Add("chest loot: your own side pack opened -> nothing taken", OwnSidePackNotLooted);
+        r.Add("chest loot: house storage (HouseOwner set) -> nothing taken", HouseStorageNotLooted);
+        r.Add("chest loot: house storage by name (engine without the HouseOwner read) -> nothing taken", HouseStorageByNameNotLooted);
+        r.Add("chest loot: Looting off and Pickup with macro off off -> nothing taken, the loot check still runs", LootingOffNothing);
+        r.Add("chest loot: Pickup with macro off (on by default) loots an opened chest with the macro off or Looting off", PickupWithMacroOff);
+        r.Add("chest loot: Pickup with macro off never takes from house storage or your own side pack", PickupWithMacroOffRefuses);
+        r.Add("chest loot: Pickup with macro off leaves the chest open with Leave the chest open, or while anything is left in it (off: an emptied chest is closed)", PickupLeavesChestOpen);
+        r.Add("chest loot: reopening the chest loots it again (never marked done)", ReopenLootsAgain);
+        r.Add("chest loot: a salvage-only item is left when no UST is carried, as on corpses", SalvageWithoutUstLeft);
+        r.Add("chest loot: opened mid-fight it waits for combat, then is looted if still open", ChestWaitsForCombat);
+        r.Add("chest loot: an open chest is looted before a fight further than 5 yd off (a chest closes when you walk away)", OpenChestBeforeDistantFight);
+        r.Add("chest loot: closed mid-loot -> the looter opens it again and takes the rest", ClosedMidLootReopened);
+        r.Add("chest loot: a chest that keeps closing is opened again twice in a minute, then left", ReopenIsBounded);
+        r.Add("chest loot: a chest the player opened with the macro off is not reopened when it closes", ManualChestNotReopened);
+        r.Add("chest loot: an open chest that closes before the looter gets to it (a fight had the tick) is opened again", ClosedBeforeTakenReopened);
+        r.Add("chest loot: no jump-loot from a chest (a hop can take the character out of its use radius)", NoJumpLootFromChest);
+        r.Add("chest loot: a chest gets 2 minutes (not the 12 s corpse timeout), restarted by each pickup", ChestTimeoutLongAndRestarted);
+        r.Add("quest loot profiles: build, profile (the run's profile in use) and profile off (back to the one before)", QuestLootProfilesBroker);
+    }
+
+    // ── World set-up ──────────────────────────────────────────────────────────
+
+    private static (uint Cell, float X, float Y, float Z) Me0 => (0x1048002Au, 100f, 100f, 0f);
+
+    private static void BaseWorld(string chestName = "Chest")
+    {
+        FakeHost.Reset();
+        FakeHost.SalvageCalls = true;       // UseObject + MoveItemExternal
+        FakeHost.WeaponCalls = true;        // RequestId, HasAppraisalData
+        FakeHost.CloseContainerCalls = true; // CloseContainer + GetGroundContainerId
+        FakeHost.Names[Player] = "Dargoth Hera";
+        FakeHost.Positions[Player] = Me0;
+        FakeHost.PlayerPose = Me0;
+
+        FakeHost.Names[Chest] = chestName;
+        FakeHost.ItemTypes[Chest] = ItemTypeContainer;
+        FakeHost.Positions[Chest] = (Me0.Cell, Me0.X + 1.0f, Me0.Y, Me0.Z);
+        FakeHost.NotAttackable.Add(Chest);
+        FakeHost.Containers[Chest] = 0;     // lies in the world (ownership readable, nobody holds it)
+
+        AddItem(Gem, "Black Opal", ItemTypeGem, Chest);
+        AddItem(Spoon, "Rusty Spoon", ItemTypeMisc, Chest);
+    }
+
+    private static void AddItem(uint id, string name, uint type, uint container)
+    {
+        FakeHost.Names[id] = name;
+        FakeHost.ItemTypes[id] = type;
+        FakeHost.Containers[id] = container;
+        FakeHost.Appraised.Add(id);
+    }
+
+    private sealed class Bot
+    {
+        public readonly RynthAiPlugin P = new();
+        public readonly LegacyUiSettings S = new()
+        {
+            IsMacroRunning = true,
+            EnableLooting = true,
+            EnableCombat = false,
+            LootOwnership = 0,
+            LootContentSettleMs = 0,
+            LootEmptyCorpseMs = 0,
+            StopLootingWhenPackFull = false,
+        };
+        public readonly WorldObjectCache Cache;
+
+        public Bot(RynthCoreHost host, bool salvageRule = false)
+        {
+            typeof(RynthPluginBase).GetMethod("Attach", Any)!.Invoke(P, new object[] { FakeHost.LastApi });
+            var dash = (LegacyDashboardRenderer)RuntimeHelpers.GetUninitializedObject(typeof(LegacyDashboardRenderer));
+            typeof(LegacyDashboardRenderer).GetField("_profileLoaded", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(dash, true);   // a stand-in with its profile in memory
+            typeof(LegacyDashboardRenderer).GetField("_settings", Any)!.SetValue(dash, S);
+            Set("_dashboard", dash);
+            Cache = new WorldObjectCache(host);
+            Cache.SetPlayerId(Player);
+            Set("_objectCache", Cache);
+            Set("_playerId", Player);
+
+            string profile = Path.Combine(Program.TempRoot, salvageRule ? "loot-chest-salvage.json" : "loot-chest-test.json");
+            var p = new LootProfile { Name = "chest" };
+            var gems = new LootRule { Name = "Gems", Action = LootAction.Keep };
+            gems.Conditions.Add(new ObjectClassCondition { ObjectClass = AcObjectClass.Gem });
+            p.Rules.Add(gems);
+            if (salvageRule)
+            {
+                var armor = new LootRule { Name = "Salvage armor", Action = LootAction.Salvage };
+                armor.Conditions.Add(new ObjectClassCondition { ObjectClass = AcObjectClass.Armor });
+                p.Rules.Add(armor);
+            }
+            p.Save(profile);
+            S.CurrentLootPath = profile;
+        }
+
+        public void Set(string f, object? v) => typeof(RynthAiPlugin).GetField(f, Any)!.SetValue(P, v);
+        public T Get<T>(string f) => (T)typeof(RynthAiPlugin).GetField(f, Any)!.GetValue(P)!;
+        public object? Call(string m, params object[] a) => typeof(RynthAiPlugin).GetMethod(m, Any)!.Invoke(P, a);
+        public bool HasLootWork() => (bool)Call("HasLootWork", S, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())!;
+        public void Tick(BotActivity act = BotActivity.Looting)
+        {
+            Set("_activity", act);
+            Call("TickCorpseOpening");
+        }
+
+        public void Create(params uint[] ids)
+        {
+            foreach (uint id in ids) Cache.OnCreateObject(id);
+            Cache.Tick();
+        }
+
+        /// <summary>The server opens <paramref name="container"/> for the player (ViewContents, then the inventory update).</summary>
+        public void ServerOpens(uint container)
+        {
+            FakeHost.GroundContainer = container;
+            P.OnViewObjectContents(container);
+            P.OnUpdateObjectInventory(container);
+        }
+
+        /// <summary>The server's answer to a close: the window goes.</summary>
+        public void ServerCloses(uint container)
+        {
+            if (FakeHost.GroundContainer == container) FakeHost.GroundContainer = 0;
+            P.OnStopViewingObjectContents(container);
+        }
+
+        public void TickUntil(Func<bool> done, int max = 200)
+        {
+            for (int i = 0; i < max && !done(); i++)
+            {
+                Tick();
+                Thread.Sleep(10);
+            }
+        }
+
+        public void TickFor(int ms, BotActivity act = BotActivity.Looting)
+        {
+            long end = Environment.TickCount64 + ms;
+            while (Environment.TickCount64 < end)
+            {
+                Tick(act);
+                Thread.Sleep(10);
+            }
+        }
+
+        public bool Moved(uint id) => FakeHost.ExternalMoves.Any(m => m.Id == id);
+        public bool Marked(uint id) => Get<Dictionary<int, long>>("_completedCorpses").ContainsKey(unchecked((int)id));
+    }
+
+    private static string Moves() => string.Join(",", FakeHost.ExternalMoves.Select(m => $"{m.Id:X8}->{m.Target:X8}"));
+
+    /// <summary>Loots the chest's gem: picked up, lands in the pack, the chest is closed. Returns the bot.</summary>
+    private static void LootGemAndFinish(Bot bot, uint gem)
+    {
+        bot.TickUntil(() => bot.Moved(gem));
+        Check.True(FakeHost.ExternalMoves.Contains((gem, Player, 0)), $"the gem 0x{gem:X8} is moved into the main pack (moves: {Moves()})");
+        int closesBefore = FakeHost.Closes.Count;
+        FakeHost.Containers[gem] = Player; // it lands in the pack
+        bot.TickUntil(() => FakeHost.Closes.Count > closesBefore);
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    private static void OpenedChestLooted()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Create(Chest, Gem, Spoon);
+        Check.False(bot.HasLootWork(), "a closed chest is no loot work");
+
+        bot.ServerOpens(Chest);
+        Check.True(bot.HasLootWork(), "an open chest is loot work (the arbiter gives Looting the tick, nav stops)");
+
+        LootGemAndFinish(bot, Gem);
+        Check.False(bot.Moved(Spoon), "the spoon matches nothing and stays in the chest");
+        Check.False(FakeHost.Uses.Contains(Chest), "no open sent: the chest was open already");
+        Check.False(FakeHost.AutoRunCalls.Any(on => on), "no walk toward it");
+        Check.Eq(string.Join(",", FakeHost.Closes.Select(c => $"{c:X8}")), $"{Chest:X8}", "closed once when done, as a finished corpse is");
+        Check.False(bot.Marked(Chest), "never put in the completed-corpse set");
+        Check.Eq(bot.Get<int>("_openedContainerId"), 0, "the looter lets go of it");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot: looting open chest")), "the start is logged as Chest loot");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot: picking up") && l.Contains($"{Gem:X8}")), "the pickup is logged as Chest loot");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot: done with chest")), "the finish is logged");
+
+        // The server's answer to the close; nothing more happens.
+        bot.ServerCloses(Chest);
+        bot.TickFor(100);
+        Check.Eq(FakeHost.Closes.Count, 1, "still one close");
+        Check.False(bot.HasLootWork(), "no loot work left");
+    }
+
+    private static void ChestTimeoutLongAndRestarted()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.LootCorpseTimeoutMs = 12000;
+
+        // A corpse keeps the setting.
+        bot.Set("_targetCorpseId", 0x7A9B4002);
+        Check.Eq((int)bot.Call("GetCorpseTimeoutMs", bot.S)!, 12000, "a corpse: the Corpse Timeout setting");
+
+        // A chest: 2 minutes, or the setting when that is longer.
+        bot.Set("_targetCorpseId", unchecked((int)Chest));
+        bot.Set("_lootChestId", unchecked((int)Chest));
+        Check.Eq((int)bot.Call("GetCorpseTimeoutMs", bot.S)!, RynthAiPlugin.ChestLootTimeoutMs, "a chest: ChestLootTimeoutMs");
+        Check.Eq(RynthAiPlugin.ChestLootTimeoutMs, 120_000, "2 minutes");
+        bot.S.LootCorpseTimeoutMs = 300_000;
+        Check.Eq((int)bot.Call("GetCorpseTimeoutMs", bot.S)!, 300_000, "a longer Corpse Timeout still wins");
+        bot.S.LootCorpseTimeoutMs = 12000;
+
+        // 100 s into the session, a pickup: the clock restarts, so the session isn't timed out.
+        long now = 1_000_000;
+        bot.Set("_corpseTargetSince", now - 100_000);
+        bot.Set("_currentLootItemId", unchecked((int)Gem));
+        bot.Call("ConfirmCurrentLootItemMoved", now, "test");
+        Check.Eq(bot.Get<long>("_corpseTargetSince"), now, "a confirmed pickup restarts the chest's clock");
+        Check.False((bool)bot.Call("HasCorpseTimedOut", bot.S, now + 119_000)!, "119 s after the last pickup: still going");
+        Check.True((bool)bot.Call("HasCorpseTimedOut", bot.S, now + 120_000)!, "120 s with no pickup: timed out");
+
+        // A corpse pickup doesn't touch the corpse clock.
+        bot.Set("_lootChestId", 0);
+        bot.Set("_targetCorpseId", 0x7A9B4002);
+        bot.Set("_corpseTargetSince", now - 5_000);
+        bot.Set("_currentLootItemId", unchecked((int)Gem2));
+        bot.Call("ConfirmCurrentLootItemMoved", now, "test");
+        Check.Eq(bot.Get<long>("_corpseTargetSince"), now - 5_000, "a corpse keeps one timeout for the whole corpse");
+    }
+
+    private static void OwnSidePackNotLooted()
+    {
+        BaseWorld();
+        FakeHost.Names[SidePack] = "Pack";
+        FakeHost.ItemTypes[SidePack] = ItemTypeContainer;
+        FakeHost.Containers[SidePack] = Player;  // in the main pack
+        AddItem(PackGem, "Black Opal", ItemTypeGem, SidePack);
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Create(SidePack, PackGem);
+
+        bot.ServerOpens(SidePack);                // ACE sends ViewContents for side packs at login
+        Check.False(bot.HasLootWork(), "your own side pack is no loot work");
+        bot.TickFor(300);
+        Check.Eq(FakeHost.ExternalMoves.Count, 0, "nothing moved out of your own pack");
+        Check.Eq(FakeHost.Closes.Count, 0, "and it is not closed");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot: not looting") && l.Contains("in your inventory")), "the reason is logged");
+
+        // The main pack itself never counts either.
+        bot.ServerOpens(Player);
+        Check.False(bot.HasLootWork(), "the main pack is no loot work");
+    }
+
+    private static void HouseStorageNotLooted()
+    {
+        BaseWorld();
+        FakeHost.InstanceIds[(Chest, 32)] = 0x50000ABC; // HouseOwner: a house-linked object of an owned house
+        var host = FakeHost.Create(Player);
+        Check.True(host.HasGetObjectInstanceIdProperty, "the host reads STypeIID properties");
+        var bot = new Bot(host);
+        bot.Create(Chest, Gem, Spoon);
+
+        bot.ServerOpens(Chest);
+        Check.False(bot.HasLootWork(), "house storage is no loot work");
+        bot.TickFor(300);
+        Check.Eq(FakeHost.ExternalMoves.Count, 0, "nothing taken out of house storage");
+        Check.Eq(FakeHost.Closes.Count, 0, "and it is left open for the player");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot: not looting") && l.Contains("house storage")), "the reason is logged");
+    }
+
+    private static void HouseStorageByNameNotLooted()
+    {
+        BaseWorld(chestName: "Storage");
+        var host = FakeHost.Create(Player);
+        Check.False(host.HasGetObjectInstanceIdProperty, "no STypeIID read here");
+        var bot = new Bot(host);
+        bot.Create(Chest, Gem, Spoon);
+
+        bot.ServerOpens(Chest);
+        Check.False(bot.HasLootWork(), "a container named Storage is no loot work");
+        bot.TickFor(300);
+        Check.Eq(FakeHost.ExternalMoves.Count, 0, "nothing taken");
+        Check.True(RynthAiPlugin.IsHouseStorageName("Wall Hook"), "hooks are house objects too");
+        Check.False(RynthAiPlugin.IsHouseStorageName("Ornate Chest"), "a treasure chest is not");
+    }
+
+    private static void LootingOffNothing()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.EnableLooting = false;
+        bot.S.LootChestsMacroOff = false;
+        bot.Create(Chest, Gem, Spoon);
+
+        bot.ServerOpens(Chest);
+        Check.False(bot.HasLootWork(), "no loot work with Looting off");
+        bot.TickFor(300, BotActivity.Navigating);
+        Check.Eq(FakeHost.ExternalMoves.Count, 0, "nothing taken");
+        Check.Eq(FakeHost.Closes.Count, 0, "and it is not closed");
+        Check.False(FakeHost.Logs.Any(l => l.Contains("Chest loot:")), "no chest-loot lines at all");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("Black Opal") || c.Contains("Rusty Spoon") || c.Contains("loot profile")),
+            "the old loot check of a natively opened container still runs (chat: " + string.Join(" | ", FakeHost.Chat) + ")");
+    }
+
+    // 2026-11-05: RynthOracle's quest guide builds each quest's loot profile from base-quest-dynamic.utl through the
+    // "questloot" broker action; Run this quest switches to it and back (RynthAiPlugin.QuestLootProfiles.cs).
+    private static void QuestLootProfilesBroker()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        string folder = Path.Combine(Program.TempRoot, "quest-loot-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        string saved = RynthAiPlugin.QuestLootFolder;
+        RynthAiPlugin.QuestLootFolder = folder;
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "base-quest-dynamic.utl"), "UTL\n1\n0\nSalvageCombine\n0\n1\n1-6, 7-8, 9, 10\n0\n0\n");
+            string before = bot.S.CurrentLootPath;
+            string quest = Path.Combine(folder, "Quests", "Mistreated Virindi.utl");
+
+            bot.Call("ApplyRemoteCommand", "questloot", "build Mistreated Virindi|Shiny Red Stone|Vial");
+            Check.True(File.Exists(quest) && File.ReadAllText(quest).Contains("Quest: Shiny Red Stone"), "build: the quest's profile is written");
+            Check.Eq(bot.S.CurrentLootPath, before, "build: the loot profile in use is not changed");
+
+            // RynthOracle before 2026-11-05 sent the verb with "questloot " in front: still understood.
+            bot.Call("ApplyRemoteCommand", "questloot", "questloot profile Mistreated Virindi|Shiny Red Stone");
+            Check.Eq(bot.S.CurrentLootPath, quest, "profile: the quest's profile is in use");
+            Check.True(FakeHost.Chat.Any(c => c.Contains("Loot profile for Mistreated Virindi") && c.Contains("Back to")), "profile: chat says so and how to go back");
+            Check.True(QuestLootList.Apply("list").Ok, "the quest loot list still answers its own verbs");
+
+            bot.Call("ApplyRemoteCommand", "questloot", "profile off");
+            Check.Eq(bot.S.CurrentLootPath, before, "profile off: back to the loot profile before");
+            bot.Call("ApplyRemoteCommand", "questloot", "profile off");
+            Check.Eq(bot.S.CurrentLootPath, before, "profile off again: nothing changes");
+
+            // A profile the player picks during the run stays when it ends.
+            bot.Call("ApplyRemoteCommand", "questloot", "profile Mistreated Virindi|Shiny Red Stone");
+            string picked = Path.Combine(folder, "Picked.utl");
+            bot.S.CurrentLootPath = picked;
+            bot.Call("ApplyRemoteCommand", "questloot", "profile off");
+            Check.Eq(bot.S.CurrentLootPath, picked, "profile off: a profile picked since is kept");
+
+            // No items (a kill quest, 2026-11-07): the quest's profile is base-quest-dynamic alone.
+            bot.Call("ApplyRemoteCommand", "questloot", "profile Plain Kill Quest");
+            Check.True(bot.S.CurrentLootPath.EndsWith(Path.Combine("Quests", "Plain Kill Quest.utl")), "profile without items: base-quest-dynamic alone: " + bot.S.CurrentLootPath);
+        }
+        finally { RynthAiPlugin.QuestLootFolder = saved; }
+    }
+
+    // Owner, 2026-11-02: "even with looting and the macro off, it should pick up items from a chest when
+    // it's open that match the loaded loot profile ... (Pickup with macro off)", on by default.
+    private static void PickupWithMacroOff()
+    {
+        Check.True(new LegacyUiSettings().LootChestsMacroOff, "on by default");
+        foreach (bool macroOff in new[] { true, false })
+        {
+            BaseWorld();
+            var host = FakeHost.Create(Player);
+            var bot = new Bot(host);
+            if (macroOff) bot.S.IsMacroRunning = false; else bot.S.EnableLooting = false;
+            string what = macroOff ? "macro off" : "Looting off";
+            bot.Create(Chest, Gem, Spoon);
+
+            bot.ServerOpens(Chest);
+            bot.TickUntil(() => bot.Moved(Gem));
+            Check.True(FakeHost.ExternalMoves.Contains((Gem, Player, 0)), $"{what}: the gem is picked up (moves: {Moves()})");
+            Check.False(bot.Moved(Spoon), $"{what}: the spoon matches nothing and stays");
+            Check.False(FakeHost.Uses.Contains(Chest), $"{what}: no open sent");
+            Check.False(FakeHost.AutoRunCalls.Any(on => on), $"{what}: no walk");
+            Check.True(FakeHost.Logs.Any(l => l.Contains("Pickup with macro off: looting the opened chest")), $"{what}: logged");
+        }
+    }
+
+    private static void PickupLeavesChestOpen()
+    {
+        Check.False(new LegacyUiSettings().LootChestsMacroOffLeaveOpen, "Leave the chest open is off by default (the chest is closed)");
+        // "leave open": the option on. "left over": the option off, the spoon (no rule) stays in it, so the
+        // chest stays open for the player (2026-11-05, a Standing Stone closed on its Bandit Rune Transcription
+        // every time it was opened). "close": the option off and the chest emptied: it is closed.
+        foreach (string what in new[] { "leave open", "left over", "close" })
+        {
+            BaseWorld();
+            var host = FakeHost.Create(Player);
+            var bot = new Bot(host);
+            bot.S.IsMacroRunning = false;
+            bot.S.LootChestsMacroOffLeaveOpen = what == "leave open";
+            if (what == "close")
+            {
+                FakeHost.Containers[Spoon] = Player;   // only the gem is in the chest
+                bot.Create(Chest, Gem);
+            }
+            else bot.Create(Chest, Gem, Spoon);
+
+            bot.ServerOpens(Chest);
+            bot.TickUntil(() => bot.Moved(Gem));
+            FakeHost.Containers[Gem] = Player; // it lands in the pack
+            if (what != "close")
+            {
+                bot.TickUntil(() => FakeHost.Chat.Any(c => c.Contains("Left it open")));
+                Check.Eq(FakeHost.Closes.Count, 0, $"{what}: the chest is not closed");
+                Check.True(FakeHost.Chat.Any(c => c.Contains("Pickup with macro off: done with") && c.Contains("took 1 item(s)") && c.Contains("Left it open")),
+                    $"{what}: chat says what was taken and that it's open (chat: {string.Join(" | ", FakeHost.Chat)})");
+                Check.True(FakeHost.Chat.Any(c => c.Contains("1 item(s) the loot profile doesn't take are still in it")),
+                    $"{what}: chat says what is still in it (chat: {string.Join(" | ", FakeHost.Chat)})");
+                Check.False(bot.HasLootWork(), $"{what}: the looter is done with it");
+            }
+            else
+            {
+                bot.TickUntil(() => FakeHost.Closes.Count > 0);
+                Check.Eq(FakeHost.Closes.Count, 1, $"{what}: the emptied chest is closed once when done");
+                Check.False(FakeHost.Chat.Any(c => c.Contains("Left it open")), $"{what}: no left-open line");
+            }
+        }
+
+        // The macro's own chest looting (macro and Looting on) still closes: the option is Pickup with macro off's.
+        BaseWorld();
+        var h2 = FakeHost.Create(Player);
+        var b2 = new Bot(h2);
+        b2.Create(Chest, Gem, Spoon);
+        b2.ServerOpens(Chest);
+        LootGemAndFinish(b2, Gem);
+        Check.Eq(FakeHost.Closes.Count, 1, "macro on: the chest is closed when done, as before");
+        Check.False(FakeHost.Chat.Any(c => c.Contains("Left it open")), "macro on: no left-open line");
+    }
+
+    private static void PickupWithMacroOffRefuses()
+    {
+        BaseWorld();
+        FakeHost.InstanceIds[(Chest, 32)] = 0x50000ABC; // house storage
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.IsMacroRunning = false;
+        bot.Create(Chest, Gem, Spoon);
+        bot.ServerOpens(Chest);
+        bot.TickFor(300);
+        Check.Eq(FakeHost.ExternalMoves.Count, 0, "nothing taken out of house storage");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Pickup with macro off: not looting") && l.Contains("house storage")), "the reason is logged");
+
+        BaseWorld();
+        FakeHost.Containers[Chest] = Player;   // a side pack the character carries
+        host = FakeHost.Create(Player);
+        bot = new Bot(host);
+        bot.S.IsMacroRunning = false;
+        bot.Create(Chest, Gem, Spoon);
+        bot.ServerOpens(Chest);
+        bot.TickFor(300);
+        Check.Eq(FakeHost.ExternalMoves.Count, 0, "nothing taken out of your own side pack");
+    }
+
+    private static void ReopenLootsAgain()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Create(Chest, Gem, Spoon);
+
+        bot.ServerOpens(Chest);
+        LootGemAndFinish(bot, Gem);
+        bot.ServerCloses(Chest);
+        Check.Eq(FakeHost.Closes.Count, 1, "the first open ends with one close");
+
+        // The chest regenerates: a new gem; a meta uses it again.
+        AddItem(Gem2, "Fire Opal", ItemTypeGem, Chest);
+        bot.Create(Gem2);
+        bot.ServerOpens(Chest);
+        Check.True(bot.HasLootWork(), "the reopened chest is loot work again");
+        LootGemAndFinish(bot, Gem2);
+        Check.Eq(FakeHost.Closes.Count, 2, "and is closed again when done");
+        Check.False(bot.Moved(Spoon), "the spoon is still left");
+    }
+
+    private static void SalvageWithoutUstLeft()
+    {
+        BaseWorld();
+        AddItem(Cap, "Leather Cap", ItemTypeArmor, Chest);
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host, salvageRule: true);
+        bot.Set("_salvageManager", new SalvageManager(host, bot.S, bot.Cache));
+        bot.Create(Chest, Gem, Spoon, Cap);
+
+        bot.ServerOpens(Chest);
+        LootGemAndFinish(bot, Gem);
+        Check.False(bot.Moved(Cap), "the salvage-only cap stays in the chest: no UST to salvage it with");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Leather Cap") && l.Contains("no UST carried")), "logged as for corpses");
+        Check.True(FakeHost.Chat.Any(c => c.Contains("No UST in your pack")), "and said once in chat");
+    }
+
+    private static void ChestWaitsForCombat()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Create(Chest, Gem, Spoon);
+        bot.ServerOpens(Chest);
+        Check.True(bot.HasLootWork(), "the chest wants the tick");
+
+        // Combat owns the tick: nothing taken, the chest waits.
+        bot.TickFor(300, BotActivity.Combat);
+        Check.Eq(FakeHost.ExternalMoves.Count, 0, "nothing taken while combat holds the tick");
+        Check.Eq(bot.Get<int>("_openedContainerId"), 0, "the chest isn't taken as the loot container yet");
+
+        // The fight ends, the chest is still open: looted.
+        LootGemAndFinish(bot, Gem);
+        Check.Eq(FakeHost.Closes.Count, 1, "looted and closed after the fight");
+    }
+
+    private const uint Monster = 0x80263301;
+
+    /// <summary>The chest world with a monster <paramref name="meters"/> off and combat on.</summary>
+    private static Bot ChestWithMonster(float meters, out CombatManager combat)
+    {
+        BaseWorld("Unearthed Cache");
+        FakeHost.Names[Monster] = "Drumtaken Ironstone Golem";
+        FakeHost.ItemTypes[Monster] = 0x10;   // creature
+        FakeHost.Positions[Monster] = (Me0.Cell, Me0.X + meters, Me0.Y + 0.5f, Me0.Z);
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.EnableCombat = true;
+        bot.S.MonsterRange = 50;
+        bot.Create(Chest, Gem, Spoon);
+        _ = bot.Cache[unchecked((int)Monster)];
+        bot.Cache.OnUpdateHealth(Monster, 1f);
+        bot.Cache.Tick();
+        combat = new CombatManager(host, bot.S, bot.Cache);
+        combat.SetPlayerId(Player);
+        typeof(CombatManager).GetField("_lastScanTime", Any)?.SetValue(combat, DateTime.MinValue);
+        combat.ScanNearbyTargets();
+        bot.Set("_combatManager", combat);
+        return bot;
+    }
+
+    // 2026-11-07: a meta opened a treasure cache with a golem 32 m off; combat walked to the golem, the
+    // cache closed and nothing was taken.
+    private static void OpenChestBeforeDistantFight()
+    {
+        var bot = ChestWithMonster(30f, out var combat);
+        Check.True(combat.HasEngageableTarget, "a monster 30 m off: combat wants the tick");
+        Check.False((bool)bot.Call("IsOpenChestTurn", true, true)!, "no chest open: no chest turn");
+        bot.ServerOpens(Chest);
+        Check.True(bot.HasLootWork(), "the open chest wants the tick");
+        Check.True((bool)bot.Call("IsOpenChestTurn", true, true)!, "open chest, nothing within 5 yd: the chest goes first");
+        Check.False((bool)bot.Call("IsOpenChestTurn", false, true)!, "(only when there is loot work)");
+        var inputs = new ArbiterInputs(true, false, true, true, false, false, lootStarved: true);
+        Check.Eq(ActivityArbiter.Decide(in inputs), BotActivity.Looting, "the arbiter gives Looting the tick");
+        bot.Set("_lootStarveTurn", true);
+        LootGemAndFinish(bot, Gem);
+        Check.True(FakeHost.Closes.Count >= 1, "the gem taken before the fight, the chest closed");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("looted before the fight")), "logged");
+        Check.Eq(bot.Get<uint>("_lastChestLootedId"), Chest, "ralastchestlooted[] names the chest looted to the end");
+
+        var close = ChestWithMonster(2f, out var combat2);
+        Check.True(combat2.HasCloseThreat(RynthAiPlugin.LootStarveCloseYards), "a monster within 5 yd");
+        close.ServerOpens(Chest);
+        Check.False((bool)close.Call("IsOpenChestTurn", true, true)!, "a monster at the chest is fought first");
+    }
+
+    private static int ChestUses() => FakeHost.Uses.Count(u => u == Chest);
+
+    // 2026-11-12: the client closes a container once the character is outside its use radius at its
+    // once-a-second check (a jump-loot hop, the walk back for the next item, a step toward a monster).
+    // 8 of 134 chest loots in a week of logs ended that way with items left; a corpse was reopened,
+    // a chest was not.
+    private static void ClosedMidLootReopened()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Create(Chest, Gem, Spoon);
+        bot.ServerOpens(Chest);
+        bot.TickUntil(() => bot.Moved(Gem));
+        Check.True(bot.Moved(Gem), "the gem's move is sent");
+
+        // The chest closes before the gem arrives.
+        bot.ServerCloses(Chest);
+        Check.Eq(bot.Get<int>("_openedContainerId"), 0, "the session ends");
+        Check.Eq(bot.Get<uint>("_lastChestLootedId"), 0u, "a chest closed mid-loot doesn't count as looted");
+        Check.Eq(FakeHost.Closes.Count, 0, "nothing to close: it is closed already");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot:") && l.Contains("before looting finished; opening it again (1 of 2)")), "logged");
+        Check.True(bot.HasLootWork(), "the chest to open again is loot work: Looting keeps the tick");
+        bot.Tick();
+        Check.Eq(ChestUses(), 0, "not at once: the close settles first");
+
+        bot.TickUntil(() => ChestUses() > 0);
+        Check.Eq(ChestUses(), 1, "then the looter uses the chest to open it again");
+        bot.TickFor(200);
+        Check.Eq(ChestUses(), 1, "one use, not one a tick, while it waits for the chest to open");
+        Check.Eq(bot.Get<int>("_targetCorpseId"), 0, "and nothing else is claimed meanwhile");
+
+        // It opens: the gem is still in it and is taken, then the chest is closed as usual.
+        int movesBefore = FakeHost.ExternalMoves.Count;
+        bot.ServerOpens(Chest);
+        bot.TickUntil(() => FakeHost.ExternalMoves.Count > movesBefore);
+        Check.True(FakeHost.ExternalMoves.Count > movesBefore, "the gem's move is sent again");
+        FakeHost.Containers[Gem] = Player;
+        bot.TickUntil(() => FakeHost.Closes.Count > 0);
+        Check.Eq(FakeHost.Closes.Count, 1, "closed when done");
+        Check.Eq(bot.Get<uint>("_lastChestLootedId"), Chest, "now it counts as looted to the end");
+        Check.False(bot.Moved(Spoon), "the spoon is still left");
+        Check.False(bot.Marked(Chest), "and the chest is still never marked");
+        Check.Eq(ChestUses(), 1, "no further use");
+    }
+
+    private static void ReopenIsBounded()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Create(Chest, Gem, Spoon);
+        bot.ServerOpens(Chest);
+        bot.TickUntil(() => bot.Moved(Gem));
+
+        // It closes mid-loot, is opened again, and closes again: twice.
+        for (int round = 1; round <= RynthAiPlugin.ChestReopenMax; round++)
+        {
+            bot.ServerCloses(Chest);
+            bot.TickUntil(() => ChestUses() >= round);
+            Check.Eq(ChestUses(), round, $"close {round}: the looter opens it again");
+            bot.ServerOpens(Chest);
+            bot.TickUntil(() => bot.Get<int>("_openedContainerId") != 0);
+            Check.Eq(bot.Get<int>("_openedContainerId"), unchecked((int)Chest), $"close {round}: and takes it again");
+        }
+
+        // The third close in a minute: left alone.
+        bot.ServerCloses(Chest);
+        bot.TickFor((int)RynthAiPlugin.ChestReopenDelayMs + 400);
+        Check.Eq(ChestUses(), RynthAiPlugin.ChestReopenMax, "no third use");
+        Check.False(bot.HasLootWork(), "and nothing left to do");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot:") && l.Contains("so it is left")), "logged");
+    }
+
+    private static void ManualChestNotReopened()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.IsMacroRunning = false;   // Pickup with macro off takes the chest the player opened
+        bot.Create(Chest, Gem, Spoon);
+        bot.ServerOpens(Chest);
+        bot.TickUntil(() => bot.Moved(Gem));
+        Check.True(bot.Moved(Gem), "the gem's move is sent");
+
+        bot.ServerCloses(Chest);   // the player closes it
+        bot.TickFor((int)RynthAiPlugin.ChestReopenDelayMs + 400);
+        Check.Eq(ChestUses(), 0, "the player's chest is the player's to close: never reopened");
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot:") && l.Contains("not reopening it")), "logged as before");
+    }
+
+    // The 2026-11-11 20:02 case: a meta opened a cache while the looter was on a corpse; the corpse's
+    // open closed the cache untouched. Here a fight holds the tick instead: same thing, never taken.
+    private static void ClosedBeforeTakenReopened()
+    {
+        BaseWorld();
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.Create(Chest, Gem, Spoon);
+        bot.ServerOpens(Chest);
+        bot.TickFor(150, BotActivity.Combat);
+        Check.Eq(bot.Get<int>("_openedContainerId"), 0, "open, but the looter hasn't taken it");
+
+        bot.ServerCloses(Chest);
+        Check.True(FakeHost.Logs.Any(l => l.Contains("Chest loot:") && l.Contains("before the looter got to it; opening it again (1 of 2)")), "booked and logged");
+        bot.TickFor((int)RynthAiPlugin.ChestReopenDelayMs + 200, BotActivity.Combat);
+        Check.Eq(ChestUses(), 0, "no use while the fight has the tick");
+
+        bot.TickUntil(() => ChestUses() > 0);
+        Check.Eq(ChestUses(), 1, "used once Looting has the tick");
+        bot.ServerOpens(Chest);
+        LootGemAndFinish(bot, Gem);
+        Check.Eq(FakeHost.Closes.Count, 1, "looted and closed");
+        Check.Eq(bot.Get<uint>("_lastChestLootedId"), Chest, "and counts as looted to the end");
+
+        // Looting off: a chest that closes books nothing.
+        BaseWorld();
+        var bot2 = new Bot(FakeHost.Create(Player));
+        bot2.S.LootChestsMacroOff = false;
+        bot2.S.EnableLooting = false;
+        bot2.Create(Chest, Gem, Spoon);
+        bot2.ServerOpens(Chest);
+        bot2.TickFor(100);
+        bot2.ServerCloses(Chest);
+        bot2.S.EnableLooting = true;
+        bot2.TickFor((int)RynthAiPlugin.ChestReopenDelayMs + 300);
+        Check.Eq(ChestUses(), 0, "Looting was off when it closed: not reopened");
+    }
+
+    private static void NoJumpLootFromChest()
+    {
+        BaseWorld();
+        FakeHost.TapJumpCalls = true;
+        var host = FakeHost.Create(Player);
+        var bot = new Bot(host);
+        bot.S.LootJumpEnabled = true;
+        bot.Set("_vitals", new PlayerVitalsCache { MaxHealth = 100, CurrentHealth = 100, MaxStamina = 100, CurrentStamina = 100, MaxMana = 100, CurrentMana = 100 });
+        bot.Create(Chest, Gem, Spoon);
+        bot.ServerOpens(Chest);
+        bot.TickUntil(() => bot.Get<int>("_openedContainerId") != 0);
+
+        Check.False((bool)bot.Call("ShouldJumpLoot", bot.S)!, "no jump-loot while the open container is a chest");
+        bot.Set("_lootChestId", 0);
+        Check.True((bool)bot.Call("ShouldJumpLoot", bot.S)!, "control: the same state with a corpse open jumps");
+        bot.Set("_lootChestId", unchecked((int)Chest));
+
+        LootGemAndFinish(bot, Gem);
+        Check.True(bot.Moved(Gem), "the gem is taken");
+        Check.Eq(FakeHost.TapJumps, 0, "and no jump was sent for it");
+    }
+}

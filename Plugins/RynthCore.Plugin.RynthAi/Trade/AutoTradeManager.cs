@@ -45,7 +45,7 @@ namespace RynthCore.Plugin.RynthAi.Trade;
 /// </summary>
 internal sealed class AutoTradeManager
 {
-    public const string MainProfileDir = @"C:\Games\RynthSuite\RynthAi\AutoTrade";
+    public static readonly string MainProfileDir = System.IO.Path.Combine(RynthCore.Install.RynthInstallPaths.RynthAiDir, "AutoTrade");
     public const string ProfileSubfolder = "AutoTrade";
     public const string AutoAcceptListFileName = "autoAcceptList.json";
     public const uint RequiredApiVersion = 72;
@@ -636,7 +636,7 @@ internal sealed class AutoTradeManager
         {
             _idState.TryGetValue(id, out var st);
             if (st.Attempts > 0 && now - st.LastAt < IdResendMs) continue;
-            _host.RequestId(id);
+            if (!_host.RequestId(id)) break;   // refused (a death or a portal): not an attempt, asked again next tick
             _idState[id] = (st.Attempts + 1, now);
             _lastIdSentAt = now;
             break;

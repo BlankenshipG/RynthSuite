@@ -39,6 +39,230 @@ internal static class CastSafetyTests
         r.Add("cast safety: any held cast is nudged early while health is under a heal line; not when health is fine", UrgentNudgeForLowHealth);
         r.Add("cast safety: no kit or potion while a cast is held open until its nudge, then one try per 3 s", HeldCastItemGate);
         r.Add("move audit: one line per call, repeats counted, subsystem in the line", MoveAuditLines);
+        r.Add("cast safety: a script heal's 'due to casting' result closes the cast, so no early nudge steps the character forward", TransferResultClosesCast);
+        r.Add("cast safety: a script heal takes no early nudge: a 2.75 s result or a 3.8 s UseDone sees no autorun before 6 s", ScriptHealNoEarlyNudge);
+        r.Add("cast safety: a script heal's 'resists your spell' closes its cast", ScriptHealResisted);
+        r.Add("cast safety: another caster's transfer and the drain line leave the script heal pending", TransferLinesNotOurs);
+        r.Add("cast safety: extra 'due to casting' lines after the cast closed resolve nothing and record no timer", ExtraTransferLines);
+        r.Add("cast safety: a 'due to casting' line for no open cast is read only when it names the pending spell", StrayTransferLine);
+    }
+
+    // 2026-10-10 log (RynthCore.40732.log): the BloodMage script's Vitality Siphon reports
+    // "You gain N points of health due to casting Vitality Siphon on <monster>". The result
+    // matcher only read "ou cast ", so the heal stayed held and the early heal nudge (autorun on,
+    // off) went out 2.8 s after the incantation, mid-cast: 13 of the session's 14 nudges.
+    private static void TransferResultClosesCast()
+    {
+        foreach (bool withResult in new[] { false, true })
+        {
+            string what = withResult ? "result line read" : "control, no result line";
+            try
+            {
+                var r = StartScriptSiphon(what);
+                r.At(0.2); r.Incantation();
+                if (withResult)
+                {
+                    r.At(2.5); r.Chat("You gain 51 points of health due to casting Vitality Siphon on Doorheld Surveyor", 7);
+                    Check.Eq(r.B.PendingSpellId, 0, "result line read: the pending heal is resolved");
+                    Check.True(r.Logged("via due-to-casting match"), "result line read: the CLEARED line names the branch that matched");
+                }
+                r.At(3.1); r.B.OnHeartbeat();
+                Check.Eq(FakeHost.AutoRunCalls.Count, 0, $"{what}: a script heal takes no early nudge");
+                // Held past 6 s while AC refuses: the normal nudge, unless the result closed the cast.
+                r.At(7.0); r.Chat("You're too busy!");
+                if (withResult)
+                    Check.Eq(FakeHost.AutoRunCalls.Count, 0, "result line read: the cast is closed, nothing moves the character");
+                else
+                    Check.True(FakeHost.AutoRunCalls.SequenceEqual(new[] { true, false }), "control: the unanswered heal is still held at 6.8 s and nudged on the refusal");
+            }
+            finally { CombatHook.Reset(); }
+        }
+    }
+
+    private static int SiphonId => SpellTable.Named("Vitality Siphon").Select(x => x.Id).First();
+
+    /// <summary>A rig at 50% health (heal line 60) whose script hook chose Vitality Siphon, sent at 0 s.
+    /// The caller resets CombatHook.</summary>
+    private static Rig StartScriptSiphon(string what)
+    {
+        var r = new Rig();
+        MoveAudit.Reset();
+        CombatHook.Reset();
+        r.S.HealAt = 60; r.S.TopOffHP = 60;
+        r.V.CurrentHealth = 50; r.V.CurrentMana = 100;
+        // The script seam checks the known-spell snapshot (this rig never refreshed it).
+        ((SpellManager)typeof(BuffManager).GetField("_spellManager", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(r.B)!).RefreshKnownSpells();
+        CombatHook.Claim(RynthAiCombat.KindHeal, 0, 0, 0, "test");
+        r.At(0);
+        Check.True(r.B.CheckVitals(), $"{what}: waiting for the script's heal");
+        Check.True(CombatHook.Poll(RynthAiCombat.KindHeal, out var req), $"{what}: a heal request is open");
+        CombatHook.Decide(req.Seq, RynthAiCombat.KindHeal, (uint)SiphonId, 0, 0);
+        r.B.CheckVitals();
+        Check.Eq(r.CastName, "Vitality Siphon", $"{what}: the script's Vitality Siphon is cast");
+        return r;
+    }
+
+    /// <summary>Heartbeats every 100 ms over [from, to] seconds.</summary>
+    private static void Tick(Rig r, double from, double to)
+    {
+        for (int i = 0; from + i * 0.1 <= to + 1e-9; i++) { r.At(from + i * 0.1); r.B.OnHeartbeat(); }
+    }
+
+    // 2026-10-10 log: real Vitality Siphon results came 2.75, 2.45 and 2.42 s after the incantation,
+    // against the 2.8 s early heal nudge. A script-chosen heal waits the normal 6 s instead.
+    private static void ScriptHealNoEarlyNudge()
+    {
+        try
+        {
+            // Incantation lag (1.0 s after the send), result line 2.75 s after the incantation.
+            var r = StartScriptSiphon("late result");
+            r.At(1.0); r.Incantation();
+            Tick(r, 1.1, 3.7);
+            r.At(3.75); r.Chat("You gain 51 points of health due to casting Vitality Siphon on Doorheld Surveyor", 7);
+            Check.Eq(r.B.PendingSpellId, 0, "late result: read at 2.75 s");
+            Tick(r, 3.8, 6.9);
+            Check.Eq(FakeHost.AutoRunCalls.Count, 0, "late result: no AutoRun call before 6 s after the incantation");
+
+            // No result line at all; the server's UseDone(0) 3.8 s after the incantation ends it.
+            var q = StartScriptSiphon("UseDone only");
+            q.At(1.0); q.Incantation();
+            Tick(q, 1.1, 4.7);
+            q.At(4.8); FakeHost.UseDone(0);
+            Tick(q, 4.8, 6.9);
+            Check.Eq(FakeHost.AutoRunCalls.Count, 0, "UseDone only: no AutoRun call before 6 s after the incantation");
+            Check.True(q.Logged("'Vitality Siphon': UseDone #"), "UseDone only: the UseDone closed the cast");
+        }
+        finally { CombatHook.Reset(); }
+
+        // Control: RynthAi's own Heal Self with no result is still nudged at 2.8 s.
+        var h = new Rig();
+        MoveAudit.Reset();
+        h.S.HealAt = 60; h.S.TopOffHP = 60;
+        h.V.CurrentHealth = 50; h.V.CurrentMana = 100;
+        h.At(0); h.B.CheckVitals();
+        Check.True(CastIs("Heal Self"), "control: Heal Self is cast");
+        h.At(0.2); h.Incantation();
+        Tick(h, 0.3, 2.9);
+        Check.Eq(FakeHost.AutoRunCalls.Count, 0, "control: no nudge 2.7 s after the incantation");
+        h.At(3.1); h.B.OnHeartbeat();
+        Check.True(FakeHost.AutoRunCalls.SequenceEqual(new[] { true, false }), "control: RynthAi's own heal is nudged at 2.8 s");
+    }
+
+    // A resisted transfer prints "<monster> resists your spell" and no "due to casting" line.
+    private static void ScriptHealResisted()
+    {
+        try
+        {
+            int resolves = 0;
+            var r = StartScriptSiphon("resisted");
+            r.B.SetCastResolvedCallback(_ => resolves++);
+            r.At(0.2); r.Incantation();
+            r.At(2.5); r.Chat("Doorheld Surveyor resists your spell", 7);
+            Check.Eq(r.B.PendingSpellId, 0, "resisted: the pending heal is resolved");
+            Check.Eq(resolves, 1, "resisted: resolved once");
+            Check.True(r.Logged("'Vitality Siphon': resisted"), "resisted: [CastTime] closes the cast as resisted");
+            r.At(7.0); r.Chat("You're too busy!");
+            Check.Eq(FakeHost.AutoRunCalls.Count, 0, "resisted: the cast is closed, so a later refusal sends no nudge");
+        }
+        finally { CombatHook.Reset(); }
+
+        // RynthAi's own cast is not closed by a resist line (it can't be one of its transfers).
+        var h = new Rig();
+        h.S.HealAt = 60; h.S.TopOffHP = 60;
+        h.V.CurrentHealth = 50; h.V.CurrentMana = 100;
+        h.At(0); h.B.CheckVitals();
+        int pending = h.B.PendingSpellId;
+        h.At(0.2); h.Incantation();
+        h.At(1.0); h.Chat("Doorheld Surveyor resists your spell", 7);
+        Check.Eq(h.B.PendingSpellId, pending, "own Heal Self: a resist line leaves it pending");
+    }
+
+    // Lines that name a transfer but are not the result of our cast.
+    private static void TransferLinesNotOurs()
+    {
+        try
+        {
+            var r = StartScriptSiphon("not ours");
+            int pending = r.B.PendingSpellId;
+            Check.True(pending != 0, "the Siphon is pending");
+            r.At(0.2); r.Incantation();
+            foreach (string line in new[]
+            {
+                "You lose 12 points of mana due to Zofrit Zefir casting Drain Mana Other II on you",
+                // ACE WorldObject_Magic.cs:1370, a fellow's transfer shared with us.
+                "You gain 51 points of health due to Zofrit Zefir casting Vitality Siphon on Doorheld Surveyor",
+                "With Vitality Siphon you drain 51 points of Health from Doorheld Surveyor.",
+            })
+            {
+                r.At(1.0); r.Chat(line, 7);
+                Check.Eq(r.B.PendingSpellId, pending, $"'{line}': pending unchanged");
+            }
+            r.At(2.5); r.Chat("You gain 51 points of health due to casting Vitality Siphon on Doorheld Surveyor", 7);
+            Check.Eq(r.B.PendingSpellId, 0, "our own line still resolves it");
+        }
+        finally { CombatHook.Reset(); }
+    }
+
+    // Crimson Harvest prints several "due to casting" lines for one cast: only the first is its result.
+    private static void ExtraTransferLines()
+    {
+        try
+        {
+            int resolves = 0;
+            var r = StartScriptSiphon("extra lines");
+            r.B.SetCastResolvedCallback(_ => resolves++);
+            r.At(0.2); r.Incantation();
+            r.At(2.5); r.Chat("You gain 51 points of health due to casting Vitality Siphon on Doorheld Surveyor", 7);
+            Check.Eq(resolves, 1, "the first line resolves the cast");
+            var timers = (System.Collections.IDictionary)typeof(BuffManager)
+                .GetField("_ramBuffTimers", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(r.B)!;
+            timers.Clear();
+            r.At(2.6); r.Chat("You gain 20 points of health due to casting Vitality Siphon on Doorheld Surveyor", 7);
+            Check.Eq(resolves, 1, "the second line resolves nothing");
+            Check.Eq(timers.Count, 0, "the second line records no timer");
+        }
+        finally { CombatHook.Reset(); }
+    }
+
+    private static System.Collections.IDictionary RamTimers(Rig r) => (System.Collections.IDictionary)typeof(BuffManager)
+        .GetField("_ramBuffTimers", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(r.B)!;
+
+    // A "due to casting" line for no open cast is read only when it names the pending spell.
+    private static void StrayTransferLine()
+    {
+        // Another spell pending (RynthAi's Stamina to Mana); a stray line from a drain attack
+        // CombatManager cast (never tracked by BuffManager).
+        var r = new Rig();
+        int resolves = 0;
+        r.B.SetCastResolvedCallback(_ => resolves++);
+        r.At(0); r.B.CheckVitals();
+        int pending = r.B.PendingSpellId;
+        Check.True(pending != 0, "Stamina to Mana is pending");
+        r.At(0.3); r.Incantation();
+        var timers = RamTimers(r);
+        timers.Clear();
+        r.At(1.0); r.Chat("You gain 52 points of health due to casting Drain Health Other I on Olthoi Warrior", 7);
+        Check.Eq(r.B.PendingSpellId, pending, "stray drain line: pending unchanged");
+        Check.Eq(timers.Count, 0, "stray drain line: no timer recorded");
+        Check.Eq(resolves, 0, "stray drain line: nothing resolved");
+
+        // The pending spell's own line after its cast already closed (a UseDone came first).
+        try
+        {
+            var q = StartScriptSiphon("closed first");
+            int qResolves = 0;
+            q.B.SetCastResolvedCallback(_ => qResolves++);
+            q.At(0.2); q.Incantation();
+            q.At(2.0); FakeHost.UseDone(0); q.B.OnHeartbeat();
+            Check.True(q.Logged("'Vitality Siphon': UseDone #"), "closed first: the UseDone closed the cast");
+            int qPending = q.B.PendingSpellId;
+            Check.True(qPending != 0, "closed first: the Siphon is still pending");
+            q.At(2.4); q.Chat("You gain 51 points of health due to casting Vitality Siphon on Doorheld Surveyor", 7);
+            Check.Eq(q.B.PendingSpellId, 0, "closed first: the line naming the pending spell still resolves it");
+            Check.Eq(qResolves, 1, "closed first: resolved once");
+        }
+        finally { CombatHook.Reset(); }
     }
 
     private sealed class Rig
